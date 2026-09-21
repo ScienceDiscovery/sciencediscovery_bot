@@ -1,0 +1,56 @@
+# sciencediscovery_bot + Cloudflare Tunnel.
+#
+#   cp .env.example .env && edit          # secrets + CLOUDFLARE_TUNNEL_TOKEN + COMPOSE_PROFILES=tunnel
+#   docker compose up -d --build          # bot + cloudflared (tunnel profile on) or bot alone (profile off)
+#   docker compose logs -f cloudflared    # tunnel status
+#
+# Exposure model:
+#   - cloudflared reaches the bot over the private network at http://bot:8791 (webhook listener).
+#     Configure exactly that as the tunnel's public hostname service; never add bot:8792.
+#   - host ports are published on 127.0.0.1 only: 8791 for local replay, 8792 for the admin panel.
+#   - the admin listener additionally refuses requests carrying Cloudflare headers and can
+#     require SDBOT_ADMIN_TOKEN, so a mis-configured tunnel still cannot reach it.
+
+services:
+  bot:
+    build: .
+    image: sciencediscovery-bot:local
+    container_name: sciencediscovery-bot
+    restart: unless-stopped
+    environment:
+      SDBOT_GITHUB_WEBHOOK_SECRET: ${SDBOT_GITHUB_WEBHOOK_SECRET:-}
+      SDBOT_GITCODE_WEBHOOK_SECRET: ${SDBOT_GITCODE_WEBHOOK_SECRET:-}
+      SDBOT_WEBHOOK_SECRET: ${SDBOT_WEBHOOK_SECRET:-}
+      SDBOT_REPOS: ${SDBOT_REPOS:-}
+      SDBOT_ADMIN_TOKEN: ${SDBOT_ADMIN_TOKEN:-}
+      SDBOT_LOG_LEVEL: ${SDBOT_LOG_LEVEL:-INFO}
+      SDBOT_MAX_BODY_MB: ${SDBOT_MAX_BODY_MB:-25}
+    volumes:
+      - bot-data:/data
+    ports:
+      - "127.0.0.1:${SDBOT_WEBHOOK_PORT:-8791}:8791"   # local replay / curl only; the public path is the tunnel
+      - "127.0.0.1:${SDBOT_ADMIN_PORT:-8792}:8792"     # admin panel: loopback only, never forwarded
+    networks:
+      - edge
+
+  # Started only with the "tunnel" profile: COMPOSE_PROFILES=tunnel in .env (see .env.example)
+  # or `docker compose --profile tunnel up -d`. Without it `docker compose up -d` runs the bot alone.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: sciencediscovery-bot-tunnel
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      bot:
+        condition: service_healthy
+    networks:
+      - edge
+
+volumes:
+  bot-data:
+
+networks:
+  edge:

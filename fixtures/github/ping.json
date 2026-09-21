@@ -1,0 +1,31 @@
+{
+  "provider": "github",
+  "event": "ping",
+  "delivery": "00000000-0000-4000-8000-00000000ping",
+  "description": "GitHub App created: ping handshake (no repository in an App-level ping)",
+  "payload": {
+    "zen": "Keep it logically awesome.",
+    "hook_id": 555001,
+    "hook": {
+      "type": "App",
+      "id": 555001,
+      "name": "web",
+      "active": true,
+      "app_id": 987654,
+      "events": [
+        "issues",
+        "issue_comment",
+        "pull_request",
+        "pull_request_review",
+        "push"
+      ],
+      "config": {
+        "content_type": "json",
+        "insecure_ssl": "0",
+        "url": "https://example.invalid/webhook/github"
+      },
+      "created_at": "2026-09-21T01:00:00Z",
+      "updated_at": "2026-09-21T01:00:00Z"
+    }
+  }
+}

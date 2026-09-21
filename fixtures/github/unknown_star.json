@@ -1,0 +1,30 @@
+{
+  "provider": "github",
+  "event": "star",
+  "delivery": "00000000-0000-4000-8000-0000000x0001",
+  "description": "Unsubscribed event kind (star): must be recorded and answered 2xx, never routed",
+  "payload": {
+    "action": "created",
+    "starred_at": "2026-09-21T10:00:00Z",
+    "repository": {
+      "id": 1001,
+      "name": "sciencediscovery",
+      "full_name": "openJiuwen-ai/sciencediscovery",
+      "html_url": "https://github.com/openJiuwen-ai/sciencediscovery",
+      "default_branch": "main",
+      "owner": {
+        "login": "openJiuwen-ai",
+        "type": "Organization"
+      }
+    },
+    "sender": {
+      "login": "carol",
+      "type": "User",
+      "html_url": "https://github.com/carol"
+    },
+    "installation": {
+      "id": 12345678,
+      "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9u"
+    }
+  }
+}

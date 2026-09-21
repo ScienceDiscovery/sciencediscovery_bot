@@ -1,0 +1,60 @@
+{
+  "provider": "github",
+  "event": "issues",
+  "delivery": "00000000-0000-4000-8000-0000000i0002",
+  "description": "Issue #68 labeled priority/P1",
+  "payload": {
+    "action": "labeled",
+    "label": {
+      "name": "priority/P1",
+      "color": "b60205"
+    },
+    "issue": {
+      "number": 68,
+      "title": "论文全文阅读器在长 PDF 上超时",
+      "state": "open",
+      "html_url": "https://github.com/openJiuwen-ai/sciencediscovery/issues/68",
+      "user": {
+        "login": "alice",
+        "type": "User",
+        "html_url": "https://github.com/alice"
+      },
+      "labels": [
+        {
+          "name": "bug",
+          "color": "d73a4a"
+        },
+        {
+          "name": "priority/P1",
+          "color": "d73a4a"
+        }
+      ],
+      "assignees": [],
+      "comments": 0,
+      "body": "打开 60 页以上的 PDF 时 reader 在 30 s 后超时。",
+      "created_at": "2026-09-21T02:00:00Z",
+      "updated_at": "2026-09-21T02:00:00Z",
+      "closed_at": null
+    },
+    "repository": {
+      "id": 1001,
+      "name": "sciencediscovery",
+      "full_name": "openJiuwen-ai/sciencediscovery",
+      "html_url": "https://github.com/openJiuwen-ai/sciencediscovery",
+      "default_branch": "main",
+      "owner": {
+        "login": "openJiuwen-ai",
+        "type": "Organization"
+      }
+    },
+    "sender": {
+      "login": "alice",
+      "type": "User",
+      "html_url": "https://github.com/alice"
+    },
+    "installation": {
+      "id": 12345678,
+      "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9u"
+    }
+  }
+}

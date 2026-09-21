@@ -1,0 +1,43 @@
+{
+  "provider": "github",
+  "event": "installation",
+  "delivery": "00000000-0000-4000-8000-000000in0001",
+  "description": "App installed on the organization, repository selected",
+  "payload": {
+    "action": "created",
+    "installation": {
+      "id": 12345678,
+      "app_id": 987654,
+      "account": {
+        "login": "openJiuwen-ai",
+        "type": "Organization"
+      },
+      "repository_selection": "selected",
+      "permissions": {
+        "metadata": "read",
+        "issues": "read",
+        "pull_requests": "read",
+        "contents": "read"
+      },
+      "events": [
+        "issues",
+        "issue_comment",
+        "pull_request",
+        "pull_request_review",
+        "push"
+      ]
+    },
+    "repositories": [
+      {
+        "id": 1001,
+        "full_name": "openJiuwen-ai/sciencediscovery",
+        "private": false
+      }
+    ],
+    "sender": {
+      "login": "alice",
+      "type": "User",
+      "html_url": "https://github.com/alice"
+    }
+  }
+}

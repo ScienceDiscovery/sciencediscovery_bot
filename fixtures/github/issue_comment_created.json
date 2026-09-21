@@ -1,0 +1,63 @@
+{
+  "provider": "github",
+  "event": "issue_comment",
+  "delivery": "00000000-0000-4000-8000-0000000c0001",
+  "description": "Comment on issue #68 (slash-command style)",
+  "payload": {
+    "action": "created",
+    "issue": {
+      "number": 68,
+      "title": "论文全文阅读器在长 PDF 上超时",
+      "state": "open",
+      "html_url": "https://github.com/openJiuwen-ai/sciencediscovery/issues/68",
+      "user": {
+        "login": "alice",
+        "type": "User",
+        "html_url": "https://github.com/alice"
+      },
+      "labels": [
+        {
+          "name": "bug",
+          "color": "d73a4a"
+        }
+      ],
+      "assignees": [],
+      "comments": 1,
+      "body": "打开 60 页以上的 PDF 时 reader 在 30 s 后超时。",
+      "created_at": "2026-09-21T02:00:00Z",
+      "updated_at": "2026-09-21T02:00:00Z",
+      "closed_at": null
+    },
+    "comment": {
+      "id": 2200001,
+      "html_url": "https://github.com/openJiuwen-ai/sciencediscovery/issues/68#issuecomment-2200001",
+      "user": {
+        "login": "bob",
+        "type": "User",
+        "html_url": "https://github.com/bob"
+      },
+      "body": "/analyze 请看一下是不是 pdf.js worker 的问题",
+      "created_at": "2026-09-21T04:00:00Z"
+    },
+    "repository": {
+      "id": 1001,
+      "name": "sciencediscovery",
+      "full_name": "openJiuwen-ai/sciencediscovery",
+      "html_url": "https://github.com/openJiuwen-ai/sciencediscovery",
+      "default_branch": "main",
+      "owner": {
+        "login": "openJiuwen-ai",
+        "type": "Organization"
+      }
+    },
+    "sender": {
+      "login": "bob",
+      "type": "User",
+      "html_url": "https://github.com/bob"
+    },
+    "installation": {
+      "id": 12345678,
+      "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9u"
+    }
+  }
+}

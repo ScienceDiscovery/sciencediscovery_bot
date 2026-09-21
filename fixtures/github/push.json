@@ -1,0 +1,60 @@
+{
+  "provider": "github",
+  "event": "push",
+  "delivery": "00000000-0000-4000-8000-0000000u0001",
+  "description": "Push to main (the merge commit of PR #51)",
+  "payload": {
+    "ref": "refs/heads/main",
+    "before": "0011223344556677889900aabbccddeeff001122",
+    "after": "c3d4e5f60718293a4b5c6d7e8f90011223344a5b",
+    "created": false,
+    "deleted": false,
+    "forced": false,
+    "compare": "https://github.com/openJiuwen-ai/sciencediscovery/compare/001122334455...c3d4e5f60718",
+    "pusher": {
+      "name": "alice",
+      "email": "alice@example.invalid"
+    },
+    "commits": [
+      {
+        "id": "c3d4e5f60718293a4b5c6d7e8f90011223344a5b",
+        "message": "reader: 分块加载长 PDF 避免超时 (#51)",
+        "timestamp": "2026-09-21T08:00:00Z",
+        "url": "https://github.com/openJiuwen-ai/sciencediscovery/commit/c3d4e5f60718293a4b5c6d7e8f90011223344a5b",
+        "author": {
+          "name": "bob",
+          "email": "bob@example.invalid"
+        },
+        "added": [],
+        "removed": [],
+        "modified": [
+          "src/reader/pdf.ts"
+        ]
+      }
+    ],
+    "head_commit": {
+      "id": "c3d4e5f60718293a4b5c6d7e8f90011223344a5b",
+      "message": "reader: 分块加载长 PDF 避免超时 (#51)"
+    },
+    "repository": {
+      "id": 1001,
+      "name": "sciencediscovery",
+      "full_name": "openJiuwen-ai/sciencediscovery",
+      "html_url": "https://github.com/openJiuwen-ai/sciencediscovery",
+      "default_branch": "main",
+      "owner": {
+        "login": "openJiuwen-ai",
+        "type": "Organization"
+      }
+    },
+    "sender": {
+      "login": "alice",
+      "type": "User",
+      "html_url": "https://github.com/alice"
+    },
+    "installation": {
+      "id": 12345678,
+      "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9u"
+    }
+  }
+}

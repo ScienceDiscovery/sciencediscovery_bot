@@ -1,0 +1,101 @@
+{
+  "provider": "gitcode",
+  "event": "Merge Request Hook",
+  "delivery": "gc-mr-0002",
+  "description": "GitCode MR !27 update with oldrev set = new commits pushed (maps to synchronize)",
+  "payload": {
+    "produce_random_id": "111111110000400080000000000m0002",
+    "event_type": "merge_request",
+    "object_kind": "merge_request",
+    "object_attributes": {
+      "id": 6830111,
+      "iid": 27,
+      "title": "board: 增加优先级列",
+      "description": "Closes #123",
+      "state": "opened",
+      "action": "update",
+      "created_at": "2026-09-21T11:00:00+08:00",
+      "updated_at": "2026-09-21T11:00:00+08:00",
+      "work_in_progress": false,
+      "merge_status": "unchecked",
+      "merge_when_pipeline_succeeds": false,
+      "source_branch": "feat/board-priority",
+      "target_branch": "main",
+      "source_project_id": 2210001,
+      "target_project_id": 2210001,
+      "author_id": 173794,
+      "url": "https://gitcode.com/openJiuwen/sciencediscovery/merge_requests/27",
+      "need_review": true,
+      "need_test": false,
+      "conflict": false,
+      "total_time_spent": 0,
+      "merge_params": {
+        "force_remove_source_branch": false
+      },
+      "reviewer_list": [
+        {
+          "id": 173795,
+          "name": "bob",
+          "username": "bob",
+          "email": "bob@example.invalid",
+          "avatar_url": "https://cdn-img.gitcode.com/avatar.png"
+        }
+      ],
+      "assignee_list": [],
+      "oldrev": "23adec6d9afeb011992b73d700c854ee9388205f",
+      "update_reason": "new commits",
+      "last_commit": {
+        "id": "34bedf7e0bfc122aa3c84e811d965ff0a4993161",
+        "message": "board: 修复排序",
+        "timestamp": "2026-09-21T04:10:00Z",
+        "url": "https://gitcode.com/openJiuwen/sciencediscovery/commits/detail/34bedf7e0bfc122aa3c84e811d965ff0a4993161",
+        "author": {
+          "name": "alice",
+          "email": "alice@example.invalid"
+        }
+      },
+      "author": {
+        "id": 173794,
+        "name": "alice",
+        "username": "alice",
+        "email": "alice@example.invalid",
+        "avatar_url": "https://cdn-img.gitcode.com/avatar.png"
+      }
+    },
+    "project": {
+      "id": 2210001,
+      "name": "sciencediscovery",
+      "web_url": "https://gitcode.com/openJiuwen/sciencediscovery",
+      "git_ssh_url": "git@gitcode.com:openJiuwen/sciencediscovery.git",
+      "git_http_url": "https://gitcode.com/openJiuwen/sciencediscovery.git",
+      "namespace": "openJiuwen",
+      "visibility_level": 1,
+      "path_with_namespace": "openJiuwen/sciencediscovery",
+      "default_branch": "main",
+      "homepage": "https://gitcode.com/openJiuwen/sciencediscovery"
+    },
+    "repository": {
+      "name": "sciencediscovery",
+      "url": "git@gitcode.com:openJiuwen/sciencediscovery.git",
+      "homepage": "https://gitcode.com/openJiuwen/sciencediscovery",
+      "git_http_url": "https://gitcode.com/openJiuwen/sciencediscovery.git",
+      "git_ssh_url": "git@gitcode.com:openJiuwen/sciencediscovery.git",
+      "visibility_level": 1
+    },
+    "user": {
+      "id": 173794,
+      "name": "alice",
+      "username": "alice",
+      "email": "alice@example.invalid",
+      "avatar_url": "https://cdn-img.gitcode.com/avatar.png"
+    },
+    "manual_build": false,
+    "labels": [],
+    "uuid": "11111111-0000-4000-8000-0000000m0002",
+    "changes": {
+      "updated_at": {
+        "current": "2026-09-21T12:10:00+08:00"
+      }
+    }
+  }
+}

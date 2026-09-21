@@ -1,0 +1,64 @@
+{
+  "provider": "gitcode",
+  "event": "Push Hook",
+  "delivery": "gc-push-0001",
+  "description": "GitCode push to main (Push Hook)",
+  "payload": {
+    "object_kind": "push",
+    "event_name": "push",
+    "before": "d55f9d34de9537bddaae80d6dcfe07aaa15e957a",
+    "after": "34bedf7e0bfc122aa3c84e811d965ff0a4993161",
+    "ref": "refs/heads/main",
+    "checkout_sha": "34bedf7e0bfc122aa3c84e811d965ff0a4993161",
+    "message": "",
+    "user_id": 173794,
+    "user_name": "alice",
+    "user_username": "alice",
+    "user_email": "",
+    "user_avatar": "https://cdn-img.gitcode.com/avatar.png",
+    "project_id": 2210001,
+    "project": {
+      "id": 2210001,
+      "name": "sciencediscovery",
+      "web_url": "https://gitcode.com/openJiuwen/sciencediscovery",
+      "git_ssh_url": "git@gitcode.com:openJiuwen/sciencediscovery.git",
+      "git_http_url": "https://gitcode.com/openJiuwen/sciencediscovery.git",
+      "namespace": "openJiuwen",
+      "visibility_level": 1,
+      "path_with_namespace": "openJiuwen/sciencediscovery",
+      "default_branch": "main",
+      "homepage": "https://gitcode.com/openJiuwen/sciencediscovery"
+    },
+    "commits": [
+      {
+        "id": "34bedf7e0bfc122aa3c84e811d965ff0a4993161",
+        "message": "board: 增加优先级列 (!27)",
+        "timestamp": "2026-09-21T04:20:00Z",
+        "url": "https://gitcode.com/openJiuwen/sciencediscovery/commits/detail/34bedf7e0bfc122aa3c84e811d965ff0a4993161",
+        "author": {
+          "name": "alice",
+          "email": "alice@example.invalid"
+        },
+        "added": [],
+        "removed": [],
+        "modified": [
+          "issue_board/board.py"
+        ]
+      }
+    ],
+    "total_commits_count": 1,
+    "push_options": [],
+    "repository": {
+      "name": "sciencediscovery",
+      "url": "git@gitcode.com:openJiuwen/sciencediscovery.git",
+      "homepage": "https://gitcode.com/openJiuwen/sciencediscovery",
+      "git_http_url": "https://gitcode.com/openJiuwen/sciencediscovery.git",
+      "git_ssh_url": "git@gitcode.com:openJiuwen/sciencediscovery.git",
+      "visibility_level": 1
+    },
+    "git_branch": "main",
+    "git_commit_no": "34bedf7e0bfc122aa3c84e811d965ff0a4993161",
+    "manual_build": false,
+    "uuid": "11111111-0000-4000-8000-0000000u0001"
+  }
+}

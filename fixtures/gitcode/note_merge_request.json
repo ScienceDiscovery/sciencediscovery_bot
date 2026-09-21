@@ -1,0 +1,113 @@
+{
+  "provider": "gitcode",
+  "event": "Note Hook",
+  "delivery": "gc-note-0002",
+  "description": "GitCode comment on MR !27 (Note Hook, noteable_type=MergeRequest)",
+  "payload": {
+    "object_kind": "note",
+    "event_type": "note",
+    "user": {
+      "id": 173795,
+      "name": "bob",
+      "username": "bob",
+      "email": "bob@example.invalid",
+      "avatar_url": "https://cdn-img.gitcode.com/avatar.png"
+    },
+    "project_id": 2210001,
+    "project": {
+      "id": 2210001,
+      "name": "sciencediscovery",
+      "web_url": "https://gitcode.com/openJiuwen/sciencediscovery",
+      "git_ssh_url": "git@gitcode.com:openJiuwen/sciencediscovery.git",
+      "git_http_url": "https://gitcode.com/openJiuwen/sciencediscovery.git",
+      "namespace": "openJiuwen",
+      "visibility_level": 1,
+      "path_with_namespace": "openJiuwen/sciencediscovery",
+      "default_branch": "main",
+      "homepage": "https://gitcode.com/openJiuwen/sciencediscovery"
+    },
+    "object_attributes": {
+      "author_id": 173795,
+      "change_position": {},
+      "created_at": "2026-09-21T12:30:00+08:00",
+      "discussion_id": "f88d5fc2e14fc2a55efebff4a0e2e9b6a8a3c27f",
+      "id": 96281183,
+      "note": "LGTM，等 CI",
+      "noteable_id": 6830111,
+      "noteable_type": "MergeRequest",
+      "original_position": {},
+      "position": {},
+      "project_id": 2210001,
+      "system": false,
+      "type": "DiscussionNote",
+      "updated_at": "2026-09-21T12:30:00+08:00",
+      "description": "LGTM，等 CI",
+      "url": "https://gitcode.com/openJiuwen/sciencediscovery/merge_requests/27#note_abc"
+    },
+    "repository": {
+      "name": "sciencediscovery",
+      "url": "git@gitcode.com:openJiuwen/sciencediscovery.git",
+      "homepage": "https://gitcode.com/openJiuwen/sciencediscovery",
+      "git_http_url": "https://gitcode.com/openJiuwen/sciencediscovery.git",
+      "git_ssh_url": "git@gitcode.com:openJiuwen/sciencediscovery.git",
+      "visibility_level": 1
+    },
+    "merge_request": {
+      "id": 6830111,
+      "iid": 27,
+      "title": "board: 增加优先级列",
+      "description": "Closes #123",
+      "state": "opened",
+      "created_at": "2026-09-21T11:00:00+08:00",
+      "updated_at": "2026-09-21T11:00:00+08:00",
+      "work_in_progress": false,
+      "merge_status": "unchecked",
+      "merge_when_pipeline_succeeds": false,
+      "source_branch": "feat/board-priority",
+      "target_branch": "main",
+      "source_project_id": 2210001,
+      "target_project_id": 2210001,
+      "author_id": 173794,
+      "url": "https://gitcode.com/openJiuwen/sciencediscovery/merge_requests/27",
+      "need_review": true,
+      "need_test": false,
+      "conflict": false,
+      "total_time_spent": 0,
+      "merge_params": {
+        "force_remove_source_branch": false
+      },
+      "reviewer_list": [
+        {
+          "id": 173795,
+          "name": "bob",
+          "username": "bob",
+          "email": "bob@example.invalid",
+          "avatar_url": "https://cdn-img.gitcode.com/avatar.png"
+        }
+      ],
+      "assignee_list": [],
+      "oldrev": "",
+      "update_reason": "",
+      "last_commit": {
+        "id": "23adec6d9afeb011992b73d700c854ee9388205f",
+        "message": "board: 增加优先级列",
+        "timestamp": "2026-09-21T02:58:00Z",
+        "url": "https://gitcode.com/openJiuwen/sciencediscovery/commits/detail/23adec6d9afeb011992b73d700c854ee9388205f",
+        "author": {
+          "name": "alice",
+          "email": "alice@example.invalid"
+        }
+      },
+      "author": {
+        "id": 173794,
+        "name": "alice",
+        "username": "alice",
+        "email": "alice@example.invalid",
+        "avatar_url": "https://cdn-img.gitcode.com/avatar.png"
+      }
+    },
+    "produce_random_id": "cbb9c2092e644d9c98e5ba0f08cd9b21",
+    "manual_build": false,
+    "uuid": "11111111-0000-4000-8000-0000000n0002"
+  }
+}

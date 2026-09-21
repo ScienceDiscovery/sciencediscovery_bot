@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>sciencediscovery-bot 管理面板</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --fg: #1f2328; --muted: #656d76; --line: #d0d7de; --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700; --bg: #f6f8fa; }
+  body { margin: 0; font: 14px/1.5 -apple-system, "Segoe UI", Roboto, "PingFang SC", "Noto Sans CJK SC", sans-serif; color: var(--fg); }
+  header { padding: 12px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  header .muted { color: var(--muted); }
+  main { padding: 16px 20px; display: grid; gap: 16px; }
+  main > * { min-width: 0; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; background: var(--bg); }
+  .card .k { color: var(--muted); font-size: 12px; }
+  .card .v { font-size: 20px; font-weight: 600; }
+  .card .s { font-size: 12px; color: var(--muted); }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: #fff; }
+  td.title { white-space: normal; max-width: 420px; }
+  code { font-size: 12px; background: var(--bg); padding: 1px 4px; border-radius: 3px; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .filters input, .filters select { padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+  button { padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; background: #fff; cursor: pointer; font: inherit; }
+  button:hover { background: var(--bg); }
+  #banner { display: none; padding: 8px 12px; border: 1px solid var(--bad); color: var(--bad); border-radius: 6px; }
+  details pre { margin: 4px 0 0; font-size: 12px; white-space: pre-wrap; max-width: 80ch; }
+  .table-scroll { overflow-x: auto; }
+  .pager, .detail-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+  button:disabled { opacity: .5; cursor: default; }
+  dialog { width: min(1120px, calc(100vw - 48px)); max-height: calc(100vh - 48px); box-sizing: border-box; padding: 20px; border: 1px solid var(--line); border-radius: 8px; }
+  dialog::backdrop { background: #0006; }
+  .detail-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .detail-title h2 { margin: 0; font-size: 18px; }
+  #detail-meta { overflow-wrap: anywhere; white-space: pre-line; }
+  #detail-note { color: var(--warn); }
+  .exchange { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+  .exchange pre { margin: 8px 0; padding: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 48vh; font: 12px/1.6 ui-monospace, monospace; }
+  .exchange h3 { font-size: 15px; margin: 8px 0; }
+  @media (max-width: 700px) { .exchange { grid-template-columns: 1fr; } .exchange pre { max-height: 26vh; } dialog { padding: 14px; width: calc(100vw - 24px); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>sciencediscovery-bot</h1>
+  <span id="listeners" class="muted"></span>
+  <span id="timezone" class="muted"></span>
+  <span id="clock" class="muted"></span>
+</header>
+<main>
+  <div id="banner"></div>
+  <section class="cards" id="cards"></section>
+  <section>
+    <div class="filters">
+      <label>kind <select id="f-kind"><option value="">全部</option></select></label>
+      <label>status <select id="f-status"><option value="">全部</option><option>accepted</option><option>rejected</option><option>ignored</option></select></label>
+      <label>route <input id="f-route" placeholder="pull_request.merged" size="22"></label>
+      <label>number <input id="f-number" size="6"></label>
+      <label>limit <input id="f-limit" value="100" size="4"></label>
+      <button id="reload">刷新</button>
+      <span class="muted">每 10 s 自动刷新；重放 = 把已存 payload 以新 delivery id 再送入管道</span>
+    </div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>时间（本地）</th><th>状态</th><th>平台</th><th>route</th><th>repo</th><th>#</th><th>标题 / 原因</th><th>hooks</th><th>验签</th><th>delivery</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+    <div class="pager">
+      <button id="previous-page" disabled>上一页</button>
+      <span id="page-info" aria-live="polite"></span>
+      <button id="next-page" disabled>下一页</button>
+    </div>
+  </section>
+</main>
+<dialog id="delivery-detail" aria-labelledby="detail-title">
+  <div class="detail-title"><h2 id="detail-title">Webhook 投递详情</h2><button id="close-detail">关闭</button></div>
+  <p id="detail-meta"></p>
+  <p id="detail-note" role="status"></p>
+  <div class="detail-toolbar"><label><input id="pretty-json" type="checkbox" checked> 格式化 JSON</label></div>
+  <div class="exchange">
+    <section><h3>请求内容</h3><details><summary>请求头（凭据已脱敏）</summary><pre id="request-headers"></pre></details><pre id="request-body"></pre></section>
+    <section><h3 id="response-title">返回内容</h3><details><summary>返回头</summary><pre id="response-headers"></pre></details><pre id="response-body"></pre></section>
+  </div>
+</dialog>
+<script>
+const $ = (s) => document.querySelector(s);
+const KINDS = ["ping", "issue", "issue_comment", "pull_request", "pull_request_review", "push", "installation", "unknown"];
+for (const k of KINDS) $("#f-kind").append(new Option(k, k));
+const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+// Fragments are not sent over HTTP. Keep the token in memory after loading.
+if (token) history.replaceState(null, "", location.pathname);
+const headers = token ? { Authorization: "Bearer " + token } : {};
+let offset = 0, pageSize = 100, listRequest = 0, detailRequest = 0, currentDetail = null;
+const eventTimeFormat = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+});
+$("#timezone").textContent = "时间显示：" + eventTimeFormat.resolvedOptions().timeZone;
+
+function eventTime(value) {
+  if (!value) return "—";
+  // Stored offsets use +0000; normalize to the ISO +00:00 spelling for browsers.
+  const iso = String(value).replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  if (!/(Z|[+-]\d{2}:\d{2})$/i.test(iso)) return String(value);
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? String(value) : eventTimeFormat.format(date);
+}
+
+async function api(path, opts = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const r = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) }, signal: ctrl.signal, cache: "no-store" });
+    const doc = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(doc.error || ("HTTP " + r.status));
+    return doc;
+  } finally { clearTimeout(timer); }
+}
+
+function card(k, v, s, cls) { return `<div class="card"><div class="k">${esc(k)}</div><div class="v ${cls || ""}">${esc(v)}</div><div class="s">${esc(s)}</div></div>`; }
+
+async function loadStatus() {
+  const st = await api("/api/status");
+  const c = st.config, counts = st.counts;
+  $("#listeners").textContent = `webhook ${c.webhook.host}:${c.webhook.port} · admin ${c.admin.host}:${c.admin.port}${c.admin.token_required ? " (token)" : ""} · v${st.version}`;
+  const secretCards = Object.entries(c.providers).map(([p, v]) =>
+    card(p + " 密钥", v.secret_configured ? "已配置" : "未配置", v.secret_configured ? "HMAC 验签开启" : "接受未签名投递", v.secret_configured ? "ok" : "bad")).join("");
+  const routes = Object.entries(counts.by_route || {}).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([r, n]) => `${r} ${n}`).join(" · ");
+  $("#cards").innerHTML = secretCards
+    + card("accepted", counts.accepted, routes, "ok")
+    + card("rejected", counts.rejected, "验签失败 / 坏请求", counts.rejected ? "bad" : "")
+    + card("ignored / duplicate", `${counts.ignored} / ${counts.duplicate}`, "不在 SDBOT_REPOS / 平台重投", "")
+    + card("跟踪仓库", c.repos.length ? c.repos.join(", ") : "全部", "SDBOT_REPOS", "")
+    + card("投递留存", "全部记录", `请求正文上限 ${Math.round(c.payload_max_bytes / 1024 / 1024)} MB；超限标记不完整`, "");
+}
+
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch])); }
+
+async function loadEvents() {
+  const requestId = ++listRequest;
+  const q = new URLSearchParams();
+  for (const [k, id] of [["kind", "#f-kind"], ["status", "#f-status"], ["route", "#f-route"], ["number", "#f-number"], ["limit", "#f-limit"]]) {
+    const v = $(id).value.trim(); if (v) q.set(k, v);
+  }
+  q.set("offset", offset);
+  const doc = await api("/api/events?" + q.toString());
+  if (requestId !== listRequest) return;
+  pageSize = Math.max(1, Math.min(Number(q.get("limit")) || 50, 500));
+  $("#previous-page").disabled = offset === 0;
+  $("#next-page").disabled = !doc.has_more;
+  $("#page-info").textContent = doc.count ? `第 ${offset + 1}–${offset + doc.count} 条${offset ? " · 浏览历史时暂停自动刷新" : ""}` : "没有匹配的事件";
+  $("#rows").innerHTML = doc.events.map((e) => {
+    const cls = e.status === "accepted" ? (e.duplicate ? "warn" : "ok") : "bad";
+    const title = e.status === "rejected" ? `${esc(e.reason)} (HTTP ${e.http_status})` : esc(e.title || e.note || "");
+    const hooks = (e.hooks || []).join(", ") + ((e.errors || []).length ? ` <span class="bad">errors ${e.errors.length}</span>` : "");
+    const link = /^https?:\/\//i.test(e.url || "") ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.number ?? "")}</a>` : esc(e.number ?? "");
+    const id = e.record_id || e.delivery_id;
+    const replay = e.payload_file && e.body_complete !== false && ["github", "gitcode"].includes(e.provider) ? `<button data-id="${esc(id)}" class="replay">重放</button>` : "";
+    const detail = `<button data-id="${esc(id)}" class="detail">查看详情</button>`;
+    return `<tr><td title="${esc(e.received_at || "")}">${esc(eventTime(e.received_at))}</td><td class="${cls}">${esc(e.status)}${e.duplicate ? " (dup)" : ""}</td>`
+      + `<td>${esc(e.provider)}</td><td><code>${esc(e.route)}</code></td><td>${esc(e.repo)}</td><td>${link}</td><td class="title">${title}</td>`
+      + `<td>${hooks}</td><td>${esc(e.verification || "")}</td><td><code>${esc((e.delivery_id || "").slice(0, 18))}</code></td><td>${detail} ${replay}</td></tr>`;
+  }).join("") || `<tr><td colspan="11" class="muted">没有匹配的事件</td></tr>`;
+}
+
+function renderBodies() {
+  if (!currentDetail) return;
+  const format = (text) => {
+    if (text == null) return "未保存";
+    if ($("#pretty-json").checked) { try { return JSON.stringify(JSON.parse(text), null, 2); } catch {} }
+    return text;
+  };
+  $("#request-body").textContent = format(currentDetail.request.body);
+  $("#response-body").textContent = format(currentDetail.response?.body);
+}
+
+async function openDetail(id) {
+  const requestId = ++detailRequest;
+  currentDetail = null;
+  $("#detail-meta").textContent = "正在加载…";
+  $("#detail-meta").title = "";
+  $("#detail-note").textContent = "";
+  $("#response-title").textContent = "返回内容";
+  for (const key of ["request-body", "response-body", "request-headers", "response-headers"]) $("#" + key).textContent = "";
+  $("#delivery-detail").showModal();
+  try {
+    const doc = await api("/api/events/" + encodeURIComponent(id));
+    if (requestId !== detailRequest) return;
+    currentDetail = doc;
+    const r = doc.record, req = doc.request, res = doc.response;
+    $("#detail-meta").textContent = `${eventTime(r.received_at)} · ${req.method || "未知方法"} ${req.path || "历史路径未保存"}\n投递 ${r.delivery_id || "无平台 ID"} · 记录 ${r.record_id}`;
+    $("#detail-meta").title = r.received_at || "";
+    const notes = [];
+    if (doc.legacy) notes.push("历史记录未保存请求头和返回内容；已有的请求正文仍可查看。");
+    if (!req.body_available) notes.push("请求正文未保存或文件已不可用。");
+    if (req.body_complete === false) notes.push(`请求正文不完整：${req.capture_note || "未完整接收"}；已保存 ${req.body_bytes} 字节。`);
+    if (req.body_encoding === "base64") notes.push("请求不是 UTF-8 文本，以下以 Base64 显示原始字节。");
+    if (req.source === "replay") notes.push("这是管理重放产生的新记录，返回内容为处理管道结果。");
+    $("#detail-note").textContent = notes.join(" ");
+    $("#response-title").textContent = res ? `返回内容 · HTTP ${res.status}` : "返回内容 · 历史记录未保存";
+    $("#request-headers").textContent = req.headers ? JSON.stringify(req.headers, null, 2) : "历史记录未保存";
+    $("#response-headers").textContent = res ? JSON.stringify(res.headers, null, 2) : "历史记录未保存";
+    renderBodies();
+  } catch (err) {
+    if (requestId === detailRequest) $("#detail-meta").textContent = "加载失败：" + err.message;
+  }
+}
+
+$("#close-detail").addEventListener("click", () => $("#delivery-detail").close());
+$("#delivery-detail").addEventListener("close", () => { ++detailRequest; currentDetail = null; });
+$("#pretty-json").addEventListener("change", renderBodies);
+document.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("button.detail");
+  if (btn) openDetail(btn.dataset.id);
+});
+
+async function refresh() {
+  try {
+    await Promise.all([loadStatus(), loadEvents()]);
+    $("#banner").style.display = "none";
+    $("#clock").textContent = "更新于 " + new Date().toLocaleTimeString();
+  } catch (err) {
+    $("#banner").textContent = "读取失败：" + err.message + (token ? "" : "（若设置了 SDBOT_ADMIN_TOKEN，在地址后加 #token=…）");
+    $("#banner").style.display = "block";
+  }
+}
+
+document.addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button.replay");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const doc = await api("/api/replay/" + encodeURIComponent(btn.dataset.id), { method: "POST", headers: { "X-Requested-With": "sciencediscovery-bot" } });
+    btn.textContent = doc.record ? `→ ${doc.record.route}` : "已重放";
+    await loadEvents();
+  } catch (err) {
+    btn.textContent = "失败: " + err.message;
+  } finally { setTimeout(() => { btn.disabled = false; btn.textContent = "重放"; }, 3000); }
+});
+$("#reload").addEventListener("click", refresh);
+for (const id of ["#f-kind", "#f-status", "#f-route", "#f-number", "#f-limit"]) $(id).addEventListener("change", () => { offset = 0; refresh(); });
+$("#previous-page").addEventListener("click", () => { offset = Math.max(0, offset - pageSize); refresh(); });
+$("#next-page").addEventListener("click", () => { offset += pageSize; refresh(); });
+refresh();
+setInterval(() => { if (!offset && !document.hidden) refresh(); }, 10000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !offset) refresh(); });
+</script>
+</body>
+</html>
