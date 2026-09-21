@@ -13,6 +13,7 @@ in memory and are never written to the event log, payload files, ``/api/status``
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -70,6 +71,12 @@ class Config:
     log_level: str = "INFO"
     secrets: dict[str, str] = field(default_factory=dict, repr=False)  # provider -> secret, memory only
     admin_token: str = field(default="", repr=False)                    # optional bearer token for the admin listener
+    board_repo: str = ""
+    board_track_repo: str = ""
+    board_source_dir: Path = ROOT.parent / "github_status_board"
+    board_token: str = field(default="", repr=False)
+    board_debounce: int = 20
+    board_refresh: int = 3600
 
     @classmethod
     def from_env(cls, **overrides) -> "Config":
@@ -84,6 +91,12 @@ class Config:
             dedupe_window=_int("SDBOT_DEDUPE_WINDOW", cls.dedupe_window),
             log_level=os.environ.get("SDBOT_LOG_LEVEL", cls.log_level).upper(),
             admin_token=os.environ.get("SDBOT_ADMIN_TOKEN", "").strip(),
+            board_repo=os.environ.get("SDBOT_BOARD_REPO", "").strip(),
+            board_track_repo=os.environ.get("SDBOT_BOARD_TRACK_REPO", "").strip(),
+            board_source_dir=Path(_str("SDBOT_BOARD_SOURCE_DIR", str(cls.board_source_dir))),
+            board_token=os.environ.get("SDBOT_BOARD_GITHUB_TOKEN", "").strip(),
+            board_debounce=_int("SDBOT_BOARD_DEBOUNCE", 20),
+            board_refresh=_int("SDBOT_BOARD_REFRESH", 3600),
         )
         data = os.environ.get("SDBOT_DATA_DIR")
         if data:
@@ -104,6 +117,15 @@ class Config:
     def validate(self) -> list[str]:
         """Human-readable reasons the process must refuse to start (empty = fine)."""
         problems = []
+        if self.board_repo:
+            if not all(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", r) for r in (self.board_repo, self.board_track_repo)):
+                problems.append("board repositories must be owner/name")
+            if not self.board_token or not self.secret_for("github"):
+                problems.append("board publishing requires a GitHub token and GitHub webhook secret")
+            if not (self.board_source_dir / "publish.py").is_file():
+                problems.append("board publisher script is missing")
+            if self.board_debounce < 1 or self.board_refresh < 60:
+                problems.append("board debounce must be >=1s and refresh >=60s")
         if self.max_body_bytes <= 0:
             problems.append("SDBOT_MAX_BODY_MB must be positive")
         if self.dedupe_window < 0:

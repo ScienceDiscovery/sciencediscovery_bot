@@ -1,0 +1,12 @@
+# Optional static GitHub Pages publisher. Use together with docker-compose.yml.
+services:
+  bot:
+    environment:
+      SDBOT_BOARD_REPO: ${SDBOT_BOARD_REPO:-}
+      SDBOT_BOARD_TRACK_REPO: ${SDBOT_BOARD_TRACK_REPO:-}
+      SDBOT_BOARD_GITHUB_TOKEN: ${SDBOT_BOARD_GITHUB_TOKEN:-}
+      SDBOT_BOARD_SOURCE_DIR: /opt/github-status-board
+      SDBOT_BOARD_DEBOUNCE: ${SDBOT_BOARD_DEBOUNCE:-20}
+      SDBOT_BOARD_REFRESH: ${SDBOT_BOARD_REFRESH:-3600}
+    volumes:
+      - ${SDBOT_BOARD_SOURCE_DIR_HOST:-../github_status_board}:/opt/github-status-board:ro

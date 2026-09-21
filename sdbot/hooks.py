@@ -84,3 +84,6 @@ class BoardUpdater(Hook):
 
     def on_push(self, event: Event) -> dict:
         return self._noop("on_push", event)
+
+    def on_quality(self, event: Event) -> dict:
+        return self._noop("on_quality", event)

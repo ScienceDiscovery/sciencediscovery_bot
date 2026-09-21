@@ -46,6 +46,7 @@ from sdbot.pipeline import Pipeline  # noqa: E402
 from sdbot.router import Router  # noqa: E402
 from sdbot.signature import sign  # noqa: E402
 from sdbot.store import EventStore, json_bytes  # noqa: E402
+from sdbot.board import StaticBoardUpdater  # noqa: E402
 
 log = logging.getLogger("sdbot.server")
 ADMIN_WRITE_MARKER = "sciencediscovery-bot"                 # X-Requested-With value required on admin POSTs
@@ -242,7 +243,9 @@ class AdminHandler(JSONHandler):
         if url.path == "/healthz":
             return self._json({"ok": True, "uptime_s": round(time.time() - self.server.started_at, 1)})
         if url.path == "/api/status":
+            board = self.server.pipeline.router.board
             return self._json({"ok": True, "version": __version__, "started_at": self.server.started_at,
+                               "board": board.status() if isinstance(board, StaticBoardUpdater) else {"enabled": False},
                                "config": self.server.cfg.public(), **store.status()})
         if url.path == "/api/events":
             query = {k: v[0] for k, v in parse_qs(url.query).items()}
@@ -316,7 +319,7 @@ class AdminHandler(JSONHandler):
 
 def build(cfg: Config) -> Pipeline:
     store = EventStore(cfg.data_dir, dedupe_window=cfg.dedupe_window)
-    return Pipeline(cfg, store, Router())
+    return Pipeline(cfg, store, Router(board=StaticBoardUpdater(cfg) if cfg.board_repo else None))
 
 
 def serve(cfg: Config, pipeline: Pipeline) -> int:
@@ -326,6 +329,8 @@ def serve(cfg: Config, pipeline: Pipeline) -> int:
           f"admin {'http://%s:%d/' % (cfg.admin_host, cfg.admin_port) if admin else 'disabled'}  "
           f"data={cfg.data_dir}  repos={','.join(cfg.repos) or '*'}", flush=True)
     threads = []
+    if isinstance(pipeline.router.board, StaticBoardUpdater):
+        pipeline.router.board.start()
     if admin:
         threads.append(threading.Thread(target=admin.serve_forever, name="admin", daemon=True))
         threads[-1].start()
@@ -334,6 +339,8 @@ def serve(cfg: Config, pipeline: Pipeline) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if isinstance(pipeline.router.board, StaticBoardUpdater):
+            pipeline.router.board.stop()
         webhook.server_close()
         if admin:
             admin.shutdown()

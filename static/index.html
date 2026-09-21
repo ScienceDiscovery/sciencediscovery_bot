@@ -134,6 +134,11 @@ async function loadStatus() {
     + card("ignored / duplicate", `${counts.ignored} / ${counts.duplicate}`, "不在 SDBOT_REPOS / 平台重投", "")
     + card("跟踪仓库", c.repos.length ? c.repos.join(", ") : "全部", "SDBOT_REPOS", "")
     + card("投递留存", "全部记录", `请求正文上限 ${Math.round(c.payload_max_bytes / 1024 / 1024)} MB；超限标记不完整`, "");
+  if (st.board?.enabled) {
+    const b = st.board;
+    $("#cards").innerHTML += card("静态看板", b.running ? "发布中" : b.pending ? "等待更新" : "已提交发布",
+      `${b.repository} · 最近成功 ${eventTime(b.last_success)}${b.error ? " · 重试中：" + b.error : ""}`, b.error ? "warn" : "ok");
+  }
 }
 
 function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch])); }

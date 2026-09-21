@@ -48,6 +48,8 @@ class Router:
             KIND_PUSH: self.on_push,
             KIND_INSTALLATION: self.on_installation,
         }
+        for kind in ("workflow_run", "workflow_job", "check_run", "check_suite", "status", "release", "create", "delete"):
+            self._handlers[kind] = self.on_quality
 
     def knows(self, kind: str) -> bool:
         return kind in self._handlers
@@ -105,6 +107,9 @@ class Router:
 
     def on_push(self, event: Event, outcome: Outcome) -> None:
         self._call(outcome, self.board.on_push, event)
+
+    def on_quality(self, event: Event, outcome: Outcome) -> None:
+        self._call(outcome, self.board.on_quality, event)
 
     def on_installation(self, event: Event, outcome: Outcome) -> None:
         outcome.note = "installation change recorded; no hook subscribed"

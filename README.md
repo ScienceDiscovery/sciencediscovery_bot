@@ -2,7 +2,7 @@
 
 接收 GitHub App、GitHub 普通组织／仓库 Webhook 和 GitCode 仓库 Webhook，验签后把 issue、PR、merge、评论、push 等事件归一化成统一事件模型，分流到内置 handler 并落盘；为后续「Issue/PR 自动分析检视」和「看板联动更新」预留 hook。组织无法安装 App 时，可直接配置普通 Webhook，无需 App ID、私钥、installation 或 PAT。纯 Python 3 标准库，无第三方依赖；可直接在宿主机跑，也可用 Docker Compose 和 Cloudflare Tunnel 一起跑。
 
-本阶段只有框架：hook 全部 no-op，不发评论、不改看板、不调用 LLM。
+默认只记录事件；可选启用静态 GitHub Pages 看板发布。分析 hook 仍为 no-op，不发评论、不调用 LLM。
 
 ## 两个监听
 
@@ -110,11 +110,23 @@ docker compose down             # 加 -v 同时删事件日志卷 bot-data
 
 同一 `delivery_id` 再次到达（GitHub「Redeliver」或超时重投）会被标记 `duplicate: true` 并跳过 hook，重启后仍能识别（启动时恢复历史计数及近期 delivery ID）。
 
-### Hook（`sdbot/hooks.py`，本阶段 no-op）
+### Hook 与静态看板发布
 
 - `AnalyzeHandler`：未来的 Issue/PR 自动分析检视入口。`on_issue`、`on_issue_comment`（预留 `/analyze` 这类斜杠命令）、`on_pull_request`、`on_pull_request_review`、`on_pull_request_merged`。
-- `BoardUpdater`：未来由 App 或普通 Webhook 事件触发下游看板更新，可按需接入刷新队列与去抖动逻辑。当前只记录调用。
-- 每次调用都返回 `{"hook","method","status":"noop"}`，写进事件日志的 `hooks` 列，所以「hook 被路由器真正调用」在日志里可查。实现时把 no-op 换成真逻辑即可，不需要改管道；hook 抛异常会被路由器捕获并记入 `errors`，不影响响应。
+- `BoardUpdater`：默认只记录调用。配置 `SDBOT_BOARD_REPO` 后由 `StaticBoardUpdater` 接管，后台发布静态看板。
+- 调用结果为 `noop`、`queued` 或 `ignored`，路由和 hook 保存在 admin 事件历史。发布网络请求在后台执行，webhook 不等待 GitHub；失败保留任务并退避重试。
+
+配置示例见 `.env.example`。静态看板源码与 bot 放在相邻目录 `github_status_board`，或用 `SDBOT_BOARD_SOURCE_DIR_HOST` 指定目录。在本地 `.env` 设置发布目标 `SDBOT_BOARD_REPO`、跟踪源 `SDBOT_BOARD_TRACK_REPO` 和专用 `SDBOT_BOARD_GITHUB_TOKEN`，再运行：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.board.yml up -d --build
+```
+
+发布只接受跟踪仓库的 GitHub 事件。启用时必须配置 GitHub webhook secret 和发布 Token；Token 需要源仓库 Issues / Pull requests / Actions 读权限与目标 Contents 写权限。看板发布器只导出公开仓库。宿主机运行时使用相同环境变量，`SDBOT_BOARD_SOURCE_DIR` 指向看板源码。
+
+Issue、PR、评审、push 以及 `workflow_run`、`workflow_job`、`check_run`、`check_suite`、`status`、`release`、`create`、`delete` 会触发更新。默认 20 秒合并事件、每次发布至少间隔 60 秒；失败 30～600 秒退避，启动和每小时执行兜底采集。`board-publication.json` 持久化队列，重启可继续。admin `/api/status` 的 `board` 字段和管理面板显示待更新／发布中、上次成功和错误类别；公开 webhook 的响应保持不变。GitHub Pages 在提交之后还需要部署时间。
+
+目标仓库需首次配置 Pages 从 `gh-pages` 根目录部署。站点仅含静态文件与汇总数据，不暴露 bot 管理端口、凭据、日志或本地部署信息。配置可取消以恢复只收事件模式，历史事件仍保留。
 
 ## 落盘（`.data/`，容器内 `/data`）
 

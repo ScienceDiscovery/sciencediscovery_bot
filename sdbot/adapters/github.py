@@ -26,6 +26,8 @@ KIND_BY_EVENT = {
     "installation": KIND_INSTALLATION,
     "installation_repositories": KIND_INSTALLATION,
 }
+for _quality in ("workflow_run", "workflow_job", "check_run", "check_suite", "status", "release", "create", "delete"):
+    KIND_BY_EVENT[_quality] = _quality
 
 
 def _login(obj) -> str:
