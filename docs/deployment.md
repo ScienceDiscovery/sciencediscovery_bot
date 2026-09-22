@@ -2,12 +2,10 @@
 
 ## 宿主机
 
-Python 3.10+。Webhook 接收使用标准库；GitHub App 发布使用 requirements.txt 中固定的 cryptography。在仓库目录准备本地 `.env`，只在本地填写密钥，然后加载环境：
+Node.js 22+、npm。Bot 没有生产 npm 依赖，验签和 App RSA 签名使用 Web Crypto；只有启用外部看板采集器时需要宿主 Python 3。准备本地 `.env`，只在本地填写密钥，然后加载环境：
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python3 -m pip install -r requirements.txt
+npm ci --cache .tmp/npm-cache
 cp .env.example .env
 # 编辑 .env 后
 set -a
@@ -19,7 +17,7 @@ set +a
 # ./run.sh restart
 ```
 
-server.py 只读取环境变量，run.sh 不替你读取 `.env`。前台启动可用 `python3 server.py`，命令行可覆盖 webhook／admin host、port、数据目录，或使用 `--no-admin`。`.run/` 存宿主 PID／日志，`.data/` 存投递，均不入 Git。
+服务只读取环境变量，run.sh 不替你读取 `.env`。run.sh start 自动编译；前台启动可用 `npm run build` 后 `npm start`，开发可用 `npm run dev`。`node dist/node/server.js` 支持 `--webhook-host`、`--webhook-port`、`--admin-host`、`--admin-port`、`--data-dir` 和 `--no-admin`。`.run/` 存宿主 PID／日志，`.data/` 存投递，均不入 Git。
 
 ## Docker Compose 与隧道
 
@@ -69,4 +67,4 @@ Compose 仅传入 compose 文件中显式声明的环境变量；其余参数需
 
 公开健康检查为 `GET http://127.0.0.1:8791/healthz`；管理面板为 `http://127.0.0.1:8792/`。Webhook 端口访问 /api/status、/api/events、/api/listeners 应为最小 404，管理端带 Cf-* 应为 403。配置了管理口令时数据接口需认证。
 
-升级时保留原数据卷，重建并重启 bot，再检查健康和投递详情。更改业务前核对监听点页是否反映实际订阅；监听器注册、远端事件订阅与发布凭据是三项不同配置。
+TypeScript 镜像仍保留 Python 3，仅供单独挂载的看板采集器使用；接收服务及 App 签名不再执行 Python。升级时保留原数据卷，重建并重启 bot，再检查健康和投递详情；旧档案和队列会直接恢复。Cloudflare Workers 的验证与后续部署条件见[运行环境说明](features/typescript-runtime.md)。更改业务前核对监听点页是否反映实际订阅；监听器注册、远端事件订阅与发布凭据是三项不同配置。

@@ -29,4 +29,4 @@ GitHub App 与普通组织／仓库 Webhook 共用 `/webhook/github`，不要求
 
 GitCode Webhook 可选签名或密码模式，配置同样对应本地密钥；当前默认业务范围仅覆盖上述两个 GitHub 仓，GitCode 投递仍可验签和归档。
 
-实现：`server.py` 的 WebhookHandler、`sdbot/signature.py`、`adapters/`、`events.py`、`pipeline.py`。验证：`tests/test_signature.py`、`test_adapters.py`、`test_pipeline.py`、`test_server.py`、`test_repository_scope.py`。
+实现：`src/core/signature.ts`、`events.ts`、`pipeline.ts`、`http.ts` 和 `src/node/server.ts`。验证：`tests-ts/core.test.ts`、`archive-http.test.ts`、`workers.test.ts`。Node 接收器拒绝 Transfer-Encoding，HTTP 解析器拒绝的非法 Content-Length 会记录坏请求；已开始读取的中断正文尽量保存收到的前缀。

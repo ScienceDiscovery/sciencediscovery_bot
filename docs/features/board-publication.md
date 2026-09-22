@@ -9,7 +9,7 @@
 | 正式 | openJiuwen-ai/sciencediscovery | ScienceDiscovery/github-status-board | https://sciencediscovery.github.io/github-status-board/ |
 | 测试 | ScienceDiscovery/sciencediscovery | ScienceDiscovery/github-status-board-test | https://sciencediscovery.github.io/github-status-board-test/ |
 
-未配置发布时，BoardUpdater 为 noop，只记录被调用；管理面板监听点显示“占位”。配置完成后使用 MultiBoardUpdater，监听点显示“已启用”及实际源仓范围。该状态仅表示后台发布业务启用，不能代替目标站点的最近成功时间。
+未配置发布时，NoopBoard 为 noop，只记录被调用；管理面板监听点显示“占位”。配置完成后使用 MultiBoard，监听点显示“已启用”及实际源仓范围。该状态仅表示后台发布业务启用，不能代替目标站点的最近成功时间。
 
 ## 配置和启动
 
@@ -31,7 +31,7 @@ App 必须安装到源仓和目标仓，并获准读取源仓 Metadata / Content
 
 `SDBOT_GITHUB_APP_PRIVATE_KEY` 填 App 设置页生成的 PEM 私钥，仅存本地 `.env` 或环境变量；单行值可用字面的 `\n` 表示换行，并用单引号包住整个值。App ID / Client ID 均可作为 `SDBOT_GITHUB_APP_ID`。Webhook secret 仅用于接收验签，不能替代 App 私钥。不要把密钥粘贴进聊天、提交或日志。
 
-`sdbot/github_app.py` 用 cryptography 做 RS256 签名，通过 GitHub API 按配置的 repository 查找 installation。每次后台发布及重试均重新换取两个短期安装令牌：源仓令牌仅授予该源仓的读取权限，目标令牌仅授予该看板仓的 Metadata read / Contents write。GitHub 安装令牌通常一小时过期，本地要求剩余有效期覆盖十分钟发布期限；不缓存到磁盘。失败按原队列重试，不回退个人 gh 凭据。
+`src/core/github-app.ts` 用 Web Crypto 做 RS256 签名（PKCS#1／PKCS#8），通过 GitHub API 按配置的 repository 查找 installation。每次后台发布及重试均重新换取两个短期安装令牌：源仓令牌仅授予该源仓的读取权限，目标令牌仅授予该看板仓的 Metadata read / Contents write。GitHub 安装令牌通常一小时过期，本地要求剩余有效期覆盖十分钟发布期限；不缓存到磁盘。失败按原队列重试，不回退个人 gh 凭据。
 
 兼容手工部署的 `SDBOT_BOARD_GITHUB_TOKEN`，但它不能与 App ID／私钥模式混用。GitHub webhook secret 仍须配置；启用发布时缺少密钥、凭据、RSA 支持或 publish.py 会拒绝启动。
 
@@ -41,11 +41,11 @@ App 必须安装到源仓和目标仓，并获准读取源仓 Metadata / Content
 
 ## 主要实现
 
-`subscriptions.py` 声明监听事件；普通 PR 更新排除 merge，合并由专门订阅处理。MultiBoardUpdater 根据 source 选择一个 StaticBoardUpdater；每个源与目标组合拥有独立目录、队列文件、工作线程、输出目录和重试状态。
+`src/core/bus.ts` 的 registerBuiltin 声明监听事件；普通 PR 更新排除 merge，合并由专门订阅处理。MultiBoard 根据 source 选择一个 BoardQueue；每个源与目标组合拥有独立目录、队列文件、异步任务、输出目录和重试状态。
 
 默认 20 秒合并事件，单站点发布间隔至少 60 秒；失败按 30～600 秒退避。启动及每小时兜底采集，即使漏收事件也能更新。队列先写盘再返回 queued，进程重启恢复；发布期间新到达的请求保留到下一轮，一站失败不阻断另一站。换目标不会继承旧站点成功状态。
 
-后台以子进程调用 publish.py，最长等待 600 秒，仅传入源仓短期令牌 `GITHUB_TOKEN`、目标短期令牌 `GSB_PUBLISH_TOKEN` 和必要网络环境，不继承 App 私钥、Webhook、admin 或 cloudflared 密钥。成功要求返回提交 SHA，失败只记录错误类别。`board.targets` 分别报告 pending、running、last_success、commit 和 error。提交成功后 Pages 仍有部署延迟。
+`src/node/board.ts` 在后台以 Python 3 子进程调用外部看板项目的 publish.py，最长等待 600 秒，仅传入源仓短期令牌 `GITHUB_TOKEN`、目标短期令牌 `GSB_PUBLISH_TOKEN` 和必要网络环境，不继承 App 私钥、Webhook、admin 或 cloudflared 密钥。成功要求返回提交 SHA，失败只记录错误类别。`board.targets` 分别报告 pending、running、last_success、commit 和 error。提交成功后 Pages 仍有部署延迟。
 
 静态发布器只导出公开源仓与公开目标，基于目标 main 的已有 tree 非强制原子更新 `site/` 内的八个站点文件，保留源码与工作流；来源／目标映射也在看板仓校验。Issue、PR、门禁、每日构建、版本测试与 E2E 计数由真实 API／报告采集。缺失、下载超时或不可解析的测试报告保留未知，不用测试文件数替代通过用例数。具体采集和 UI 说明由[看板仓文档](https://github.com/ScienceDiscovery/github-status-board)维护。
 
@@ -59,4 +59,4 @@ Bot 的提交由 App 安装身份完成，可以触发 push 工作流。`board.t
 
 ## 验证
 
-实现：`sdbot/board.py`、`config.py`、`subscriptions.py`、`docker-compose.board.yml`。测试：`tests/test_github_app.py` 验证 RSA 签名、过期令牌、安装隔离和最小权限；`tests/test_board.py` 验证合并、恢复、重试和凭据边界；`test_repository_scope.py` 验证双仓隔离；`test_bus.py` 验证实际注册范围；监听点浏览器旅程验证双目标状态展示。验收自动更新时需核对排队、提交 SHA 和 Pages 可见内容，不能仅以 Webhook 200 作为发布成功。
+实现：`src/core/board.ts`、`github-app.ts`、`config.ts`、`bus.ts`、`src/node/board.ts`、`docker-compose.board.yml`。`tests-ts/board-app.test.ts` 验证 RSA 签名、过期令牌、安装隔离、最小权限、队列合并／恢复／重试和凭据边界；`core.test.ts` 验证注册与全局范围；监听点浏览器旅程验证双目标状态。验收自动更新时需核对排队、提交 SHA 和 Pages 可见内容，不能仅以 Webhook 200 作为发布成功。Workers 的存储／调度和外部采集器边界见[运行环境说明](typescript-runtime.md)。

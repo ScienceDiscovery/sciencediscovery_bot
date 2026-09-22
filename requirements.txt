@@ -1,2 +1,0 @@
-# GitHub App RSA signing; webhook ingestion itself uses the standard library.
-cryptography==50.0.1

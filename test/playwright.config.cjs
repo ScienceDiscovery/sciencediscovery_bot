@@ -23,11 +23,12 @@ module.exports = defineConfig({
   outputDir: resolve(root, '.e2e/results'), reporter: 'list',
   use: { baseURL: 'http://127.0.0.1:18892', browserName: 'chromium', viewport: { width: 1440, height: 1000 },
     screenshot: 'only-on-failure', trace: 'retain-on-failure' },
-  webServer: { command: 'python3 server.py --webhook-port 18891 --admin-port 18892', cwd: root,
+  webServer: { command: 'node dist/node/server.js --webhook-port 18891 --admin-port 18892', cwd: root,
     url: 'http://127.0.0.1:18891/healthz', reuseExistingServer: false,
     env: { SDBOT_DATA_DIR: data, SDBOT_WEBHOOK_HOST: '127.0.0.1', SDBOT_ADMIN_HOST: '127.0.0.1',
       SDBOT_WEBHOOK_SECRET: process.env.SDBOT_E2E_SECRET, SDBOT_GITHUB_WEBHOOK_SECRET: '', SDBOT_GITCODE_WEBHOOK_SECRET: '',
       SDBOT_BOARD_TARGETS: '', SDBOT_BOARD_REPO: '', SDBOT_BOARD_TRACK_REPO: '', SDBOT_BOARD_GITHUB_TOKEN: '',
+      SDBOT_GITHUB_APP_ID: '', SDBOT_GITHUB_APP_PRIVATE_KEY: '',
       SDBOT_ADMIN_TOKEN: process.env.SDBOT_E2E_ADMIN_TOKEN, SDBOT_REPOS: '', SDBOT_ADMIN_ENABLED: '1' },
     stdout: 'ignore', stderr: 'ignore' }
 });

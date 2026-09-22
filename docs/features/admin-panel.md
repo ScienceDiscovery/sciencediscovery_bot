@@ -29,4 +29,4 @@
 
 事件查询支持 kind、route、repo、number、status、provider、action、delivery_id、offset、limit。页面时间使用浏览器时区，自动处理夏令时；原始正文不变。
 
-实现：`server.py` 的 AdminHandler、`static/index.html`。监听 API 直接读取 `router.bus.inventory()`，没有第二份静态监听清单。验证：`tests/test_bus.py` 的 HTTP 用户旅程、`tests/test_server.py` 和 `test/journey-*.spec.cjs` 的真实浏览器测试。
+实现：`src/core/http.ts`、`src/node/server.ts`、`static/index.html`。监听 API 直接读取 `router.bus.inventory()`，没有第二份静态监听清单。验证：`tests-ts/archive-http.test.ts` 和 `test/journey-*.spec.cjs` 的真实浏览器测试。

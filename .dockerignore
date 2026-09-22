@@ -17,3 +17,8 @@ README.md
 docker-compose.yml
 docker-compose.board.yml
 .venv
+node_modules
+dist
+tests-ts
+.wrangler
+.dev.vars*

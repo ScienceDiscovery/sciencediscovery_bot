@@ -2,7 +2,7 @@
 
 ## 项目与边界
 
-这是以 Python 标准库接收 Webhook 的事件总线，GitHub App RSA 签名使用 cryptography。`server.py` 提供独立的 webhook 和本机管理监听；`sdbot/pipeline.py` 负责验签、归一化、仓库范围和去重；`sdbot/bus.py` 分发订阅，`sdbot/subscriptions.py` 注册业务。投递存档独立于业务是否处理。
+这是 TypeScript Webhook 事件总线，运行于 Node.js 22+。`src/core/` 使用标准 Fetch／Web Crypto，禁止依赖 Node 内置模块、文件系统或子进程；`src/node/` 实现双监听、JSONL 持久化和外部看板采集器适配。`core/pipeline.ts` 负责验签、归一化、仓库范围和去重；`core/bus.ts` 分发并注册业务。投递存档独立于业务是否处理。Workers 可移植性由真实 workerd 测试验证，当前生产部署仍使用 Compose。
 
 - 默认仅处理 `openJiuwen-ai/sciencediscovery` 与 `ScienceDiscovery/sciencediscovery`；其他 Webhook 仍归档。
 - 公网仅开放 webhook 协议与最小健康响应。配置、监听点、历史与重放只在本机管理端提供；隧道不得指向管理端口。
@@ -10,6 +10,7 @@
 - 分析业务默认占位；看板发布可选启用。新增业务通过订阅注册接入，不在 HTTP handler 或 Pipeline 中堆叠业务分支。
 - 监听点页面必须读取实际注册表；不能另写一份展示用的监听清单。
 - 慢任务由业务自己的后台队列执行。处理器不能修改传入事件，必须考虑重复投递和重放，不承诺全局恰好一次执行。
+- 新运行环境通过 Archive、StateStore、Publisher 接口接入；不能把测试用内存归档用于生产。外部 github_status_board 的 Python 采集器只由 Node 适配层调用，迁移云运行环境时需单独解决持久存储、管理访问和长任务执行。
 
 ## 文档与功能同步
 

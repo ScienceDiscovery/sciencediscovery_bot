@@ -24,7 +24,8 @@ case "${1:-start}" in
       echo "already running (pid $(cat "$PID_FILE")): webhook :$WEBHOOK_PORT  admin http://127.0.0.1:$ADMIN_PORT/"
       exit 0
     fi
-    nohup python3 "$HERE/server.py" >>"$LOG_FILE" 2>&1 &
+    (cd "$HERE" && npm run build)
+    nohup node "$HERE/dist/node/server.js" >>"$LOG_FILE" 2>&1 &
     echo $! >"$PID_FILE"
     sleep 1
     if is_running; then
@@ -59,11 +60,11 @@ case "${1:-start}" in
     ;;
   test)
     shift
-    cd "$HERE" && exec python3 -m unittest discover -s tests -t . "$@"
+    cd "$HERE" && exec npm test -- "$@"
     ;;
   replay)
     shift
-    exec python3 "$HERE/scripts/replay.py" "$@"
+    cd "$HERE" && exec npm run replay -- "$@"
     ;;
   *)
     echo "usage: $0 {start|stop|restart|status|logs|test|replay}" >&2

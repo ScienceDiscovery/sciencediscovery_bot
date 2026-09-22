@@ -1,24 +1,24 @@
-# sciencediscovery_bot: webhook receiver and optional GitHub App publisher.
-FROM python:3.12-slim
-
+FROM node:22-bookworm-slim AS build
 WORKDIR /app
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-COPY server.py ./
-COPY sdbot ./sdbot
-COPY scripts ./scripts
-COPY fixtures ./fixtures
-COPY static ./static
+COPY package.json package-lock.json tsconfig.json ./
+RUN npm ci --ignore-scripts --cache /app/.npm-cache
+COPY src ./src
+RUN npm run build
 
-# Unprivileged user; /data holds events.jsonl + payloads (a named volume in compose).
-RUN useradd --system --uid 10001 --create-home sdbot \
+FROM node:22-bookworm-slim
+WORKDIR /app
+# Python is used only by the separately mounted github_status_board collector.
+# Webhooks, App signing, queues and the management API run entirely in Node.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home sdbot \
     && mkdir -p /data && chown sdbot:sdbot /data
+COPY --from=build /app/dist ./dist
+COPY package.json ./
+COPY static ./static
+COPY fixtures ./fixtures
 USER sdbot
-
-# Inside the container both listeners bind all interfaces; compose publishes the admin
-# port to 127.0.0.1 only and the tunnel is told about the webhook port only.
-ENV PYTHONUNBUFFERED=1 \
-    SDBOT_DATA_DIR=/data \
+ENV SDBOT_DATA_DIR=/data \
     SDBOT_WEBHOOK_HOST=0.0.0.0 \
     SDBOT_WEBHOOK_PORT=8791 \
     SDBOT_ADMIN_HOST=0.0.0.0 \
@@ -27,6 +27,6 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8791 8792
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8791/healthz', timeout=3)" || exit 1
+    CMD node -e "fetch('http://127.0.0.1:8791/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
-CMD ["python3", "server.py"]
+CMD ["node", "dist/node/server.js"]

@@ -1,0 +1,29 @@
+{
+  "name": "sciencediscovery-bot",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "start": "node dist/node/server.js",
+    "dev": "TSX_DISABLE_CACHE=1 node --import tsx src/node/server.ts",
+    "test": "TSX_DISABLE_CACHE=1 node --import tsx --test tests-ts/*.test.ts",
+    "test:workers": "TSX_DISABLE_CACHE=1 node --import tsx --test tests-ts/workers.test.ts",
+    "test:e2e": "node .e2e/node_modules/@playwright/test/cli.js test --config test/playwright.config.cjs",
+    "replay": "TSX_DISABLE_CACHE=1 node --import tsx src/node/replay.ts"
+  },
+  "overrides": {
+    "miniflare": { "undici": "7.29.0", "sharp": "0.35.4" }
+  },
+  "devDependencies": {
+    "@types/node": "22.19.0",
+    "esbuild": "0.28.2",
+    "miniflare": "4.20260730.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  }
+}

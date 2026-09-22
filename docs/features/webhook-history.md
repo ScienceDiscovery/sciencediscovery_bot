@@ -8,7 +8,7 @@
 
 ## 存储实现
 
-EventStore 写入三个位置：
+Node 的 FileArchive 写入三个位置：
 
 - `events.jsonl`：摘要索引，包含事件、HTTP 状态、route、hooks、listeners、errors、record_id 和正文／详情文件引用。
 - `payloads/YYYY-MM-DD/<record_id>.body`：原始请求字节。
@@ -26,4 +26,4 @@ Authorization、Cookie、Token、Secret、Signature、API key 等请求头值脱
 
 重放只在管理端开放，需要 `X-Requested-With: sciencediscovery-bot`；配置口令后需 Bearer，浏览器 Origin 必须与 Host 一致。完整接口见[管理面板](admin-panel.md)。
 
-实现：`sdbot/store.py`、`pipeline.py`、`server.py` 的投递采集与 AdminHandler。验证：`tests/test_archive.py`、`test_pipeline.py` 和 `test/journey-webhook-details.spec.cjs`。
+实现：`src/core/archive.ts`、`pipeline.ts`、`http.ts`、`src/node/archive.ts` 和 `server.ts`。`Archive` 接口隔离持久化实现；当前生产使用 JSONL 与文件，旧 Python 格式直接兼容。验证：`tests-ts/archive-http.test.ts`、`core.test.ts` 和 `test/journey-webhook-details.spec.cjs`。
