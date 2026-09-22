@@ -6,6 +6,8 @@
 
 所有管理页面与 API 均要求 Cloudflare Access 身份。根路径 `/api/status` 等不提供别名，Webhook 与健康路径不要求交互登录。Node 的本机管理端继续使用原有 Bearer／loopback／Cf-* 拒绝规则，本地管理桥不进入云端部署产物。
 
+正式和测试 Worker 已部署这套页面；现有配置尚缺 Access 应用、允许登录成员及 issuer／AUD，管理请求暂时返回 503，不能登录。Webhook 接收、归档和正式看板调度已经独立运行。管理认证配置完成后，面板显示本实例已保存的云端投递，无需迁移或重新接收。
+
 管理重放按钮及 `POST /api/replay/<record_id>` 已移除。云端管理写方法返回 405，Node 已删除端点返回 404；查询不会执行监听器、增加投递或调度刷新。需要重新采集时使用看板仓 Actions。开发 fixture CLI 不属于管理重放，仍可用于隔离测试。
 
 ## Access 配置
@@ -24,12 +26,12 @@ Worker 用 jose 验证 RS256 签名、固定 issuer、AUD、有效期与主体�
 
 | 配置 | Worker | R2 | 业务范围 |
 | --- | --- | --- | --- |
-| `wrangler.jsonc` | `sciencediscovery-bot` | `sciencediscovery-bot-archive` | 现有实例，正式目标由上线配置启用 |
+| `wrangler.jsonc` | `sciencediscovery-bot` | `sciencediscovery-bot-archive` | 正式源仓 → 正式看板已启用，Cron 每五分钟 |
 | `wrangler.test.jsonc` | `sciencediscovery-bot-test` | `sciencediscovery-bot-test-archive` | 仅实验源仓，初始 targets 为空、Cron 关闭 |
 
 两套命名空间、Secrets 和部署版本分开，测试不得绑定正式存储或保存正式 App 私钥。测试 App 尚未创建时，可以初始化独立实例并设置一次性测试 Webhook secret，但不启用看板写入。之后由测试 App 接管该 secret，并配置测试 App ID／私钥及实验源仓到测试看板的唯一映射。
 
-`npm run workers:check` 对两份配置做本地 dry-run，不创建远端资源。真实发布分别使用 `npx wrangler deploy -c wrangler.jsonc` 和 `npx wrangler deploy -c wrangler.test.jsonc`；发布前必须确认当前登录账号、私有 bucket、Secrets 和 Access 策略已经准备。配置里声明 bucket 不代表它已经在账号创建。
+`npm run workers:check` 对两份配置做本地 dry-run，不创建远端资源。真实发布分别使用 `npx wrangler deploy -c wrangler.jsonc` 和 `npx wrangler deploy -c wrangler.test.jsonc`；发布前确认当前登录账号、私有 bucket、Secrets 与调度范围。要开放管理登录还必须配置 Access 策略；认证未完成时保持拒绝访问。配置里声明 bucket 不代表它已经在账号创建。
 
 同一实例内管理和接收共享发布与存储资源；测试代码先在独立测试实例验证，再部署正式。管理分页限制单次工作量，详情按需读正文；不在接收互斥区内运行大批历史扫描。
 
@@ -39,7 +41,7 @@ Worker 用 jose 验证 RS256 签名、固定 issuer、AUD、有效期与主体�
 
 看板 Actions 从 GitHub API 读取事实，进度、历史记录和测试指标保存在各看板仓 `.sync/` 与 `site/`，切换 Bot 不重置这些目录。旧档案不迁移不会减少已保存的看板历史；上游已过期、从未采集到的报告仍无法恢复。其余仓库的新 Webhook 继续归档，业务仅处理允许范围。
 
-正式切换先确认新版本实际可用和管理认证，再移交调度与 App Webhook URL。普通仓库 Webhook 的旧地址也要核对。核对在途 Actions，避免同站同时被两套 Bot 常驻调度；最后停止 Compose 的 bot 与 cloudflared，保留数据卷。回退先关闭 Worker 对应调度，再恢复旧服务与地址，不并行启用两套常驻刷新。
+正式切换先确认新版本的签名接收、云端存档和 Actions 链路，再移交调度与 App Webhook URL。普通仓库 Webhook 的旧地址也要核对。核对在途 Actions，避免同站同时被两套 Bot 常驻调度；最后停止 Compose 的 bot 与 cloudflared，保留数据卷。管理登录可以在接收切换后单独开通，期间管理端保持关闭，归档持续保存。回退先将 Worker 看板目标设为空并关闭 Cron，再恢复旧服务与地址，不并行启用两套常驻刷新。
 
 ## 实现与验证
 

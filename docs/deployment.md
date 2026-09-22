@@ -1,5 +1,7 @@
 # 部署与配置
 
+正式服务使用 Cloudflare Workers，见 [Workers 部署指南](features/workers.md)与[云端只读管理](features/cloud-admin.md)。下文保留 Node／Compose 的独立本机部署和回退方式；启用前确认不会与 Worker 同时调度同一个看板。
+
 ## 宿主机
 
 Node.js 22+、npm。Node 验签和 App RSA 签名使用 Web Crypto；Worker 的 Access JWT 校验使用 jose；只有启用外部看板采集器时需要宿主 Python 3。准备本地 `.env`，只在本地填写密钥，然后加载环境：

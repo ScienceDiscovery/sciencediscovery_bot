@@ -11,15 +11,14 @@
   "durable_objects": { "bindings": [{ "name": "BOT", "class_name": "BotObject" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BotObject"] }],
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "sciencediscovery-bot-archive" }],
-  // Bootstrap without background invocations until production secrets are set.
-  // Restore ["*/5 * * * *"] when enabling collection (see docs/features/workers.md).
-  "triggers": { "crons": [] },
+  // Production dispatches collection to the formal dashboard only.
+  "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     "SDBOT_ENVIRONMENT": "production",
     "SDBOT_ADMIN_HOSTNAME": "sciencediscovery-bot-worker.llmbots.co",
     "SDBOT_GITHUB_APP_ID": "5016872",
     "SDBOT_REPOS": "openJiuwen-ai/sciencediscovery",
-    "SDBOT_BOARD_TARGETS": "{}"
+    "SDBOT_BOARD_TARGETS": "{\"openJiuwen-ai/sciencediscovery\":\"ScienceDiscovery/github-status-board\"}"
   },
   "observability": { "enabled": false }
 }
