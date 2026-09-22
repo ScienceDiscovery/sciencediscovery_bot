@@ -1,0 +1,6 @@
+# Local-only fixture values. This file never loads the Compose .env.
+SDBOT_GITHUB_WEBHOOK_SECRET=local-worker-fixture-secret
+SDBOT_ADMIN_TOKEN=local-worker-admin
+SDBOT_BOARD_TARGETS={}
+# Collection requires App credentials and an explicit --allow-github in the local runner.
+# Keep it disabled for offline testing; npm run test:worker-adapter mocks GitHub.

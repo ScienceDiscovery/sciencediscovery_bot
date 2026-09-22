@@ -21,7 +21,9 @@ export async function loadPrivateKey(pem: string): Promise<CryptoKey> {
 }
 export class GitHubApp {
   private readonly key: Promise<CryptoKey>;
-  constructor(readonly appId: string, privateKey: string, private readonly fetcher: typeof fetch = fetch, private readonly clock = () => Date.now()) { this.key = loadPrivateKey(privateKey); }
+  // Workers' global fetch rejects a foreign receiver. An arrow also keeps the
+  // injectable client from accidentally invoking it with this GitHubApp instance.
+  constructor(readonly appId: string, privateKey: string, private readonly fetcher: typeof fetch = (...args) => fetch(...args), private readonly clock = () => Date.now()) { this.key = loadPrivateKey(privateKey); }
   async jwt(): Promise<string> {
     const now = Math.floor(this.clock() / 1000);
     const header = base64url(utf8.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
@@ -31,7 +33,7 @@ export class GitHubApp {
   }
   private async request(method: string, path: string, body?: Doc): Promise<Doc> {
     try {
-      const response = await this.fetcher('https://api.github.com' + path, { method, redirect: 'error', signal: AbortSignal.timeout(30000),
+      const response = await this.fetcher('https://api.github.com' + path, { method, redirect: 'manual', signal: AbortSignal.timeout(30000),
         headers: { Authorization: 'Bearer ' + await this.jwt(), Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'sciencediscovery-bot' },
         ...(body ? { body: JSON.stringify(body) } : {}) });
       if (!response.ok) { await response.body?.cancel(); throw new GitHubAppAuthError(); }
@@ -39,11 +41,17 @@ export class GitHubApp {
     } catch { throw new GitHubAppAuthError(); }
   }
   async tokenFor(repository: string, write = false): Promise<string> {
+    const permissions: Doc = { metadata: 'read', contents: write ? 'write' : 'read' };
+    if (!write) Object.assign(permissions, { issues: 'read', pull_requests: 'read', actions: 'read', checks: 'read', statuses: 'read' });
+    return this.installationToken(repository, permissions);
+  }
+  async tokenForWorkflow(repository: string): Promise<string> {
+    return this.installationToken(repository, { metadata: 'read', actions: 'write' });
+  }
+  private async installationToken(repository: string, permissions: Doc): Promise<string> {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new TypeError('invalid repository');
     const installation = await this.request('GET', `/repos/${repository}/installation`);
     if (!Number.isSafeInteger(installation.id) || Number(installation.id) <= 0 || installation.suspended_at) throw new GitHubAppAuthError();
-    const permissions: Doc = { metadata: 'read', contents: write ? 'write' : 'read' };
-    if (!write) Object.assign(permissions, { issues: 'read', pull_requests: 'read', actions: 'read', checks: 'read', statuses: 'read' });
     const result = await this.request('POST', `/app/installations/${installation.id}/access_tokens`, { repositories: [repository.split('/')[1]], permissions });
     if (typeof result.token !== 'string' || !result.token || typeof result.expires_at !== 'string' || !(Date.parse(result.expires_at) > this.clock() + 660000)) throw new GitHubAppAuthError();
     return result.token;

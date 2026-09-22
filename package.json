@@ -8,22 +8,31 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.worker.json",
     "start": "node dist/node/server.js",
     "dev": "TSX_DISABLE_CACHE=1 node --import tsx src/node/server.ts",
-    "test": "TSX_DISABLE_CACHE=1 node --import tsx --test tests-ts/*.test.ts",
+    "test": "TSX_DISABLE_CACHE=1 node --import tsx --test tests-ts/*.test.ts tests-ts/*.test.mjs",
     "test:workers": "TSX_DISABLE_CACHE=1 node --import tsx --test tests-ts/workers.test.ts",
     "test:e2e": "node .e2e/node_modules/@playwright/test/cli.js test --config test/playwright.config.cjs",
-    "replay": "TSX_DISABLE_CACHE=1 node --import tsx src/node/replay.ts"
+    "replay": "TSX_DISABLE_CACHE=1 node --import tsx src/node/replay.ts",
+    "test:worker-adapter": "node --test tests-ts/worker-adapter.test.mjs",
+    "workers:local": "node tools/workers-local.mjs",
+    "workers:check": "node tools/workers-check.mjs",
+    "test:e2e:workers": "node .e2e/node_modules/@playwright/test/cli.js test --config test/playwright.workers.config.cjs"
   },
   "overrides": {
-    "miniflare": { "undici": "7.29.0", "sharp": "0.35.4" }
+    "miniflare": {
+      "undici": "7.29.0",
+      "sharp": "0.35.4"
+    }
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "5.20260922.1",
     "@types/node": "22.19.0",
     "esbuild": "0.28.2",
     "miniflare": "4.20260730.0",
     "tsx": "4.23.15",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "wrangler": "4.136.1"
   }
 }

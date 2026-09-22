@@ -13,6 +13,8 @@
 
 ## 配置和启动
 
+以下为现有 Node／Compose 路径。新增 Workers 路径通过持久 Alarm 触发看板仓 `collect.yml`，由 Actions 运行同一 Python 采集器；需要为目标仓授予 Actions 写权限并配置 Actions Secrets，详见 [Workers 与 Actions 采集](workers.md)。这两个运行路径不应同时更新同一个站点。
+
 准备静态看板源码，默认放在 bot 的同级 `github_status_board` 目录；发布器由该项目的 `publish.py` 实现。在 bot 本地 `.env` 配置以下映射及 GitHub App 的 App ID 与 RSA 私钥：
 
 ```dotenv
@@ -51,7 +53,7 @@ App 必须安装到源仓和目标仓，并获准读取源仓 Metadata / Content
 
 ## Actions 发布 Pages
 
-目标看板仓需先有 `.github/workflows/pages.yml`，在 Settings → Pages 将 Source 设为 **GitHub Actions**。这是一次性仓库管理操作。工作流监听 main 的 `site/**` 更新，也可手动执行；只上传 site 目录，并使用 Actions 自身的 `GITHUB_TOKEN`（contents read、pages write、id-token write）部署到 github-pages environment。不需要把 App 私钥再复制进 Actions secrets。
+目标看板仓需先有 `.github/workflows/pages.yml`，在 Settings → Pages 将 Source 设为 **GitHub Actions**。这是一次性仓库管理操作。工作流监听 main 的 `site/**` 更新，也可手动执行；只上传 site 目录，并使用 Actions 自身的 `GITHUB_TOKEN`（contents read、pages write、id-token write）部署到 github-pages environment。单独执行 Pages 部署不需要 App 私钥；启用 Workers 的 `collect.yml` 采集时，采集工作流另需 App 私钥 Secret。
 
 Bot 的提交由 App 安装身份完成，可以触发 push 工作流。`board.targets[].last_success` 和 commit 代表提交成功；Pages 是否发布成功还需看 Actions 的 **Deploy dashboard Pages** 运行及站点实际内容。队列不会把 Actions 的部署失败误报为 GitHub 提交失败；部署失败可在目标仓重跑工作流。历史 gh-pages 分支可保留，但不再作为发布来源。
 

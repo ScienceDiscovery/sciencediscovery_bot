@@ -72,7 +72,7 @@ test('RSA loader rejects malformed and non-RSA keys', async () => {
 test('App looks up each organization and issues repository-scoped least-privilege tokens afresh', async () => {
   const calls: { url: string; options: RequestInit }[] = [];
   const fetcher: typeof fetch = async (url, options = {}) => {
-    calls.push({ url: String(url), options }); assert.equal(options.redirect, 'error');
+    calls.push({ url: String(url), options }); assert.equal(options.redirect, 'manual');
     if (String(url).endsWith('/installation')) return Response.json({ id: String(url).includes('org-a') ? 111 : 222 });
     return Response.json({ token: 'installation-token-' + calls.length, expires_at: new Date(Date.now() + 3600000).toISOString() });
   };

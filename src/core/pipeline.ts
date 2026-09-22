@@ -34,6 +34,7 @@ export class Pipeline {
   private async process(headers: Headers, body: Uint8Array, hint?: string): Promise<Reply> {
     const provider = hint || detectProvider(headers);
     if (!(PROVIDERS as readonly string[]).includes(provider)) return rejected(headers, 400, 'bad request', 'unknown provider: expected X-GitHub-Event or X-GitCode-Event', provider);
+    if (this.cfg.require_signature && !this.cfg.secrets[provider]) return rejected(headers, 401, 'signature verification failed', 'provider secret is not configured', provider);
     const verification = await verify(provider, headers, body, this.cfg.secrets[provider]);
     if (!verification.ok) return rejected(headers, 401, 'signature verification failed', `signature verification failed: ${verification.reason}`, provider);
     let payload: Doc;

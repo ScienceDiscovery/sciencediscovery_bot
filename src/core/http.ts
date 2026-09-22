@@ -81,7 +81,9 @@ export class BotApplication {
       if (request.method === 'POST' && path.startsWith('/api/replay/')) {
         if (request.headers.get('x-requested-with') !== 'sciencediscovery-bot') return fail('admin writes need X-Requested-With: sciencediscovery-bot', 403);
         const origin = request.headers.get('origin');
-        if (origin && new URL(origin).host !== (request.headers.get('host') || url.host)) return fail('cross-origin admin write refused', 403);
+        // Service bindings may rewrite Host for transport; the Request URL keeps
+        // the original admin origin. Node also constructs that URL from Host.
+        if (origin && new URL(origin).origin !== url.origin) return fail('cross-origin admin write refused', 403);
         return await this.replay(decodeURIComponent(path.slice('/api/replay/'.length)));
       }
       return fail('not found', 404);

@@ -6,8 +6,8 @@ export const string = (value: unknown): string => typeof value === 'string' ? va
 export const number = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null;
 export const nullable = (value: unknown): unknown => value ?? null;
 export const utf8 = new TextEncoder();
-export const text = (value: Uint8Array): string => new TextDecoder('utf-8', { fatal: true }).decode(value);
-export const jsonBytes = (value: unknown): Uint8Array<ArrayBuffer> => utf8.encode(JSON.stringify(value));
+export const text = (value: Uint8Array): string => new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(value);
+export const jsonBytes = (value: unknown): Uint8Array<ArrayBuffer> => Uint8Array.from(utf8.encode(JSON.stringify(value)));
 export const nowISO = (): string => new Date().toISOString();
 export const id = (): string => crypto.randomUUID().replaceAll('-', '');
 export function category(error: unknown): string {

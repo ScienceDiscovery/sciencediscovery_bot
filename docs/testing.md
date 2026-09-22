@@ -11,11 +11,17 @@ npm run build
 npm test
 # 只验证 workerd 兼容性
 npm run test:workers
+# 生产 Worker 适配：真实 SQLite/R2 模拟器，GitHub 出站请求使用模拟接口
+npm run test:worker-adapter
+# 打包检查，不发布
+npm run workers:check
 ```
 
 测试包含验签、GitHub／GitCode 归一化、merge、事件总线与注册规则、单监听器失败隔离、仓库限制、去重、归档、HTTP 详情／重放、管理访问保护和独立发布队列、App RSA 签名／安装令牌／最小权限。HTTP 测试启动自己的 loopback 随机端口，不使用运行中的服务或数据卷。
 
 23 组旧版样例的归一化字段和路由结果固定在 `tests-ts/fixtures/expected-events.json`，作为迁移兼容基线；测试不依赖 Python。`workers.test.ts` 在真实 workerd 中执行共享核心，不开启 Node 兼容标记；测试内存归档和辅助查询路径不能用于生产。
+
+`worker-adapter.test.mjs` 直接打包 `src/worker/index.ts`，使用本地持久 SQLite／R2。它验证并发重复投递、记录筛选与精确重放、进程重建后的去重与历史、App 最小权限、双仓持久 Alarm 调度以及远端触发失败后的重试；不会访问真实 GitHub 或执行真实发布。Actions 配置另在看板仓执行 `python3 -m unittest discover -s tests -v`；远端 runner／Pages 结果仍需上线阶段验收。
 
 新增业务至少验证一次应触发和一次不应触发；新增选择条件、启用模式或路由时核对实际注册清单与执行结果。重放生成新 delivery，不能把它当重复投递跳过。
 
@@ -25,6 +31,8 @@ npm run test:workers
 node test/sync-e2e.mjs
 npm run build
 npm run test:e2e
+# 复用实际管理旅程验证 Worker 本地适配（与 Node 浏览器组串行运行）
+npm run test:e2e:workers
 ```
 
 使用 `test/e2e.package.json` 固定版本，依赖、浏览器、缓存、独立数据和截图均在 `.e2e/`。测试服务使用 18891／18892、一次性密钥和管理口令，显式关闭真实看板发布目标。不能替换为全局 Playwright 或连接线上管理口跑写入测试。

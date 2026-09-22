@@ -36,6 +36,8 @@ docker compose down
 
 ## 核心配置
 
+本文其余步骤面向 Node／Compose。Workers 通过 `npm run workers:local` 在隔离目录启动，持久存储和 Actions 配置见 [Workers 指南](features/workers.md)；现有数据卷不会自动迁移。
+
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | SDBOT_GITHUB_WEBHOOK_SECRET | 无 | App 和普通 GitHub Webhook 共用密钥 |

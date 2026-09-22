@@ -8,6 +8,7 @@
 | [正式与测试看板更新](features/board-publication.md) | 双站点映射、后台队列、持久状态、App 安装凭据与 Actions 发布 |
 | [管理面板](features/admin-panel.md) | 事件页、监听点页、管理 API、浏览器时区与访问保护 |
 | [TypeScript 与运行环境](features/typescript-runtime.md) | Web 标准核心、Node 适配、Workers 验证与持久化边界 |
+| [Workers 与 Actions 采集](features/workers.md) | R2／SQLite 归档、持久调度、本地模拟器、采集工作流与上线准备 |
 | [部署与配置](deployment.md) | 宿主机、Compose、cloudflared、配置变量与数据位置 |
 | [验证指南](testing.md) | TypeScript／HTTP／workerd 和浏览器测试、隔离资源与验收重点 |
 

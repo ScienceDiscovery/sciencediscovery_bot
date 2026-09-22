@@ -8,6 +8,8 @@
 
 ## 存储实现
 
+下面介绍现有 Node 文件存储。Workers 的同一接口由 `src/worker/archive.ts` 实现：R2 保存完整正文和请求／响应，SQLite Durable Object 提供索引、计数、去重，并将刷新待办纳入同一索引事务。两套存储互不读写，不会自动迁移旧数据，详见 [Workers 指南](workers.md)。
+
 Node 的 FileArchive 写入三个位置：
 
 - `events.jsonl`：摘要索引，包含事件、HTTP 状态、route、hooks、listeners、errors、record_id 和正文／详情文件引用。

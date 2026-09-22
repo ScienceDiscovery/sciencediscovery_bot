@@ -11,6 +11,7 @@ export interface Config {
   board_targets: Record<string, string>; board_repo: string; board_track_repo: string;
   board_source_dir: string; board_token: string; board_debounce: number; board_refresh: number;
   github_app_id: string; github_app_private_key: string;
+  require_signature?: boolean;
 }
 export function configFromEnv(env: Environment = {}, root = '.'): Config {
   const str = (key: string, fallback = '') => env[key] || fallback;
@@ -68,5 +69,5 @@ export function validateConfig(cfg: Config): string[] {
 export function publicConfig(cfg: Config): Doc {
   return { webhook: { host: cfg.webhook_host, port: cfg.webhook_port }, admin: { host: cfg.admin_host, port: cfg.admin_port, token_required: !!cfg.admin_token },
     data_dir: cfg.data_dir, repos: cfg.repos, store_payloads: true, payload_max_bytes: cfg.max_body_bytes,
-    providers: Object.fromEntries(PROVIDERS.map(p => [p, { secret_configured: !!cfg.secrets[p] }])) };
+    providers: Object.fromEntries(PROVIDERS.map(p => [p, { secret_configured: !!cfg.secrets[p], signature_required: !!cfg.require_signature }])) };
 }

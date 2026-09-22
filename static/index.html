@@ -16,7 +16,7 @@
   nav { display: flex; gap: 8px; }
   nav a { color: var(--fg); text-decoration: none; padding: 6px 10px; border-radius: 4px; }
   nav a[aria-current="page"] { background: var(--bg); box-shadow: inset 0 -2px var(--ok); }
-  #events-page { display: grid; gap: 16px; }
+  #events-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
   #subscriptions-page h2 { margin: 0; font-size: 18px; }
   #subscription-scope { overflow-wrap: anywhere; color: var(--muted); }
   .subscription-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; margin-top: 16px; }
@@ -30,10 +30,11 @@
   #subscription-count { color: var(--muted); margin-top: 12px; }
   #subscription-search { max-width: 100%; box-sizing: border-box; }
 
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
-  .card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; background: var(--bg); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 12px; }
+  .card { min-width: 0; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; background: var(--bg); }
   .card .k { color: var(--muted); font-size: 12px; }
   .card .v { font-size: 20px; font-weight: 600; }
+  .card .v.repositories { font-size: 13px; font-weight: 500; white-space: pre-line; }
   .card .s { font-size: 12px; color: var(--muted); }
   .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -193,18 +194,19 @@ async function loadStatus() {
   const c = st.config, counts = st.counts;
   $("#listeners").textContent = `webhook ${c.webhook.host}:${c.webhook.port} · admin ${c.admin.host}:${c.admin.port}${c.admin.token_required ? " (token)" : ""} · v${st.version}`;
   const secretCards = Object.entries(c.providers).map(([p, v]) =>
-    card(p + " 密钥", v.secret_configured ? "已配置" : "未配置", v.secret_configured ? "HMAC 验签开启" : "接受未签名投递", v.secret_configured ? "ok" : "bad")).join("");
+    card(p + " 密钥", v.secret_configured ? "已配置" : "未配置", v.secret_configured ? "HMAC 验签开启" : v.signature_required ? "未启用此平台接入" : "接受未签名投递", v.secret_configured ? "ok" : "bad")).join("");
   const routes = Object.entries(counts.by_route || {}).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([r, n]) => `${r} ${n}`).join(" · ");
   $("#cards").innerHTML = secretCards
     + card("accepted", counts.accepted, routes, "ok")
     + card("rejected", counts.rejected, "验签失败 / 坏请求", counts.rejected ? "bad" : "")
     + card("ignored / duplicate", `${counts.ignored} / ${counts.duplicate}`, "不在 SDBOT_REPOS / 平台重投", "")
-    + card("跟踪仓库", c.repos.length ? c.repos.join(", ") : "全部", "SDBOT_REPOS", "")
+    + card("跟踪仓库", c.repos.length ? c.repos.join("\n") : "全部", "SDBOT_REPOS", "repositories")
     + card("投递留存", "全部记录", `请求正文上限 ${Math.round(c.payload_max_bytes / 1024 / 1024)} MB；超限标记不完整`, "");
   if (st.board?.enabled) {
     for (const b of st.board.targets || [st.board]) {
-      $("#cards").innerHTML += card("静态看板", b.running ? "发布中" : b.pending ? "等待更新" : b.last_success ? "已提交发布" : "等待首次发布",
-        `${b.source || ''} → ${b.repository} · 最近成功 ${eventTime(b.last_success)}${b.error ? " · 重试中：" + b.error : ""}`, b.error ? "warn" : "ok");
+      const actions = b.execution === 'github_actions';
+      $("#cards").innerHTML += card("静态看板", b.running ? (actions ? "触发采集中" : "发布中") : b.pending ? "等待更新" : actions ? (b.last_dispatch ? "已触发采集" : "等待首次采集") : b.last_success ? "已提交发布" : "等待首次发布",
+        `${b.source || ''} → ${b.repository} · ${actions ? '最近触发' : '最近成功'} ${eventTime(actions ? b.last_dispatch : b.last_success)}${b.error ? " · 重试中：" + b.error : ""}`, b.error ? "warn" : "ok");
     }
   }
 }

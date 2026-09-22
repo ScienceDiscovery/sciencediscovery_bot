@@ -16,7 +16,9 @@ docker compose up -d --build
 - 管理面板：`http://127.0.0.1:8792/`，包含“事件记录”和“监听点”两页。
 - Cloudflare Tunnel 只能转发 `http://bot:8791`，不能转发 8792。
 
-宿主运行先执行 `npm ci`，加载 `.env` 后运行 `./run.sh start`；停止使用 `./run.sh stop`。配置见[部署指南](docs/deployment.md)，运行环境边界见[TypeScript 架构](docs/features/typescript-runtime.md)。
+宿主运行先执行 `npm ci`，加载 `.env` 后运行 `./run.sh start`；停止使用 `./run.sh stop`。配置见[部署指南](docs/deployment.md)。
+
+Workers 本地适配：`npm ci` 后复制 `.dev.vars.example` 为 `.dev.vars`，运行 `npm run workers:local`，使用 18891／18892；默认阻止远端请求。云端归档与 Actions 采集的配置、当前边界见 [Workers 指南](docs/features/workers.md)。
 
 ## 文档
 
