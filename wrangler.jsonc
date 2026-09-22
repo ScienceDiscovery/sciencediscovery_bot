@@ -5,6 +5,7 @@
   "compatibility_date": "2026-07-30",
   "workers_dev": false,
   "preview_urls": false,
+  "routes": [{ "pattern": "sciencediscovery-bot-worker.llmbots.co", "custom_domain": true }],
   "durable_objects": { "bindings": [{ "name": "BOT", "class_name": "BotObject" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BotObject"] }],
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "sciencediscovery-bot-archive" }],
@@ -12,6 +13,7 @@
   // Restore ["*/5 * * * *"] when enabling collection (see docs/features/workers.md).
   "triggers": { "crons": [] },
   "vars": {
+    "SDBOT_GITHUB_APP_ID": "5016872",
     "SDBOT_REPOS": "openJiuwen-ai/sciencediscovery,ScienceDiscovery/sciencediscovery",
     "SDBOT_BOARD_TARGETS": "{}"
   },

@@ -4,6 +4,8 @@
 
 Worker 保留 Webhook 验签、事件总线、两个源仓范围、全量投递存档与最小公开响应；看板采集由目标看板仓的 GitHub Actions 执行，Python 采集器继续使用。无需在 Worker 内启动 Python，也不依赖 cloudflared。
 
+`wrangler.jsonc` 中的独立测试域名提供 `/healthz` 与 `/webhook/github` 等最小公开接口，App ID 是非敏感配置，密钥单独保存在云端 Secrets。测试入口与 Compose 的正式接收地址分开；当前配置仍关闭看板目标和 Cron。部署到另一账号时应替换 App ID、域名及资源名称；新建无公网入口的实例按下方首次部署步骤先移除 `routes`。
+
 本地适配使用真实 workerd、SQLite Durable Object 和 R2 模拟存储，可验证重启恢复、查询、重放、去重与调度。仓库提供生产 Worker 入口和 Wrangler 配置，但不会自动创建账号资源或切换现有服务。现有 Compose 与数据卷独立保留；本地模拟器既不读取 Compose 的 `.env`，也不读取其历史数据。
 
 ```text
@@ -69,6 +71,8 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 6. GitHub App 的 Webhook URL 属于 App 注册配置，修改会影响该 App 的全部安装；不能借此只切测试仓。先在实验源仓配置独立的临时仓库 Webhook，指向新地址，保持原 App 地址不动。先验证归档，再停用 Compose 对测试看板的自动触发并让 Worker 仅启用测试目标；核对签名失败、未知事件、重复投递、R2／SQLite 留存及真实采集／Pages 结果。
 7. 启用采集时配置 `SDBOT_BOARD_TARGETS` 的 JSON 字符串映射，并恢复 `triggers.crons=["*/5 * * * *"]` 后部署。看板目标一旦启用并初始化，即使没有新投递，也可能经 Alarm 触发周期刷新；仅关闭 Cron 不能停用持久 Alarm。首次准备同时保持目标为空，正式切换前停用旧进程对应的看板触发，避免两套 Bot 重复调度。
 8. 完成受保护的云端管理通道与旧档案衔接后，再修改 App Webhook URL 正式切换。普通仓库／组织 Webhook 的 URL 也需要逐项核对；验证完移除临时测试 Webhook。保留旧数据卷和回退配置，确认新链路稳定后停止旧接收入口。
+
+部署命令成功不代表所有 Durable Object 已立即使用新代码和配置：云端传播可能持续数秒至数分钟，存储访问还可能因实例切换而失败。不要紧接部署就切正式 Webhook，也不能仅凭 `/healthz` 判断监听目标已经生效。用带明确测试标记的新 delivery 验证实际归档中的监听结果及目标 Actions 运行；关闭临时目标后也要验证实际结果已回到 `noop`。服务更新窗口收到 503 的投递需要重试；已经按旧配置接受的事件若需再次执行业务，应使用管理重放生成新 delivery，普通 redelivery 会被去重。参见 [Cloudflare 生命周期说明](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)与[已知更新边界](https://developers.cloudflare.com/durable-objects/platform/known-issues/)。
 
 当前 Compose 管理页查询实际服务的真实投递存档。`workers:local` 的管理页只查询独立的本地模拟存储，不能查询已部署 Worker 或 Compose 数据。云端管理访问仍需实现身份认证及归档查询入口；配置 Cloudflare Access 或管理口令不会自动增加页面。旧 JSONL／正文没有自动导入功能，需要迁移或保留旧档案的查询入口。
 
