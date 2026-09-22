@@ -8,7 +8,9 @@
   "durable_objects": { "bindings": [{ "name": "BOT", "class_name": "BotObject" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BotObject"] }],
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "sciencediscovery-bot-archive" }],
-  "triggers": { "crons": ["*/5 * * * *"] },
+  // Bootstrap without background invocations until production secrets are set.
+  // Restore ["*/5 * * * *"] when enabling collection (see docs/features/workers.md).
+  "triggers": { "crons": [] },
   "vars": {
     "SDBOT_REPOS": "openJiuwen-ai/sciencediscovery,ScienceDiscovery/sciencediscovery",
     "SDBOT_BOARD_TARGETS": "{}"

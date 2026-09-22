@@ -35,7 +35,7 @@ SQLite、R2 模拟数据及运行时文件保存在 `.wrangler/local/`，正常 
 
 - `src/worker/index.ts`：公开 Fetch、Cron 与 `BotObject`。所有投递都进入固定名称 `archive-v1`，避免多个 Worker 实例各自去重。管理方法只通过 Durable Object RPC 可达，公开路由不会转入管理方法。
 - `src/worker/archive.ts`：完整正文和包含请求／应用响应的详情先写 R2，随后用 SQLite 事务写查询索引、计数、delivery 去重和待刷新状态。存储失败返回 503，不确认成功；失败前写入的 R2 对象可能成为未索引对象，后续维护不能只按日期随意清理。
-- `src/worker/board.ts`：订阅处理器暂存本次刷新意图，只有归档事务成功才计入 `requested`。同仓短时间事件合并，默认 20 秒去抖、成功触发间隔至少 60 秒；失败从 30 秒指数退避到 600 秒。发送前保存 120 秒执行租约，崩溃后恢复。Alarm 执行期间不阻塞新投递；每五分钟 Cron 修复调度，空闲站点默认每小时刷新一次。
+- `src/worker/board.ts`：订阅处理器暂存本次刷新意图，只有归档事务成功才计入 `requested`。同仓短时间事件合并，默认 20 秒去抖、成功触发间隔至少 60 秒；失败从 30 秒指数退避到 600 秒。发送前保存 120 秒执行租约，崩溃后恢复。Alarm 执行期间不阻塞新投递；正式启用后每五分钟 Cron 修复调度，空闲站点默认每小时刷新一次。仓库初始配置关闭 Cron 与看板目标，便于先建立云端资源和配置 Secrets。
 - `src/core/actions.ts`：只为目标看板仓申请 `Metadata: read / Actions: write` 安装令牌，调用固定 `collect.yml`、固定 `main`，传入源仓和刷新编号。私钥、令牌、原始 Webhook 内容不会作为工作流 inputs 传递。
 - `tools/workers-local.mjs` 与 `src/worker/local-admin.ts`：本地管理桥和现有面板。校验 loopback hostname，并继续拒绝 Cf-* 头；公网 bundle 不包含管理页面或本地桥。
 
@@ -59,12 +59,18 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 
 ## 上线前的步骤（本地验收不会执行）
 
-1. 将采集工作流和校验脚本同步到正式、测试看板仓，保留各自的 `site/data/snapshot.json`；配置 App 权限、仓库变量与 Secrets，并分别验收真实采集工作流。
-2. 创建私有 R2 bucket，保持无公开域名／公开读取；按 `wrangler.jsonc` 设置名称。首次部署建立 SQLite Durable Object 命名空间，后续不要随意改类名、迁移标签或 `archive-v1`，以免指向另一份历史。
-3. 在 Worker 配置 `SDBOT_BOARD_TARGETS` 与 App ID；通过 Workers Secrets 保存 `SDBOT_GITHUB_WEBHOOK_SECRET`、可选 GitCode secret、`SDBOT_GITHUB_APP_PRIVATE_KEY`。至少一个平台必须有密钥；未配置密钥的平台直接拒绝，Worker 不支持免签接入。
-4. 执行 `npm run workers:check` 本地打包检查；确认账号后再用 Wrangler 登录、部署和绑定域名。默认 `workers_dev=false`、`preview_urls=false` 且无 routes，避免误部署立即开放地址。
-5. 云端管理通道和旧档案迁移需要单独完成再切换正式使用；本地管理页当前只查询本地模拟数据，无法查询已部署 Worker 的历史。本轮不提供未经认证的公网管理页面，也不自动迁移既有 JSONL／正文。
-6. 先切测试 Webhook，核对签名失败、未知事件、R2／SQLite 留存及采集／Pages 结果，再切正式 Webhook；完成后才停止旧接收链路。
+前提：两个看板仓已有采集工作流、脚本及各自的 `.sync/` 与 `site/`；App 权限、仓库变量和 Secrets 已配置，并通过真实采集和 Pages 验收。更新共享源码时保留各站数据和独立功能，不重新初始化同步进度。
+
+1. 在目标 Cloudflare 账号开通 R2，创建私有 `sciencediscovery-bot-archive` bucket；名称与 `wrangler.jsonc` 一致。不启用公开域名或公开读取，不配置未经评估的自动删除规则。
+2. 使用 `npx wrangler login --device` 授权部署工具，再用 `npx wrangler whoami` 核对账号；账号有多个时在配置中明确 `account_id`。Tunnel token 不能代替 Workers 部署授权。
+3. 首次部署保持 `workers_dev=false`、`preview_urls=false`、无 routes、`triggers.crons=[]`、`SDBOT_BOARD_TARGETS="{}"`。执行 `npm run workers:check` 只做本地检查；`npx wrangler deploy` 才会实际创建／更新云端 Worker 与 SQLite Durable Object 命名空间。首次初始化之后不要随意改类名、迁移标签、Worker 名称或 `archive-v1`，以免指向另一份历史。该阶段没有公开入口或 Cron，不要求未配置 Secrets 的服务已经能处理请求。
+4. 在 Worker 的 Settings → Variables and Secrets 中添加 Secret：`SDBOT_GITHUB_WEBHOOK_SECRET`、可选 `SDBOT_GITCODE_WEBHOOK_SECRET`、`SDBOT_GITHUB_APP_PRIVATE_KEY`。私钥保留完整多行 PEM，通过页面 Deploy 生效；不要放进普通 `vars`、工作流 inputs 或聊天。将非敏感的 `SDBOT_GITHUB_APP_ID` 写入 Wrangler `vars`。本机 `.env` 与 GitHub Actions Secrets 不会自动复制到 Worker。至少一个平台必须有密钥；未配置密钥的平台直接拒绝，Worker 不支持免签接入。
+5. 为 Worker 选择一个新的域名，在 Settings → Domains & Routes 添加 Custom Domain，并将对应 `routes` 同步回 Wrangler 配置；先保留当前 Tunnel 域名。检查新地址的 `/healthz` 只返回 `{"ok":true}`、`/api/status` 返回 404，再使用 `/webhook/github` 接收签名投递。Webhook 地址不能要求浏览器交互登录。
+6. GitHub App 的 Webhook URL 属于 App 注册配置，修改会影响该 App 的全部安装；不能借此只切测试仓。先在实验源仓配置独立的临时仓库 Webhook，指向新地址，保持原 App 地址不动。先验证归档，再停用 Compose 对测试看板的自动触发并让 Worker 仅启用测试目标；核对签名失败、未知事件、重复投递、R2／SQLite 留存及真实采集／Pages 结果。
+7. 启用采集时配置 `SDBOT_BOARD_TARGETS` 的 JSON 字符串映射，并恢复 `triggers.crons=["*/5 * * * *"]` 后部署。看板目标一旦启用并初始化，即使没有新投递，也可能经 Alarm 触发周期刷新；仅关闭 Cron 不能停用持久 Alarm。首次准备同时保持目标为空，正式切换前停用旧进程对应的看板触发，避免两套 Bot 重复调度。
+8. 完成受保护的云端管理通道与旧档案衔接后，再修改 App Webhook URL 正式切换。普通仓库／组织 Webhook 的 URL 也需要逐项核对；验证完移除临时测试 Webhook。保留旧数据卷和回退配置，确认新链路稳定后停止旧接收入口。
+
+当前 Compose 管理页查询实际服务的真实投递存档。`workers:local` 的管理页只查询独立的本地模拟存储，不能查询已部署 Worker 或 Compose 数据。云端管理访问仍需实现身份认证及归档查询入口；配置 Cloudflare Access 或管理口令不会自动增加页面。旧 JSONL／正文没有自动导入功能，需要迁移或保留旧档案的查询入口。
 
 ## 验证入口
 
