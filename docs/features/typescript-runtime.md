@@ -30,7 +30,7 @@ Bot 的接收服务、GitHub／GitCode 适配、签名验证、事件总线、�
 
 Node 使用与原实现一致的 UTF-8 原始字节验签和归档。新响应使用紧凑 JSON，归档保存其实际发送正文；客户端应解析 JSON，不依赖空格格式。时间戳使用带 UTC 时区的 ISO 8601，管理界面照常按浏览器时区显示。管理 JSON 字段和公开面的最小响应保持兼容。
 
-Bot 不依赖 Python 或 cryptography；可选看板采集器属于独立的 github_status_board 项目。Node／Compose 以 Python 子进程运行，Workers 适配则触发看板仓 Actions 中的 Python 工作流。Compose 镜像保留 Python 仅为该采集器服务，App 私钥、安装令牌申请和发布调度已经迁入 TypeScript。未启用看板发布时，宿主运行只需 Node 与 npm。
+Bot 不依赖 Python 或 cryptography；可选看板采集器属于独立的 github_status_board 项目。Node／Compose 和 Workers 均可触发看板仓 Actions 中的 Python 工作流；Compose 看板扩展默认使用该模式。Node 的 `local` 模式兼容旧 Python 子进程采集，镜像保留 Python 仅为兼容该路径，App 私钥、安装令牌申请和发布调度已经迁入 TypeScript。未启用看板发布时，宿主运行只需 Node 与 npm。
 
 ## Workers 适配验证与后续部署条件
 

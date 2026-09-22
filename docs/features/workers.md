@@ -55,7 +55,7 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 
 在 App 注册页 **Permissions & events → Repository permissions → Actions** 选择 **Read and write** 后，还需目标组织批准 installation 的新增权限。应检查目标仓 installation 返回的 `permissions.actions` 已是 `write`，不能只看注册页。此权限与仓库 Actions 设置中的默认 `GITHUB_TOKEN` 权限不同；后者可以保持只读，Pages 工作流按 job 声明所需权限。
 
-验收分为三步：App 安装令牌成功触发 `collect.yml`；采集任务使用两个安装令牌读取源仓、提交目标仓 `site/`；该 App 提交触发 `pages.yml` 并部署成功。管理员手动触发成功只能验证后两步。仅配置看板仓不会切换当前 Node / Compose 的采集模式，正式切换仍需部署 Worker 并迁移 Webhook 接收链路。
+验收分为三步：App 安装令牌成功触发 `collect.yml`；采集任务使用两个安装令牌读取源仓、原子提交目标仓 `.sync/` 与 `site/`；该 App 提交触发 `pages.yml` 并部署成功。管理员手动触发成功只能验证后两步。Node／Compose 可用 `SDBOT_BOARD_EXECUTION=github_actions` 切换为相同触发流程，无需先部署 Worker。Worker 接管 Webhook 仍是独立部署与档案迁移步骤。
 
 ## 上线前的步骤（本地验收不会执行）
 
