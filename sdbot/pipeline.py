@@ -75,7 +75,7 @@ class Pipeline:
             return self._reject(provider, delivery, raw_event, 400, "bad request", f"invalid body: {err}", body)
 
         event = normalize(provider, headers, payload)
-        if not self.cfg.tracks(event.repo):
+        if not self.cfg.tracks(event.repo, event.provider) and event.kind != KIND_PING:
             outcome = Outcome(False, event.route, note=f"repo {event.repo} not in SDBOT_REPOS")
             record = self.store.event_record(event, outcome, verification, status="ignored")
             self.log.info("ignored %s from untracked repo %s", event.route, event.repo)

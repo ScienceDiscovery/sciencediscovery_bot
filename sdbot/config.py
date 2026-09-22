@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,6 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PROVIDERS = ("github", "gitcode")
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 RESERVED_PORTS = (4310, 4311)  # local trial stack, never bind these
+DEFAULT_REPOS = ("openjiuwen-ai/sciencediscovery", "sciencediscovery/sciencediscovery")
 
 # Secret lookup order per provider; the shared name is a convenience for single-provider setups.
 SECRET_ENV = {
@@ -73,6 +75,7 @@ class Config:
     admin_token: str = field(default="", repr=False)                    # optional bearer token for the admin listener
     board_repo: str = ""
     board_track_repo: str = ""
+    board_targets: dict[str, str] = field(default_factory=dict)  # GitHub source -> Pages repository
     board_source_dir: Path = ROOT.parent / "github_status_board"
     board_token: str = field(default="", repr=False)
     board_debounce: int = 20
@@ -93,6 +96,7 @@ class Config:
             admin_token=os.environ.get("SDBOT_ADMIN_TOKEN", "").strip(),
             board_repo=os.environ.get("SDBOT_BOARD_REPO", "").strip(),
             board_track_repo=os.environ.get("SDBOT_BOARD_TRACK_REPO", "").strip(),
+            board_targets=json.loads(os.environ.get("SDBOT_BOARD_TARGETS") or "{}"),
             board_source_dir=Path(_str("SDBOT_BOARD_SOURCE_DIR", str(cls.board_source_dir))),
             board_token=os.environ.get("SDBOT_BOARD_GITHUB_TOKEN", "").strip(),
             board_debounce=_int("SDBOT_BOARD_DEBOUNCE", 20),
@@ -101,7 +105,7 @@ class Config:
         data = os.environ.get("SDBOT_DATA_DIR")
         if data:
             cfg.data_dir = Path(data).expanduser()
-        repos = os.environ.get("SDBOT_REPOS", "")
+        repos = os.environ.get("SDBOT_REPOS") or ",".join(DEFAULT_REPOS)
         cfg.repos = tuple(r.strip().lower() for r in repos.split(",") if r.strip())
         for provider, names in SECRET_ENV.items():
             for name in names:
@@ -117,9 +121,26 @@ class Config:
     def validate(self) -> list[str]:
         """Human-readable reasons the process must refuse to start (empty = fine)."""
         problems = []
+        if self.board_repo or self.board_targets:
+            targets = self.publication_targets()
+            if not isinstance(targets, dict) or not all(isinstance(r, str) and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", r)
+                                                       for pair in targets.items() for r in pair):
+                problems.append("board targets must map source owner/name to Pages owner/name")
+                targets = {}
+            sources = [r.lower() for r in targets]
+            destinations = [r.lower() for r in targets.values()]
+            if len(set(sources)) != len(sources) or len(set(destinations)) != len(destinations):
+                problems.append("board sources and destinations must each be unique")
+            if set(sources) & set(destinations):
+                problems.append("board destinations must not be tracked sources")
+            if self.repos and any(not self.tracks(r, "github") for r in sources):
+                problems.append("board sources must be included in SDBOT_REPOS")
+            if self.board_targets and self.board_repo:
+                problems.append("use board targets or legacy board repository, not both")
         if self.board_repo:
             if not all(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", r) for r in (self.board_repo, self.board_track_repo)):
                 problems.append("board repositories must be owner/name")
+        if self.board_repo or self.board_targets:
             if not self.board_token or not self.secret_for("github"):
                 problems.append("board publishing requires a GitHub token and GitHub webhook secret")
             if not (self.board_source_dir / "publish.py").is_file():
@@ -143,9 +164,12 @@ class Config:
     def secret_for(self, provider: str) -> str | None:
         return self.secrets.get(provider) or None
 
-    def tracks(self, repo: str) -> bool:
-        """Empty allowlist tracks everything; deliveries without a repo (ping, installation) always pass."""
-        return not self.repos or not repo or repo.lower() in self.repos
+    def publication_targets(self) -> dict[str, str]:
+        return self.board_targets or ({self.board_track_repo: self.board_repo} if self.board_repo else {})
+
+    def tracks(self, repo: str, provider: str = "github") -> bool:
+        """A configured allowlist identifies GitHub repositories, never same-name GitCode repos."""
+        return not self.repos or (provider == "github" and repo.lower() in {r.lower() for r in self.repos})
 
     def public(self) -> dict:
         """Admin status view: says which providers have a secret, never the secret itself."""

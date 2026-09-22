@@ -67,7 +67,7 @@ docker compose down             # 加 -v 同时删事件日志卷 bot-data
 | `SDBOT_ALLOW_NON_LOOPBACK` | `0` | 允许绑定 `0.0.0.0`，只在容器里用（镜像已设） |
 | `SDBOT_RUN_DIR` | `./.run` | 宿主机 PID / 日志目录；可为验证指定独立目录 |
 | `SDBOT_DATA_DIR` | `./.data`（容器 `/data`） | 事件日志与原始 payload 目录 |
-| `SDBOT_REPOS` | 空 = 全收 | 逗号分隔的 `owner/name` 允许列表，其余仓的事件记为 `ignored`（对发送方仍回 200） |
+| `SDBOT_REPOS` | `openJiuwen-ai/sciencediscovery,ScienceDiscovery/sciencediscovery` | 仅处理允许列表中的 GitHub 仓库；未设置或空值仍使用这两个仓。其他仓和非仓库事件只归档、回 200；ping 正常响应 |
 | `SDBOT_MAX_BODY_MB` | `25` | 请求体上限（GitHub 单次投递上限 25 MB），超过返回 413，保留上限内收到的前缀并标记不完整 |
 | `SDBOT_DEDUPE_WINDOW` | `2000` | 记住的 delivery id 数，用于识别平台重投 |
 | `SDBOT_LOG_LEVEL` | `INFO` | 日志级别 |
@@ -113,7 +113,7 @@ docker compose down             # 加 -v 同时删事件日志卷 bot-data
 ### Hook 与静态看板发布
 
 - `AnalyzeHandler`：未来的 Issue/PR 自动分析检视入口。`on_issue`、`on_issue_comment`（预留 `/analyze` 这类斜杠命令）、`on_pull_request`、`on_pull_request_review`、`on_pull_request_merged`。
-- `BoardUpdater`：默认只记录调用。配置 `SDBOT_BOARD_REPO` 后由 `StaticBoardUpdater` 接管，后台发布静态看板。
+- `BoardUpdater`：默认只记录调用。配置 `SDBOT_BOARD_TARGETS` 后按源仓库分别排队，后台发布正式和测试静态看板。
 - 调用结果为 `noop`、`queued` 或 `ignored`，路由和 hook 保存在 admin 事件历史。发布网络请求在后台执行，webhook 不等待 GitHub；失败保留任务并退避重试。
 
 配置示例见 `.env.example`。静态看板源码与 bot 放在相邻目录 `github_status_board`，或用 `SDBOT_BOARD_SOURCE_DIR_HOST` 指定目录。在本地 `.env` 设置发布目标 `SDBOT_BOARD_REPO`、跟踪源 `SDBOT_BOARD_TRACK_REPO` 和专用 `SDBOT_BOARD_GITHUB_TOKEN`，再运行：
@@ -227,7 +227,7 @@ GitCode 没有 GitHub App 这种安装体，只有仓库级 WebHook（文档：d
 - Cloudflare 账号里创建隧道、拿 token、配 public hostname（本工具不代做）。
 - 人类在 GitHub 创建普通组织／仓库 Webhook 或创建并安装 App，在 GitCode 建仓库 Webhook。
 - GitCode 的 payload 只按官方文档样例构造，真实字段（尤其 Note、标签、reopen）要拿首批真实投递校准适配器。
-- 阶段二功能：`AnalyzeHandler` 的分析逻辑、`BoardUpdater` 对看板的实际调用，以及以 App 身份写回（需要 App 私钥 + installation token）。
+- 阶段二功能：`AnalyzeHandler` 的分析逻辑，以及以 App 身份写回（需要 App 私钥 + installation token）。
 
 ## 目录结构
 
@@ -250,3 +250,27 @@ run.sh                 宿主机模式 start/stop/restart/status/logs/test/repla
 ```
 
 `.data/`、`.run/`、`.tmp/`、`.env` 在 `.gitignore`。本目录是独立 git 仓库；上层 `science_agent_utils` 通过 `.git/info/exclude` 忽略它。
+
+## 正式与测试看板
+
+| 用途 | 跟踪源仓库 | 看板仓库 / Pages |
+| --- | --- | --- |
+| 正式 | `openJiuwen-ai/sciencediscovery` | [github-status-board](https://sciencediscovery.github.io/github-status-board/) |
+| 测试 | `ScienceDiscovery/sciencediscovery` | [github-status-board-test](https://sciencediscovery.github.io/github-status-board-test/) |
+
+bot 默认只处理这两个 GitHub 仓库。其他仓库、同名 GitCode 仓库、无仓库的非 ping 事件不会调用 Analyze / Board hook；每次投递的原始请求、验签结果、实际响应仍按原规则保存在归档中，可从管理面板查看。错误签名仍返回 401。GitHub ping 保留 pong，但不触发发布。
+
+本地 `.env` 中配置：
+
+```dotenv
+SDBOT_REPOS=openJiuwen-ai/sciencediscovery,ScienceDiscovery/sciencediscovery
+SDBOT_BOARD_TARGETS='{"openJiuwen-ai/sciencediscovery":"ScienceDiscovery/github-status-board","ScienceDiscovery/sciencediscovery":"ScienceDiscovery/github-status-board-test"}'
+SDBOT_BOARD_SOURCE_DIR_HOST=../github_status_board
+SDBOT_BOARD_GITHUB_TOKEN=
+```
+
+最后一项只在本地填写有源仓读取和两个看板仓 Contents 写权限的凭据。随后运行 `docker compose -f docker-compose.yml -f docker-compose.board.yml up -d --build`。隧道仍只转发 8791，8792 仍只供本机管理。没有发布凭据时使用基础 compose，Webhook 接收和归档不受影响。
+
+每个源仓拥有独立的持久队列、输出目录、工作线程、重试状态；按源仓和目标仓共同标识，换目标不会复用旧站点成功状态。20 秒合并事件，单站点发布间隔至少 60 秒，启动和每小时兜底更新。一个站点失败不阻断另一站点。管理端 `/api/status` 的 `board.targets` 列出各源仓、目标仓、pending / running / last_success / commit / error。公开 Webhook 响应不含这些细节。
+
+旧单仓 `SDBOT_BOARD_REPO` / `SDBOT_BOARD_TRACK_REPO` 配置仍兼容，但不能与多仓配置同时设置。来源必须在允许列表中，目标不能重复或与跟踪源仓相同，避免互相覆盖和发布事件回环。

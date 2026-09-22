@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import replace
+import hashlib
 import json
 import os
 import re
@@ -11,6 +13,37 @@ import threading
 import time
 
 from .hooks import BoardUpdater
+
+
+class MultiBoardUpdater(BoardUpdater):
+    """Each source has its own queue, retries, worker and exported site."""
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.boards = {}
+        for source, destination in cfg.publication_targets().items():
+            identity = (source.lower() + ":" + destination.lower()).encode()
+            directory = cfg.data_dir / "boards" / hashlib.sha256(identity).hexdigest()[:24]
+            target = replace(cfg, board_track_repo=source, board_repo=destination,
+                             board_targets={}, data_dir=directory)
+            self.boards[source.lower()] = StaticBoardUpdater(target)
+
+    def _noop(self, method, event):
+        board = self.boards.get(event.repo.lower()) if event.provider == "github" else None
+        if board is None:
+            return {"hook": self.name, "method": method, "status": "ignored"}
+        return board._noop(method, event)
+
+    def status(self):
+        return {"enabled": True, "targets": [b.status() for b in self.boards.values()]}
+
+    def start(self):
+        for board in self.boards.values():
+            board.start()
+
+    def stop(self):
+        for board in self.boards.values():
+            board.stop()
 
 
 class StaticBoardUpdater(BoardUpdater):
