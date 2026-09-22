@@ -76,7 +76,8 @@ class RouterTests(unittest.TestCase):
         self.assertTrue(outcome.handled)
         self.assertEqual(outcome.hook_names(), ["board.on_issue"])   # the other hook still ran
         self.assertEqual(len(outcome.errors), 1)
-        self.assertIn("boom", outcome.errors[0])
+        self.assertIn("RuntimeError", outcome.errors[0])
+        self.assertNotIn("boom", outcome.errors[0])
 
     def test_custom_hooks_receive_the_unified_event(self):
         seen = []

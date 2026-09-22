@@ -18,6 +18,9 @@ from .hooks import BoardUpdater
 class MultiBoardUpdater(BoardUpdater):
     """Each source has its own queue, retries, worker and exported site."""
 
+    mode = "active"
+    listener_providers = ("github",)
+
     def __init__(self, cfg):
         super().__init__()
         self.boards = {}
@@ -27,6 +30,10 @@ class MultiBoardUpdater(BoardUpdater):
             target = replace(cfg, board_track_repo=source, board_repo=destination,
                              board_targets={}, data_dir=directory)
             self.boards[source.lower()] = StaticBoardUpdater(target)
+
+    @property
+    def listener_repositories(self):
+        return tuple(self.boards)
 
     def _noop(self, method, event):
         board = self.boards.get(event.repo.lower()) if event.provider == "github" else None
@@ -47,6 +54,9 @@ class MultiBoardUpdater(BoardUpdater):
 
 
 class StaticBoardUpdater(BoardUpdater):
+    mode = "active"
+    listener_providers = ("github",)
+
     def __init__(self, cfg, runner=None):
         super().__init__()
         self.cfg = cfg
@@ -64,6 +74,10 @@ class StaticBoardUpdater(BoardUpdater):
         self.next_periodic = time.monotonic()
         self.retry_delay = 30
         self.last_attempt = 0.0
+
+    @property
+    def listener_repositories(self):
+        return (self.cfg.board_track_repo,)
 
     def _save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)

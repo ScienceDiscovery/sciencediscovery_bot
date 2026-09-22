@@ -27,6 +27,7 @@ module.exports = defineConfig({
     url: 'http://127.0.0.1:18891/healthz', reuseExistingServer: false,
     env: { SDBOT_DATA_DIR: data, SDBOT_WEBHOOK_HOST: '127.0.0.1', SDBOT_ADMIN_HOST: '127.0.0.1',
       SDBOT_WEBHOOK_SECRET: process.env.SDBOT_E2E_SECRET, SDBOT_GITHUB_WEBHOOK_SECRET: '', SDBOT_GITCODE_WEBHOOK_SECRET: '',
+      SDBOT_BOARD_TARGETS: '', SDBOT_BOARD_REPO: '', SDBOT_BOARD_TRACK_REPO: '', SDBOT_BOARD_GITHUB_TOKEN: '',
       SDBOT_ADMIN_TOKEN: process.env.SDBOT_E2E_ADMIN_TOKEN, SDBOT_REPOS: '', SDBOT_ADMIN_ENABLED: '1' },
     stdout: 'ignore', stderr: 'ignore' }
 });

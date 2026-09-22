@@ -101,7 +101,7 @@ class EventStore:
         record = event.summary()
         record.update(received_at=now_iso(), status=status, route=outcome.route, handled=outcome.handled,
                       hooks=outcome.hook_names(), errors=list(outcome.errors), duplicate=outcome.duplicate,
-                      note=outcome.note, verification=verification.mode)
+                      note=outcome.note, verification=verification.mode, listeners=list(outcome.listeners))
         return record
 
     @staticmethod

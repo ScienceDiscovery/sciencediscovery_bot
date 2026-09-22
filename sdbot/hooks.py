@@ -1,13 +1,8 @@
-"""Extension points that later phases fill in.
+"""Business hook interfaces and no-op implementations.
 
-Every method is a no-op today, but the router already calls them on the right events,
-so an implementation can be dropped in without touching the pipeline. Each call is
-appended to ``calls`` and returned as a small dict that ends up in the event log, which
-is how the wiring is verified now (tests + ``hooks`` column of events.jsonl).
-
-Rules for future implementations: never raise for a business failure (log and return a
-dict with ``status: "error"``); never block the webhook thread for long (queue heavy work
-and return); the router already catches exceptions so a bug cannot turn into a 5xx.
+Subscriptions declare which events reach each method. StaticBoardUpdater and
+MultiBoardUpdater replace board no-ops with durable background publication.
+Handlers must return quickly; expensive work belongs in a business-owned queue.
 """
 
 from __future__ import annotations
@@ -19,6 +14,7 @@ from .events import Event
 
 class Hook:
     name = "hook"
+    mode = "noop"
 
     def __init__(self, log: logging.Logger | None = None):
         self.calls: list[tuple[str, str]] = []           # (method, delivery_id), newest last
@@ -62,7 +58,7 @@ class AnalyzeHandler(Hook):
 
 
 class BoardUpdater(Hook):
-    """Future: board updates driven by App or ordinary webhook events.
+    """No-op board interface for App or ordinary webhook events.
 
     Downstream integrations can enqueue a debounced refresh after issue, pull request,
     or push events. This framework only records calls; no external board is contacted.

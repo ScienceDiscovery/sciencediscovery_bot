@@ -12,6 +12,24 @@
   header .muted { color: var(--muted); }
   main { padding: 16px 20px; display: grid; gap: 16px; }
   main > * { min-width: 0; }
+  [hidden] { display: none !important; }
+  nav { display: flex; gap: 8px; }
+  nav a { color: var(--fg); text-decoration: none; padding: 6px 10px; border-radius: 4px; }
+  nav a[aria-current="page"] { background: var(--bg); box-shadow: inset 0 -2px var(--ok); }
+  #events-page { display: grid; gap: 16px; }
+  #subscriptions-page h2 { margin: 0; font-size: 18px; }
+  #subscription-scope { overflow-wrap: anywhere; color: var(--muted); }
+  .subscription-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; margin-top: 16px; }
+  .subscription { min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 14px; overflow-wrap: anywhere; }
+  .subscription header { padding: 0; border: 0; justify-content: space-between; gap: 8px; }
+  .subscription h3 { font: 600 14px/1.5 ui-monospace, monospace; margin: 0; }
+  .subscription p { margin: 8px 0; }
+  .subscription .routes { display: flex; flex-wrap: wrap; gap: 4px; }
+  .subscription code { white-space: normal; overflow-wrap: anywhere; }
+  .subscription .scope { color: var(--muted); font-size: 12px; }
+  #subscription-count { color: var(--muted); margin-top: 12px; }
+  #subscription-search { max-width: 100%; box-sizing: border-box; }
+
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
   .card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; background: var(--bg); }
   .card .k { color: var(--muted); font-size: 12px; }
@@ -47,12 +65,14 @@
 <body>
 <header>
   <h1>sciencediscovery-bot</h1>
+  <nav aria-label="管理页面"><a href="#events" data-view="events">事件记录</a><a href="#subscriptions" data-view="subscriptions">监听点</a></nav>
   <span id="listeners" class="muted"></span>
   <span id="timezone" class="muted"></span>
   <span id="clock" class="muted"></span>
 </header>
 <main>
-  <div id="banner"></div>
+  <div id="banner" role="alert"></div>
+  <div id="events-page">
   <section class="cards" id="cards"></section>
   <section>
     <div class="filters">
@@ -65,7 +85,7 @@
       <span class="muted">每 10 s 自动刷新；重放 = 把已存 payload 以新 delivery id 再送入管道</span>
     </div>
     <div class="table-scroll"><table>
-      <thead><tr><th>时间（本地）</th><th>状态</th><th>平台</th><th>route</th><th>repo</th><th>#</th><th>标题 / 原因</th><th>hooks</th><th>验签</th><th>delivery</th><th></th></tr></thead>
+      <thead><tr><th>时间（本地）</th><th>状态</th><th>平台</th><th>route</th><th>repo</th><th>#</th><th>标题 / 原因</th><th>监听处理</th><th>验签</th><th>delivery</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
     <div class="pager">
@@ -73,6 +93,19 @@
       <span id="page-info" aria-live="polite"></span>
       <button id="next-page" disabled>下一页</button>
     </div>
+  </section>
+  </div>
+  <section id="subscriptions-page" aria-label="监听点" hidden>
+    <h2>业务监听点</h2>
+    <p id="subscription-scope"></p>
+    <div class="filters">
+      <label>业务 <select id="subscription-business"><option value="">全部</option></select></label>
+      <label>状态 <select id="subscription-mode"><option value="">全部</option><option value="active">已启用</option><option value="noop">占位</option><option value="disabled">已停用</option></select></label>
+      <label>搜索 <input id="subscription-search" type="search" placeholder="监听名称、事件或用途"></label>
+      <button id="reload-subscriptions">刷新监听点</button>
+    </div>
+    <div id="subscription-count" role="status"></div>
+    <div id="subscription-list" class="subscription-grid"></div>
   </section>
 </main>
 <dialog id="delivery-detail" aria-labelledby="detail-title">
@@ -87,13 +120,47 @@
 </dialog>
 <script>
 const $ = (s) => document.querySelector(s);
-const KINDS = ["ping", "issue", "issue_comment", "pull_request", "pull_request_review", "push", "installation", "unknown"];
+const KINDS = ["ping", "issue", "issue_comment", "pull_request", "pull_request_review", "push", "installation", "workflow_run", "workflow_job", "check_run", "check_suite", "status", "release", "create", "delete", "unknown"];
 for (const k of KINDS) $("#f-kind").append(new Option(k, k));
 const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
 // Fragments are not sent over HTTP. Keep the token in memory after loading.
 if (token) history.replaceState(null, "", location.pathname);
 const headers = token ? { Authorization: "Bearer " + token } : {};
 let offset = 0, pageSize = 100, listRequest = 0, detailRequest = 0, currentDetail = null;
+let subscriptions = [], refreshRequest = 0;
+const currentView = () => location.hash === "#subscriptions" ? "subscriptions" : "events";
+function selectView() {
+  const view = currentView();
+  $("#events-page").hidden = view !== "events";
+  $("#subscriptions-page").hidden = view !== "subscriptions";
+  for (const link of document.querySelectorAll("[data-view]")) {
+    if (link.dataset.view === view) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  }
+}
+function renderSubscriptions() {
+  const business = $("#subscription-business").value, mode = $("#subscription-mode").value;
+  const query = $("#subscription-search").value.trim().toLowerCase();
+  const visible = subscriptions.filter(s => (!business || s.business === business) && (!mode || s.mode === mode)
+    && (!query || [s.id, s.description, s.business, ...s.routes].join(" ").toLowerCase().includes(query)));
+  $("#subscription-count").textContent = `显示 ${visible.length} / ${subscriptions.length} 个监听点`;
+  $("#subscription-list").innerHTML = visible.map(s => `<article class="subscription">
+    <header><h3>${esc(s.id)}</h3><span class="${s.mode === 'active' ? 'ok' : s.mode === 'noop' ? 'warn' : ''}">${esc({active:'已启用',noop:'占位',disabled:'已停用'}[s.mode] || s.mode)}</span></header>
+    <p><strong>${esc(s.business)}</strong> · ${esc(s.description)}</p>
+    <div class="routes">${s.routes.map(route => `<code>${esc(route)}</code>`).join('')}</div>
+    ${s.exclude.length ? `<p class="scope">排除：${esc(s.exclude.join('、'))}</p>` : ''}
+    <p class="scope">平台：${esc(s.providers.join('、') || '遵循接入范围')}<br>仓库：${esc(s.repositories.join('、') || '遵循全局跟踪范围')}</p>
+  </article>`).join('') || '<p>没有匹配的监听点</p>';
+}
+async function loadSubscriptions() {
+  const doc = await api("/api/listeners");
+  subscriptions = doc.listeners;
+  $("#subscription-scope").textContent = "跟踪仓库：" + (doc.repositories.join("、") || "由接入配置决定") + "。通过验签、仓库范围检查和去重后执行；其他投递仍保留在事件记录中。";
+  const filter = $("#subscription-business"), selected = filter.value;
+  filter.replaceChildren(new Option("全部", ""), ...[...new Set(subscriptions.map(s => s.business))].map(name => new Option(name, name)));
+  if ([...filter.options].some(o => o.value === selected)) filter.value = selected;
+  renderSubscriptions();
+}
 const eventTimeFormat = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
 });
@@ -135,9 +202,10 @@ async function loadStatus() {
     + card("跟踪仓库", c.repos.length ? c.repos.join(", ") : "全部", "SDBOT_REPOS", "")
     + card("投递留存", "全部记录", `请求正文上限 ${Math.round(c.payload_max_bytes / 1024 / 1024)} MB；超限标记不完整`, "");
   if (st.board?.enabled) {
-    const b = st.board;
-    $("#cards").innerHTML += card("静态看板", b.running ? "发布中" : b.pending ? "等待更新" : "已提交发布",
-      `${b.repository} · 最近成功 ${eventTime(b.last_success)}${b.error ? " · 重试中：" + b.error : ""}`, b.error ? "warn" : "ok");
+    for (const b of st.board.targets || [st.board]) {
+      $("#cards").innerHTML += card("静态看板", b.running ? "发布中" : b.pending ? "等待更新" : b.last_success ? "已提交发布" : "等待首次发布",
+        `${b.source || ''} → ${b.repository} · 最近成功 ${eventTime(b.last_success)}${b.error ? " · 重试中：" + b.error : ""}`, b.error ? "warn" : "ok");
+    }
   }
 }
 
@@ -159,7 +227,7 @@ async function loadEvents() {
   $("#rows").innerHTML = doc.events.map((e) => {
     const cls = e.status === "accepted" ? (e.duplicate ? "warn" : "ok") : "bad";
     const title = e.status === "rejected" ? `${esc(e.reason)} (HTTP ${e.http_status})` : esc(e.title || e.note || "");
-    const hooks = (e.hooks || []).join(", ") + ((e.errors || []).length ? ` <span class="bad">errors ${e.errors.length}</span>` : "");
+    const hooks = esc(e.listeners?.length ? e.listeners.map(l => `${l.id} (${l.status})`).join(", ") : (e.hooks || []).join(", ")) + ((e.errors || []).length ? ` <span class="bad">errors ${e.errors.length}</span>` : "");
     const link = /^https?:\/\//i.test(e.url || "") ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.number ?? "")}</a>` : esc(e.number ?? "");
     const id = e.record_id || e.delivery_id;
     const replay = e.payload_file && e.body_complete !== false && ["github", "gitcode"].includes(e.provider) ? `<button data-id="${esc(id)}" class="replay">重放</button>` : "";
@@ -222,11 +290,14 @@ document.addEventListener("click", (ev) => {
 });
 
 async function refresh() {
+  const requestId = ++refreshRequest;
   try {
-    await Promise.all([loadStatus(), loadEvents()]);
+    await Promise.all([loadStatus(), currentView() === "subscriptions" ? loadSubscriptions() : loadEvents()]);
+    if (requestId !== refreshRequest) return;
     $("#banner").style.display = "none";
     $("#clock").textContent = "更新于 " + new Date().toLocaleTimeString();
   } catch (err) {
+    if (requestId !== refreshRequest) return;
     $("#banner").textContent = "读取失败：" + err.message + (token ? "" : "（若设置了 SDBOT_ADMIN_TOKEN，在地址后加 #token=…）");
     $("#banner").style.display = "block";
   }
@@ -245,12 +316,17 @@ document.addEventListener("click", async (ev) => {
   } finally { setTimeout(() => { btn.disabled = false; btn.textContent = "重放"; }, 3000); }
 });
 $("#reload").addEventListener("click", refresh);
+$("#reload-subscriptions").addEventListener("click", refresh);
+for (const id of ["#subscription-business", "#subscription-mode"]) $(id).addEventListener("change", renderSubscriptions);
+$("#subscription-search").addEventListener("input", renderSubscriptions);
+window.addEventListener("hashchange", () => { selectView(); refresh(); });
 for (const id of ["#f-kind", "#f-status", "#f-route", "#f-number", "#f-limit"]) $(id).addEventListener("change", () => { offset = 0; refresh(); });
 $("#previous-page").addEventListener("click", () => { offset = Math.max(0, offset - pageSize); refresh(); });
 $("#next-page").addEventListener("click", () => { offset += pageSize; refresh(); });
+selectView();
 refresh();
-setInterval(() => { if (!offset && !document.hidden) refresh(); }, 10000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden && !offset) refresh(); });
+setInterval(() => { if ((currentView() === "subscriptions" || !offset) && !document.hidden) refresh(); }, 10000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && (currentView() === "subscriptions" || !offset)) refresh(); });
 </script>
 </body>
 </html>

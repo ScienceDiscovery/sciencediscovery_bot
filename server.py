@@ -247,6 +247,9 @@ class AdminHandler(JSONHandler):
             return self._json({"ok": True, "version": __version__, "started_at": self.server.started_at,
                                "board": board.status() if isinstance(board, MultiBoardUpdater) else {"enabled": False},
                                "config": self.server.cfg.public(), **store.status()})
+        if url.path == "/api/listeners":
+            return self._json({"ok": True, "listeners": self.server.pipeline.router.bus.inventory(),
+                               "repositories": list(self.server.cfg.repos)})
         if url.path == "/api/events":
             query = {k: v[0] for k, v in parse_qs(url.query).items()}
             try:
