@@ -75,10 +75,11 @@ class RepositoryScopeTests(unittest.TestCase):
         self.assertFalse(self.cfg.tracks("openJiuwen-ai/sciencediscovery", "gitcode"))
 
     def test_blank_environment_cannot_open_the_production_allowlist(self):
-        with patch.dict("os.environ", {"SDBOT_REPOS": ""}, clear=True):
-            cfg = Config.from_env()
-        self.assertEqual(cfg.repos, DEFAULT_REPOS)
-        self.assertFalse(cfg.tracks("another/repo"))
+        for value in ("", "  ", " , , "):
+            with patch.dict("os.environ", {"SDBOT_REPOS": value}, clear=True):
+                cfg = Config.from_env()
+            self.assertEqual(cfg.repos, DEFAULT_REPOS)
+            self.assertFalse(cfg.tracks("another/repo"))
 
     def test_targets_validate_and_reject_collisions_or_untracked_sources(self):
         self.assertEqual(self.cfg.validate(), [])

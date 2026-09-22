@@ -106,7 +106,7 @@ class Config:
         if data:
             cfg.data_dir = Path(data).expanduser()
         repos = os.environ.get("SDBOT_REPOS") or ",".join(DEFAULT_REPOS)
-        cfg.repos = tuple(r.strip().lower() for r in repos.split(",") if r.strip())
+        cfg.repos = tuple(r.strip().lower() for r in repos.split(",") if r.strip()) or DEFAULT_REPOS
         for provider, names in SECRET_ENV.items():
             for name in names:
                 value = os.environ.get(name)
