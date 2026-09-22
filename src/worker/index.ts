@@ -4,10 +4,12 @@ import { Pipeline } from '../core/pipeline.js';
 import { Router } from '../core/bus.js';
 import { GitHubApp } from '../core/github-app.js';
 import { dispatchCollection } from '../core/actions.js';
-import { Mutex } from '../core/types.js';
+import { Mutex, object } from '../core/types.js';
 import { WorkerArchive } from './archive.js';
 import { WorkerBoard } from './board.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
+import { authorizeAdmin } from './access.js';
+import panel from '../../static/index.html';
 
 export class BotObject extends DurableObject<WorkerEnv> {
   private readonly mutex = new Mutex();
@@ -31,6 +33,11 @@ export class BotObject extends DurableObject<WorkerEnv> {
   fetch(request: Request): Promise<Response> { return this.receive(request, false); }
   // Namespace RPC only; the public fetch path never selects this method.
   admin(request: Request): Promise<Response> { return this.receive(request, true); }
+  // Read-only RPC. The public management adapter authenticates before invoking it.
+  // Queries do not acquire the ingestion mutex or schedule background work.
+  query(path: string): Promise<Response> {
+    return this.app.readAdmin(new Request('https://admin.internal' + path));
+  }
   async wake(): Promise<void> { await this.mutex.run(() => this.board.schedule()); }
   async alarm(): Promise<void> {
     const jobs = await this.mutex.run(async () => { const result = this.board.claim(); await this.board.schedule(); return result; });
@@ -47,7 +54,28 @@ export class BotObject extends DurableObject<WorkerEnv> {
 
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
-    try { return await env.BOT.getByName(OBJECT_NAME).fetch(request); }
+    try {
+      const url = new URL(request.url);
+      if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
+        const denied = await authorizeAdmin(request, env);
+        if (denied) return denied;
+        if (request.method !== 'GET') return jsonResponse({ ok: false, error: 'method not allowed' }, 405, new Headers({ Allow: 'GET', 'Cache-Control': 'no-store', 'Content-Type': 'application/json' }));
+        if (['/admin', '/admin/'].includes(url.pathname)) return new Response(panel, { headers: {
+          'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+          'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+        } });
+        const path = url.pathname.slice('/admin'.length);
+        if (!['/api/status', '/api/listeners', '/api/events'].includes(path) && !path.startsWith('/api/events/')) return jsonResponse({ ok: false, error: 'not found' }, 404);
+        const response = await env.BOT.getByName(OBJECT_NAME).query(path + url.search);
+        if (path !== '/api/status' || !response.ok) return response;
+        const status = object(await response.json()), config = object(status.config);
+        delete config.webhook; delete config.admin; delete config.data_dir;
+        return jsonResponse({ ...status, runtime: 'cloudflare', environment: env.SDBOT_ENVIRONMENT || 'unconfigured',
+          build: (env.SDBOT_VERSION as { id?: string } | undefined)?.id || null });
+      }
+      return await env.BOT.getByName(OBJECT_NAME).fetch(request);
+    }
     catch { return jsonResponse({ ok: false, error: 'service unavailable' }, 503); }
   },
   async scheduled(_controller: ScheduledController, env: WorkerEnv): Promise<void> {

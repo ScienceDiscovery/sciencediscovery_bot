@@ -22,6 +22,6 @@ Workers 本地适配：`npm ci` 后复制 `.dev.vars.example` 为 `.dev.vars`，
 
 ## 文档
 
-[完整目录](docs/README.md) · [接入与验签](docs/features/webhook-ingestion.md) · [投递记录与重放](docs/features/webhook-history.md) · [事件总线与扩展](docs/features/event-bus.md) · [看板更新](docs/features/board-publication.md) · [管理面板](docs/features/admin-panel.md) · [验证指南](docs/testing.md)
+[完整目录](docs/README.md) · [接入与验签](docs/features/webhook-ingestion.md) · [投递记录与查看](docs/features/webhook-history.md) · [事件总线与扩展](docs/features/event-bus.md) · [看板更新](docs/features/board-publication.md) · [管理面板](docs/features/admin-panel.md) · [验证指南](docs/testing.md)
 
 新增或修改特性时，同步更新对应文档及目录；仓库维护约定见 [AGENTS.md](AGENTS.md)。

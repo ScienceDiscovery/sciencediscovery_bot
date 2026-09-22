@@ -2,7 +2,7 @@
 
 ## 宿主机
 
-Node.js 22+、npm。Bot 没有生产 npm 依赖，验签和 App RSA 签名使用 Web Crypto；只有启用外部看板采集器时需要宿主 Python 3。准备本地 `.env`，只在本地填写密钥，然后加载环境：
+Node.js 22+、npm。Node 验签和 App RSA 签名使用 Web Crypto；Worker 的 Access JWT 校验使用 jose；只有启用外部看板采集器时需要宿主 Python 3。准备本地 `.env`，只在本地填写密钥，然后加载环境：
 
 ```bash
 npm ci --cache .tmp/npm-cache
@@ -46,7 +46,7 @@ docker compose down
 | SDBOT_WEBHOOK_HOST / PORT | 127.0.0.1 / 8791 | 变量全名 SDBOT_WEBHOOK_HOST、SDBOT_WEBHOOK_PORT；旧 SDBOT_HOST / SDBOT_PORT 兼容 |
 | SDBOT_ADMIN_HOST / PORT | 127.0.0.1 / 8792 | 变量全名 SDBOT_ADMIN_HOST、SDBOT_ADMIN_PORT |
 | SDBOT_ADMIN_ENABLED | 1 | 设为 0 关闭管理监听 |
-| SDBOT_ADMIN_TOKEN | 无 | 管理数据与操作需要 Bearer，见[管理认证](features/admin-panel.md) |
+| SDBOT_ADMIN_TOKEN | 无 | 管理数据需要 Bearer，见[管理认证](features/admin-panel.md) |
 | SDBOT_ALLOW_NON_LOOPBACK | 0 | 仅容器等明确场景允许非 loopback 绑定；镜像已设置 |
 | SDBOT_REPOS | 两个跟踪源仓 | 逗号分隔；空值／空白不放开范围，见[接入范围](features/webhook-ingestion.md) |
 | SDBOT_MAX_BODY_MB | 25 | 最大接收正文 MiB，超限保存前缀并标记 |

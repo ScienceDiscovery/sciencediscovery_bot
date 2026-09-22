@@ -10,7 +10,7 @@ export async function workerRuntime({ directory, bindings, outboundService, port
   process.env.XDG_CACHE_HOME = directory;
   process.env.XDG_CONFIG_HOME = directory;
   const { Miniflare } = await import('miniflare');
-  await build({ entryPoints: { index: entry, 'local-admin': 'src/worker/local-admin.ts' }, outdir: directory, bundle: true, format: 'esm', platform: 'browser', target: 'es2022', external: ['cloudflare:workers'] });
+  await build({ entryPoints: { index: entry, 'local-admin': 'src/worker/local-admin.ts' }, outdir: directory, bundle: true, format: 'esm', platform: 'browser', target: 'es2022', loader: { '.html': 'text' }, external: ['cloudflare:workers'] });
   const common = { compatibilityDate: '2026-07-30', modules: true,
     outboundService: outboundService || (() => new Response(null, { status: 503 })) };
   const namespace = { className: 'BotObject', scriptName: 'bot', useSQLite: true };

@@ -1,8 +1,8 @@
 import { publicConfig } from './config.js';
 import { responseHeaders } from './archive.js';
 import { Pipeline, rejected } from './pipeline.js';
-import { detectProvider, equalSecret, sign } from './signature.js';
-import { jsonBytes, object, string, type Doc, type Reply } from './types.js';
+import { detectProvider, equalSecret } from './signature.js';
+import { jsonBytes, type Doc, type Reply } from './types.js';
 
 export const VERSION = '0.4.0';
 export interface Capture { body: Uint8Array; complete: boolean; declared: number | null; note: string; error?: { status: number; message: string }; }
@@ -53,11 +53,18 @@ export class BotApplication {
     } catch { return jsonResponse({ ok: false, error: 'storage unavailable' }, 503); }
   }
   async admin(request: Request): Promise<Response> {
-    const cfg = this.pipeline.cfg, url = new URL(request.url), path = url.pathname, store = this.pipeline.store;
+    const cfg = this.pipeline.cfg, url = new URL(request.url), path = url.pathname;
     const fail = (error: string, status: number) => jsonResponse({ ok: false, error }, status);
     if ([...request.headers.keys()].some(key => key.toLowerCase().startsWith('cf-'))) return fail('admin listener is local only', 403);
     const shell = request.method === 'GET' && ['/', '/index.html'].includes(path);
     if (!shell && cfg.admin_token && !await equalSecret(request.headers.get('authorization') || '', `Bearer ${cfg.admin_token}`)) return fail('unauthorized', 401);
+    return this.readAdmin(request);
+  }
+  /** Read-only application queries; transport adapters authenticate before calling. */
+  async readAdmin(request: Request): Promise<Response> {
+    const cfg = this.pipeline.cfg, url = new URL(request.url), path = url.pathname, store = this.pipeline.store;
+    const fail = (error: string, status: number) => jsonResponse({ ok: false, error }, status);
+    const shell = request.method === 'GET' && ['/', '/index.html'].includes(path);
     try {
       if (shell) return new Response(await this.panel(), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', Server: 'sciencediscovery-bot' } });
       if (request.method === 'GET') {
@@ -78,27 +85,7 @@ export class BotApplication {
         }
         if (path === '/favicon.ico') return new Response(null, { status: 204 });
       }
-      if (request.method === 'POST' && path.startsWith('/api/replay/')) {
-        if (request.headers.get('x-requested-with') !== 'sciencediscovery-bot') return fail('admin writes need X-Requested-With: sciencediscovery-bot', 403);
-        const origin = request.headers.get('origin');
-        // Service bindings may rewrite Host for transport; the Request URL keeps
-        // the original admin origin. Node also constructs that URL from Host.
-        if (origin && new URL(origin).origin !== url.origin) return fail('cross-origin admin write refused', 403);
-        return await this.replay(decodeURIComponent(path.slice('/api/replay/'.length)));
-      }
       return fail('not found', 404);
     } catch { return fail('storage unavailable', 503); }
-  }
-  private async replay(identifier: string): Promise<Response> {
-    const store = this.pipeline.store, record = await store.find(identifier);
-    if (!record) return jsonResponse({ ok: false, error: 'delivery not found' }, 404);
-    const provider = string(record.provider), body = await store.payload(record);
-    if (!['github', 'gitcode'].includes(provider) || body === null || record.body_complete === false) return jsonResponse({ ok: false, error: 'no stored payload for this delivery' }, 409);
-    const detail = await store.detail(string(record.record_id));
-    const originalHeaders = new Headers(object(object(detail?.request).headers) as Record<string, string>);
-    const headers = new Headers({ 'Content-Type': originalHeaders.get('content-type') || 'application/json', [`x-${provider}-event`]: string(record.raw_event), [`x-${provider}-delivery`]: `replay-${crypto.randomUUID()}` });
-    if (this.pipeline.cfg.secrets[provider]) headers.set(provider === 'github' ? 'x-hub-signature-256' : 'x-gitcode-signature-256', await sign(body, this.pipeline.cfg.secrets[provider]));
-    const reply = await this.pipeline.receive(headers, body, provider, { source: 'replay', method: 'POST', path: `/webhook/${provider}`, replayed_from: record.record_id });
-    return jsonResponse({ ok: reply.status === 200, status: reply.status, record: reply.record }, reply.status);
   }
 }

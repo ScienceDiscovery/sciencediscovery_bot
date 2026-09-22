@@ -18,7 +18,8 @@
     "test:worker-adapter": "node --test tests-ts/worker-adapter.test.mjs",
     "workers:local": "node tools/workers-local.mjs",
     "workers:check": "node tools/workers-check.mjs",
-    "test:e2e:workers": "node .e2e/node_modules/@playwright/test/cli.js test --config test/playwright.workers.config.cjs"
+    "test:e2e:workers": "node .e2e/node_modules/@playwright/test/cli.js test --config test/playwright.workers.config.cjs",
+    "test:e2e:cloud-admin": "node .e2e/node_modules/@playwright/test/cli.js test --config test/playwright.cloud.config.cjs"
   },
   "overrides": {
     "miniflare": {
@@ -34,5 +35,8 @@
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "wrangler": "4.136.1"
+  },
+  "dependencies": {
+    "jose": "^6.2.12"
   }
 }

@@ -1,7 +1,7 @@
 import { base64 } from './signature.js';
 import { id, jsonBytes, nowISO, object, text, type Doc, type Reply } from './types.js';
 
-export const safeHeaders = (headers: Headers): Doc => Object.fromEntries([...headers].map(([name, value]) => [name, /authorization|cookie|token|secret|signature|api[-_]?key/i.test(name) ? '[REDACTED]' : value]));
+export const safeHeaders = (headers: Headers): Doc => Object.fromEntries([...headers].map(([name, value]) => [name, /authorization|cookie|token|secret|signature|jwt|api[-_]?key/i.test(name) ? '[REDACTED]' : value]));
 export function safeTarget(target: string): string {
   const url = new URL(target, 'http://local');
   const params = new URLSearchParams([...url.searchParams].map(([key]) => [key, '[REDACTED]']));

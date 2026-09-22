@@ -2,11 +2,11 @@
 
 ## 功能与边界
 
-Worker 保留 Webhook 验签、事件总线、两个源仓范围、全量投递存档与最小公开响应；看板采集由目标看板仓的 GitHub Actions 执行，Python 采集器继续使用。无需在 Worker 内启动 Python，也不依赖 cloudflared。
+Worker 保留 Webhook 验签、事件总线、配置的源仓范围、全量投递存档与最小公开响应；看板采集由目标看板仓的 GitHub Actions 执行，Python 采集器继续使用。无需在 Worker 内启动 Python，也不依赖 cloudflared。
 
 `wrangler.jsonc` 中的独立测试域名提供 `/healthz` 与 `/webhook/github` 等最小公开接口，App ID 是非敏感配置，密钥单独保存在云端 Secrets。测试入口与 Compose 的正式接收地址分开；当前配置仍关闭看板目标和 Cron。部署到另一账号时应替换 App ID、域名及资源名称；新建无公网入口的实例按下方首次部署步骤先移除 `routes`。
 
-本地适配使用真实 workerd、SQLite Durable Object 和 R2 模拟存储，可验证重启恢复、查询、重放、去重与调度。仓库提供生产 Worker 入口和 Wrangler 配置，但不会自动创建账号资源或切换现有服务。现有 Compose 与数据卷独立保留；本地模拟器既不读取 Compose 的 `.env`，也不读取其历史数据。
+本地适配使用真实 workerd、SQLite Durable Object 和 R2 模拟存储，可验证重启恢复、查询、去重与调度。仓库提供生产 Worker 入口和 Wrangler 配置，但不会自动创建账号资源或切换现有服务。现有 Compose 与数据卷独立保留；本地模拟器既不读取 Compose 的 `.env`，也不读取其历史数据。
 
 ```text
 GitHub / GitCode → Worker → BotObject（同一具名实例）
@@ -35,13 +35,13 @@ SQLite、R2 模拟数据及运行时文件保存在 `.wrangler/local/`，正常 
 
 ## 主要实现
 
-- `src/worker/index.ts`：公开 Fetch、Cron 与 `BotObject`。所有投递都进入固定名称 `archive-v1`，避免多个 Worker 实例各自去重。管理方法只通过 Durable Object RPC 可达，公开路由不会转入管理方法。
+- `src/worker/index.ts`：公开 Fetch、Access 鉴权管理、Cron 与 `BotObject`。所有投递都进入固定名称 `archive-v1`，避免多个 Worker 实例各自去重。管理路径通过 Access JWT 校验后仅可调用只读 RPC；未认证路径不会转入管理方法。
 - `src/worker/archive.ts`：完整正文和包含请求／应用响应的详情先写 R2，随后用 SQLite 事务写查询索引、计数、delivery 去重和待刷新状态。存储失败返回 503，不确认成功；失败前写入的 R2 对象可能成为未索引对象，后续维护不能只按日期随意清理。
 - `src/worker/board.ts`：订阅处理器暂存本次刷新意图，只有归档事务成功才计入 `requested`。同仓短时间事件合并，默认 20 秒去抖、成功触发间隔至少 60 秒；失败从 30 秒指数退避到 600 秒。发送前保存 120 秒执行租约，崩溃后恢复。Alarm 执行期间不阻塞新投递；正式启用后每五分钟 Cron 修复调度，空闲站点默认每小时刷新一次。仓库初始配置关闭 Cron 与看板目标，便于先建立云端资源和配置 Secrets。
 - `src/core/actions.ts`：只为目标看板仓申请 `Metadata: read / Actions: write` 安装令牌，调用固定 `collect.yml`、固定 `main`，传入源仓和刷新编号。私钥、令牌、原始 Webhook 内容不会作为工作流 inputs 传递。
-- `tools/workers-local.mjs` 与 `src/worker/local-admin.ts`：本地管理桥和现有面板。校验 loopback hostname，并继续拒绝 Cf-* 头；公网 bundle 不包含管理页面或本地桥。
+- `tools/workers-local.mjs` 与 `src/worker/local-admin.ts`：本地管理桥和现有面板。校验 loopback hostname，并继续拒绝 Cf-* 头；公网 bundle 包含受认证保护的管理页面，不包含本地管理桥。
 
-去重沿用最近 2000 个已接受 delivery 的窗口，可由 `SDBOT_DEDUPE_WINDOW` 调整；被去重的重复请求仍独立归档。SQL 筛选索引字段最多 4096 字符，完整字段保存在 R2 详情中。API 查询／分页／重放协议与 Node 管理端一致，旧文件归档不会自动导入这个新存储。
+去重沿用最近 2000 个已接受 delivery 的窗口，可由 `SDBOT_DEDUPE_WINDOW` 调整；被去重的重复请求仍独立归档。SQL 筛选索引字段最多 4096 字符，完整字段保存在 R2 详情中。只读查询／分页协议与 Node 管理端一致，旧文件归档不会自动导入这个新存储。
 
 Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch 接口没有本项目可依赖的去重键，因此不承诺远端任务恰好执行一次。采集是重新计算快照，目标仓 `concurrency` 串行执行，提交仍是非强制更新。工作流失败不会把旧页面删掉。
 
@@ -70,14 +70,14 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 5. 为 Worker 选择一个新的域名，在 Settings → Domains & Routes 添加 Custom Domain，并将对应 `routes` 同步回 Wrangler 配置；先保留当前 Tunnel 域名。检查新地址的 `/healthz` 只返回 `{"ok":true}`、`/api/status` 返回 404，再使用 `/webhook/github` 接收签名投递。Webhook 地址不能要求浏览器交互登录。
 6. GitHub App 的 Webhook URL 属于 App 注册配置，修改会影响该 App 的全部安装；不能借此只切测试仓。先在实验源仓配置独立的临时仓库 Webhook，指向新地址，保持原 App 地址不动。先验证归档，再停用 Compose 对测试看板的自动触发并让 Worker 仅启用测试目标；核对签名失败、未知事件、重复投递、R2／SQLite 留存及真实采集／Pages 结果。
 7. 启用采集时配置 `SDBOT_BOARD_TARGETS` 的 JSON 字符串映射，并恢复 `triggers.crons=["*/5 * * * *"]` 后部署。看板目标一旦启用并初始化，即使没有新投递，也可能经 Alarm 触发周期刷新；仅关闭 Cron 不能停用持久 Alarm。首次准备同时保持目标为空，正式切换前停用旧进程对应的看板触发，避免两套 Bot 重复调度。
-8. 完成受保护的云端管理通道与旧档案衔接后，再修改 App Webhook URL 正式切换。普通仓库／组织 Webhook 的 URL 也需要逐项核对；验证完移除临时测试 Webhook。保留旧数据卷和回退配置，确认新链路稳定后停止旧接收入口。
+8. 完成[只读管理认证](cloud-admin.md)和云端验收后，再修改 App Webhook URL 正式切换。旧档案不迁移，保留数据卷；两看板仓的 `.sync/` 和 `site/` 不变。普通仓库／组织 Webhook 的 URL 也需要逐项核对；验证完移除临时测试 Webhook。保留旧数据卷和回退配置，确认新链路稳定后停止旧接收入口。
 
-部署命令成功不代表所有 Durable Object 已立即使用新代码和配置：云端传播可能持续数秒至数分钟，存储访问还可能因实例切换而失败。不要紧接部署就切正式 Webhook，也不能仅凭 `/healthz` 判断监听目标已经生效。用带明确测试标记的新 delivery 验证实际归档中的监听结果及目标 Actions 运行；关闭临时目标后也要验证实际结果已回到 `noop`。服务更新窗口收到 503 的投递需要重试；已经按旧配置接受的事件若需再次执行业务，应使用管理重放生成新 delivery，普通 redelivery 会被去重。参见 [Cloudflare 生命周期说明](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)与[已知更新边界](https://developers.cloudflare.com/durable-objects/platform/known-issues/)。
+部署命令成功不代表所有 Durable Object 已立即使用新代码和配置：云端传播可能持续数秒至数分钟，存储访问还可能因实例切换而失败。不要紧接部署就切正式 Webhook，也不能仅凭 `/healthz` 判断监听目标已经生效。用带明确测试标记的新 delivery 验证实际归档中的监听结果及目标 Actions 运行；关闭临时目标后也要验证实际结果已回到 `noop`。服务更新窗口收到 503 的投递需要重试；已经按旧配置接受的事件若需重新采集，应在看板仓运行 Actions，普通 redelivery 可能被去重。参见 [Cloudflare 生命周期说明](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)与[已知更新边界](https://developers.cloudflare.com/durable-objects/platform/known-issues/)。
 
-当前 Compose 管理页查询实际服务的真实投递存档。`workers:local` 的管理页只查询独立的本地模拟存储，不能查询已部署 Worker 或 Compose 数据。云端管理访问仍需实现身份认证及归档查询入口；配置 Cloudflare Access 或管理口令不会自动增加页面。旧 JSONL／正文没有自动导入功能，需要迁移或保留旧档案的查询入口。
+当前 Compose 管理页查询实际服务的真实投递存档。`workers:local` 的管理页只查询独立的本地模拟存储，不能查询已部署 Worker 或 Compose 数据。云端 `/admin/` 和 `/admin/api/*` 已提供只读管理，必须配置 Access 应用及对应 issuer／AUD／域名后才能访问。旧 JSONL／正文不导入云端，保留本机数据卷供旧档案查询；这不影响看板从 GitHub API 继续采集。
 
 ## 验证入口
 
-`npm run check` 分开检查 Node 与 Worker 类型；`npm run workers:check` 只执行 Wrangler dry-run，不创建资源、不发布；`npm run test:worker-adapter` 使用真实持久存储模拟器和模拟 GitHub 端点，包含重启前后的重复投递、原始请求／响应、重放、两站点调度和失败恢复。完整验证见[验证指南](../testing.md)。
+`npm run check` 分开检查 Node 与 Worker 类型；`npm run workers:check` 只执行 Wrangler dry-run，不创建资源、不发布；`npm run test:worker-adapter` 使用真实持久存储模拟器和模拟 GitHub 端点，包含重启前后的重复投递、原始请求／响应、拒绝管理重放、两站点调度和失败恢复。完整验证见[验证指南](../testing.md)。
 
 参考：[SQLite Durable Object](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)、[持久 Alarm](https://developers.cloudflare.com/durable-objects/api/alarms/)、[工作流触发 API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)、[GitHub 工作流触发限制](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)。

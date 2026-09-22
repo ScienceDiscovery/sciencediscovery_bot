@@ -2,9 +2,9 @@
 
 ## 功能与当前部署
 
-Bot 的接收服务、GitHub／GitCode 适配、签名验证、事件总线、请求归档接口、管理 API、重放工具、App 身份与发布队列均使用 TypeScript。生产运行入口是 Node.js 22+，继续由 Docker Compose 与 cloudflared 部署。管理界面仍使用已有静态 HTML，API 和交互保持兼容。
+Bot 的接收服务、GitHub／GitCode 适配、签名验证、事件总线、请求归档接口、管理 API、重放工具、App 身份与发布队列均使用 TypeScript。生产运行入口是 Node.js 22+，继续由 Docker Compose 与 cloudflared 部署。管理界面仍使用已有静态 HTML，查看交互保持一致，管理重放已移除。
 
-核心代码可以在 Cloudflare Workers 的 workerd 运行时执行，无需 `nodejs_compat`。`src/worker/index.ts` 是独立 Worker 入口，使用 SQLite Durable Object 与 R2 归档、持久 Alarm 调度，通过 GitHub Actions 执行 Python 采集器。仓库提供本地模拟器和 dry-run 检查；云资源、旧档案迁移和云端管理访问仍需在正式切换前完成，见 [Workers 指南](workers.md)。不能把测试用内存存储当成线上归档。
+核心代码可以在 Cloudflare Workers 的 workerd 运行时执行，无需 `nodejs_compat`。`src/worker/index.ts` 使用 SQLite Durable Object 与 R2 归档、持久 Alarm 调度，通过 GitHub Actions 执行 Python 采集器，并提供 Access 鉴权的只读管理页面。仓库提供本地模拟器和正式／测试两套 dry-run 配置；正式切换需准备云资源和 Access 配置，旧档案不迁移，见 [Workers 指南](workers.md)。不能把测试用内存存储当成线上归档。
 
 ## 代码边界
 
@@ -13,7 +13,7 @@ Bot 的接收服务、GitHub／GitCode 适配、签名验证、事件总线、�
 | `src/core/config.ts`、`events.ts` | 配置解析、仓库范围和统一事件 | 普通 TypeScript |
 | `src/core/signature.ts`、`github-app.ts` | HMAC、RS256、安装令牌 | Web Crypto、Fetch；支持 PKCS#1／PKCS#8 PEM |
 | `src/core/bus.ts`、`pipeline.ts` | 实际订阅注册、分发、验签和去重 | Archive 接口；按投递串行检查和提交 |
-| `src/core/http.ts` | 公开协议、管理 API 与重放 | 标准 Request／Response／Headers |
+| `src/core/http.ts` | 公开协议与只读管理 API | 标准 Request／Response／Headers |
 | `src/core/archive.ts` | 脱敏、记录格式、计数 | 标准 Web API；无文件系统调用 |
 | `src/core/board.ts` | 合并发布、恢复、重试与双仓隔离 | StateStore 与 Publisher 接口 |
 | `src/node/server.ts`、`archive.ts` | 双 TCP 监听、请求帧边界、JSONL／正文落盘 | Node HTTP／文件系统 |
@@ -38,6 +38,6 @@ Bot 不依赖 Python 或 cryptography；可选看板采集器属于独立的 git
 
 `npm run test:worker-adapter` 进一步使用真实 Worker 入口和持久 SQLite／R2 模拟器，验证归档／去重／队列恢复，以及 App 令牌申请和 Actions 触发。GitHub 接口全部模拟，未触发远端发布。Node 与 Worker 使用独立 tsconfig，避免 Cloudflare 与 Node 的全局类型互相覆盖。
 
-生产切换前还需按 [Workers 指南](workers.md)创建云端资源、配置两个看板仓工作流与 Secrets、解决旧档案迁移和受保护管理访问，再验证真实 Actions 和 Pages。Cloudflare Fetch 使用 `redirect: manual` 并检查状态，阻止认证跟随跳转；全局 Fetch 通过箭头调用保持正确接收者。
+生产切换前还需按 [Workers 指南](workers.md)创建云端资源、配置两个看板仓工作流与 Secrets、完成 Access 认证管理配置，保留旧数据卷及两看板仓进度，再验证真实 Actions 和 Pages。Cloudflare Fetch 使用 `redirect: manual` 并检查状态，阻止认证跟随跳转；全局 Fetch 通过箭头调用保持正确接收者。
 
 参考：[Workers Web Crypto](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/)、[Node.js 兼容范围](https://developers.cloudflare.com/workers/runtime-apis/nodejs/)。当前验证不代表已经完成 Workers 云资源或线上部署。

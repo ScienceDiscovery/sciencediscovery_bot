@@ -20,6 +20,7 @@ process.env.XDG_CACHE_HOME = resolve(root, '.e2e/cache');
 process.env.XDG_CONFIG_HOME = resolve(root, '.e2e/config');
 module.exports = defineConfig({
   testDir: __dirname, testMatch: 'journey-*.spec.cjs', workers: 1, fullyParallel: false,
+  testIgnore: 'journey-cloud-admin.spec.cjs',
   outputDir: resolve(root, '.e2e/results'), reporter: 'list',
   use: { baseURL: 'http://127.0.0.1:18892', browserName: 'chromium', viewport: { width: 1440, height: 1000 },
     screenshot: 'only-on-failure', trace: 'retain-on-failure' },

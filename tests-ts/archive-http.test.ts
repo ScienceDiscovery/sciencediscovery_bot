@@ -51,7 +51,7 @@ test('payload reads reject traversal and symlink escape', async t => {
   assert.equal(await h.store.payload({ payload_file: 'escape' }), null);
   assert.equal(await h.store.payload({ payload_file: '../../README.md' }), null);
 });
-test('binary rejection retains base64; oversized prefix cannot be replayed', async t => {
+test('binary rejection and oversized prefixes remain inspectable', async t => {
   const h = await harness({ max_body_bytes: 16 }); t.after(h.cleanup);
   const response = await h.app.webhook(new Request('http://localhost/webhook/github', { method: 'POST', headers: { 'x-github-event': 'ping' }, body: new Uint8Array([255, 254]) }));
   assert.equal(response.status, 401);
@@ -61,7 +61,7 @@ test('binary rejection retains base64; oversized prefix cannot be replayed', asy
   assert.equal((await h.app.webhook(d.request())).status, 413);
   record = (await h.store.recent(1))[0]; assert.equal(record.payload_bytes, 16); assert.equal(record.body_complete, false);
   const replay = await h.app.admin(new Request('http://localhost/api/replay/' + record.record_id, { method: 'POST', headers: { 'x-requested-with': 'sciencediscovery-bot' } }));
-  assert.equal(replay.status, 409);
+  assert.equal(replay.status, 404);
 });
 test('storage failures never acknowledge delivery and do not poison dedupe', async t => {
   const h = await harness(); t.after(h.cleanup); const original = h.store.save.bind(h.store), d = await delivery();
@@ -79,15 +79,16 @@ test('unexpected business errors are isolated and signatures checked before body
   const d = await delivery(); const response = await h.app.webhook(d.request()); assert.equal(response.status, 500);
   assert.equal(JSON.stringify(await h.store.recent(1)).includes('secret'), false);
 });
-test('form payloads replay exact original attempt with fresh signature/delivery', async t => {
+test('management cannot replay stored form bodies or change the archive', async t => {
   const h = await harness(); t.after(h.cleanup);
   const d = await delivery('issues', undefined, { form: true });
   await h.app.webhook(d.request()); const original = (await h.store.recent(1))[0];
-  const response = await h.app.admin(new Request('http://localhost/api/replay/' + original.record_id, { method: 'POST', headers: { 'x-requested-with': 'sciencediscovery-bot', origin: 'http://localhost' } }));
-  assert.equal(response.status, 200);
-  const replayed = object(object(await response.json()).record);
-  assert.notEqual(replayed.delivery_id, original.delivery_id); assert.equal(object(replayed.extra).replayed_from, original.record_id);
-  assert.deepEqual(new Uint8Array((await h.store.payload(replayed))!), d.body); assert.equal(replayed.route, 'issue.opened');
+  assert.deepEqual(new Uint8Array((await h.store.payload(original))!), d.body);
+  for (const method of ['POST', 'PUT', 'DELETE']) {
+    const response = await h.app.admin(new Request('http://localhost/api/replay/' + original.record_id, { method, headers: { 'x-requested-with': 'sciencediscovery-bot', origin: 'http://localhost' } }));
+    assert.equal(response.status, 404);
+  }
+  assert.equal((await h.store.recent(10)).length, 1);
 });
 test('management guard, exact public routes, pagination and listener inventory', async t => {
   const h = await harness({ admin_token: 'local-token' }); t.after(h.cleanup);
@@ -103,8 +104,8 @@ test('management guard, exact public routes, pagination and listener inventory',
   for (let i = 0; i < 3; i++) { const d = await delivery(); await h.app.webhook(d.request()); }
   const page = object(await (await h.app.admin(new Request('http://localhost/api/events?limit=2', { headers }))).json()); assert.equal(page.count, 2); assert.equal(page.has_more, true);
   assert.equal((await h.app.admin(new Request('http://localhost/api/events?limit=wrong', { headers }))).status, 400);
-  assert.equal((await h.app.admin(new Request('http://localhost/api/replay/missing', { method: 'POST', headers }))).status, 403);
-  assert.equal((await h.app.admin(new Request('http://localhost/api/replay/missing', { method: 'POST', headers: { ...headers, 'x-requested-with': 'sciencediscovery-bot', origin: 'http://evil.example' } }))).status, 403);
+  assert.equal((await h.app.admin(new Request('http://localhost/api/replay/missing', { method: 'POST', headers }))).status, 404);
+  assert.equal((await h.app.admin(new Request('http://localhost/api/replay/missing', { method: 'POST', headers: { ...headers, 'x-requested-with': 'sciencediscovery-bot', origin: 'http://evil.example' } }))).status, 404);
 });
 test('real Node HTTP listeners archive wire replies and parser rejection', async t => {
   const h = await harness(); t.after(h.cleanup);

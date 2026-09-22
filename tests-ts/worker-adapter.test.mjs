@@ -69,10 +69,11 @@ test('production Worker: durable history, isolated admin, recovery and Actions o
   const delivery = 'worker-persistent-delivery';
   await t.test('public surface and local-only management cannot be bypassed by a path or header', async () => {
     assert.deepEqual(await (await mf.dispatchFetch('http://localhost/healthz')).json(), { ok: true });
-    for (const path of ['/api/status', '/api/events', '/api/listeners', '/admin', '/_test/events', '/']) {
+    for (const path of ['/api/status', '/api/events', '/api/listeners', '/_test/events', '/']) {
       const response = await mf.dispatchFetch('http://localhost' + path, { headers: { 'x-admin': 'true', ...auth } });
       assert.equal(response.status, 404); assert.deepEqual(await response.json(), { ok: false, error: 'not found' });
     }
+    assert.equal((await mf.dispatchFetch('http://localhost/admin')).status, 503);
     assert.equal((await admin.fetch('http://localhost/api/status')).status, 401);
     assert.equal((await admin.fetch('http://localhost/api/status', { headers: { ...auth, 'cf-ray': 'test' } })).status, 403);
     assert.equal((await admin.fetch('http://public.example/api/status', { headers: auth })).status, 403);
@@ -111,18 +112,18 @@ test('production Worker: durable history, isolated admin, recovery and Actions o
     assert.equal((await get('/api/events?status=rejected')).count, 4);
     const one = await get('/api/events?limit=1&offset=1'); assert.equal(one.count, 1); assert.equal(one.has_more, true);
   });
-  await t.test('state survives runtime restart, replay remains explicit and private', async () => {
+  await t.test('state survives runtime restart and removed replay cannot mutate it', async () => {
     await mf.dispose();
     mf = await workerRuntime({ directory, bindings, outboundService }); admin = await mf.getWorker('admin');
     assert.equal((await get('/api/events/' + firstRecord.record_id)).request.body, JSON.stringify(issue(sources[0])));
     await mf.dispatchFetch('http://localhost/webhook/github', signed(issue(sources[0]), delivery));
     assert.equal((await get('/api/events?limit=1')).events[0].duplicate, true);
     assert.equal((await get('/api/status')).board.targets[0].requested, 1);
+    const before = (await get('/api/status')).counts;
     const replayPath = 'http://localhost/api/replay/' + firstRecord.record_id;
-    assert.equal((await admin.fetch(replayPath, { method: 'POST', headers: auth })).status, 403);
-    assert.equal((await admin.fetch(replayPath, { method: 'POST', headers: { ...auth, 'x-requested-with': 'sciencediscovery-bot', origin: 'https://other.example' } })).status, 403);
-    assert.equal((await admin.fetch(replayPath, { method: 'POST', headers: { ...auth, 'x-requested-with': 'sciencediscovery-bot' } })).status, 200);
-    assert.equal((await get('/api/events?limit=1')).events[0].extra.replayed_from, firstRecord.record_id);
+    assert.equal((await admin.fetch(replayPath, { method: 'POST', headers: auth })).status, 404);
+    assert.equal((await admin.fetch(replayPath, { method: 'POST', headers: { ...auth, 'x-requested-with': 'sciencediscovery-bot' } })).status, 404);
+    assert.deepEqual((await get('/api/status')).counts, before);
     await mf.dispatchFetch('http://localhost/webhook/github', signed(issue(sources[1])));
   });
   await t.test('durable alarms dispatch separate targets; failure retries without losing history', async () => {
@@ -179,7 +180,7 @@ test('large prefixes and non-UTF8 bytes remain inspectable and incomplete bodies
   assert.equal(oversized.status, 413);
   let record = (await (await admin.fetch('http://localhost/api/events?limit=1')).json()).events[0];
   assert.equal(record.body_complete, false); assert.equal(record.payload_bytes, 1024 * 1024);
-  assert.equal((await admin.fetch('http://localhost/api/replay/' + record.record_id, { method: 'POST', headers: { 'x-requested-with': 'sciencediscovery-bot' } })).status, 409);
+  assert.equal((await admin.fetch('http://localhost/api/replay/' + record.record_id, { method: 'POST', headers: { 'x-requested-with': 'sciencediscovery-bot' } })).status, 404);
   const bytes = Buffer.from([255, 0, 127]);
   assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', { method: 'POST', body: bytes, headers: { 'x-github-event': 'issues' } })).status, 401);
   record = (await (await admin.fetch('http://localhost/api/events?limit=1')).json()).events[0];

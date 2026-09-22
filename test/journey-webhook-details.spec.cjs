@@ -22,7 +22,7 @@ async function send(request, { path = '/webhook/github', valid = true, delivery 
 }
 const rowFor = (page, delivery) => page.locator('#rows tr').filter({ hasText: delivery.slice(0, 18) });
 
-test('receive, inspect raw request/response, and replay one exact delivery', async ({ page, request }, testInfo) => {
+test('receive and inspect raw request/response with read-only management', async ({ page, request }, testInfo) => {
   const sent = await send(request);
   expect(sent.response.status()).toBe(200);
   await openPanel(page);
@@ -41,11 +41,10 @@ test('receive, inspect raw request/response, and replay one exact delivery', asy
   await page.screenshot({ path: testInfo.outputPath('details-desktop.png') });
   await dialog.getByRole('button', { name: '关闭', exact: true }).click();
   const before = (await (await request.get('/api/events', { headers: auth() })).json()).count;
-  await rowFor(page, sent.delivery).getByRole('button', { name: '重放', exact: true }).click();
-  await expect.poll(async () => (await (await request.get('/api/events', { headers: auth() })).json()).count).toBe(before + 1);
+  await expect(page.getByRole('button', { name: '重放', exact: true })).toHaveCount(0);
   const latest = (await (await request.get('/api/events?limit=1', { headers: auth() })).json()).events[0];
-  expect(latest.extra.replayed_from).toBeTruthy();
-  expect(latest.delivery_id).not.toBe(sent.delivery);
+  expect((await request.post('/api/replay/' + latest.record_id, { headers: { ...auth(), 'X-Requested-With': 'sciencediscovery-bot' } })).status()).toBe(404);
+  expect((await (await request.get('/api/events', { headers: auth() })).json()).count).toBe(before);
   expect((await request.get(origin + '/api/events/' + latest.record_id)).status()).toBe(404);
   expect((await request.get('/api/events/' + latest.record_id)).status()).toBe(401);
   expect((await request.get('/api/events/' + latest.record_id, { headers: { ...auth(), 'Cf-Ray': 'test' } })).status()).toBe(403);

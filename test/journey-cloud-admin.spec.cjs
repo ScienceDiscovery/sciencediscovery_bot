@@ -1,0 +1,40 @@
+const { test, expect } = require('../.e2e/node_modules/@playwright/test');
+const { createHmac, randomUUID } = require('node:crypto');
+
+test('authenticated cloud management shows exchanges and listeners without write controls', async ({ page, context, request }, testInfo) => {
+  expect((await request.get('/admin/')).status()).toBe(401);
+  expect((await request.get('/api/status')).status()).toBe(404);
+  const delivery = randomUUID();
+  const body = JSON.stringify({ action: 'opened', repository: { full_name: 'ScienceDiscovery/sciencediscovery' }, issue: { number: 3, title: '云端管理验收', body: '<img src=x onerror="window.untrustedExecuted=true">' } });
+  expect((await request.post('/webhook/github', { data: body, headers: { 'content-type': 'application/json', 'x-github-event': 'issues', 'x-github-delivery': delivery,
+    'x-hub-signature-256': 'sha256=' + createHmac('sha256', process.env.SDBOT_E2E_SECRET).update(body).digest('hex') } })).status()).toBe(200);
+  await context.addCookies([{ name: 'test_access', value: 'allowed', url: 'http://127.0.0.1:18893', httpOnly: true }]);
+  await page.goto('/admin/');
+  await expect(page.locator('#listeners')).toContainText('test · 云端记录 · 只读');
+  await expect(page.locator('#rows')).toContainText('云端管理验收');
+  await expect(page.getByRole('button', { name: '重放', exact: true })).toHaveCount(0);
+  await expect(page.locator('#banner')).toBeHidden();
+  await page.getByRole('button', { name: '查看详情' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.locator('#response-title')).toContainText('HTTP 200');
+  await expect(dialog.locator('#request-body')).toContainText('window.untrustedExecuted');
+  await dialog.getByLabel('格式化 JSON').uncheck();
+  await expect(dialog.locator('#request-body')).toHaveText(body);
+  expect(JSON.parse(await dialog.locator('#response-body').textContent()).delivery_id).toBe(delivery);
+  expect(await page.evaluate(() => window.untrustedExecuted)).toBeUndefined();
+  await page.screenshot({ path: testInfo.outputPath('cloud-details-desktop.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(dialog.locator('#response-body')).toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath('cloud-details-mobile.png') });
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('link', { name: '监听点', exact: true }).click();
+  await expect(page.locator('#subscription-count')).toContainText('11 / 11');
+  await page.locator('#subscription-search').fill('does-not-match');
+  await expect(page.locator('#subscription-list')).toContainText('没有匹配的监听点');
+  await page.locator('#subscription-search').clear();
+  await page.screenshot({ path: testInfo.outputPath('cloud-listeners-mobile.png') });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await context.clearCookies();
+  await page.getByRole('button', { name: '刷新监听点' }).click();
+  await expect(page.locator('#banner')).toContainText('重新登录');
+});

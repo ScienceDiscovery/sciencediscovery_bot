@@ -2,6 +2,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "sciencediscovery-bot",
   "main": "src/worker/index.ts",
+  "rules": [{ "type": "Text", "globs": ["**/*.html"], "fallthrough": true }],
+  "version_metadata": { "binding": "SDBOT_VERSION" },
   "compatibility_date": "2026-07-30",
   "workers_dev": false,
   "preview_urls": false,
@@ -13,8 +15,10 @@
   // Restore ["*/5 * * * *"] when enabling collection (see docs/features/workers.md).
   "triggers": { "crons": [] },
   "vars": {
+    "SDBOT_ENVIRONMENT": "production",
+    "SDBOT_ADMIN_HOSTNAME": "sciencediscovery-bot-worker.llmbots.co",
     "SDBOT_GITHUB_APP_ID": "5016872",
-    "SDBOT_REPOS": "openJiuwen-ai/sciencediscovery,ScienceDiscovery/sciencediscovery",
+    "SDBOT_REPOS": "openJiuwen-ai/sciencediscovery",
     "SDBOT_BOARD_TARGETS": "{}"
   },
   "observability": { "enabled": false }

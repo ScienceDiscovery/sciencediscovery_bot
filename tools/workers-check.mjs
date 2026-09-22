@@ -8,5 +8,8 @@ await mkdir(directory, { recursive: true });
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => ['PATH', 'LANG', 'LC_ALL'].includes(key)));
 Object.assign(env, { XDG_CONFIG_HOME: directory, XDG_CACHE_HOME: directory, TMPDIR: directory,
   WRANGLER_SEND_METRICS: 'false', WRANGLER_LOG_PATH: resolve(directory, 'wrangler.log'), CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: 'false' });
-const child = spawn(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'deploy', '--dry-run', '--outdir', resolve(directory, 'bundle')], { env, stdio: 'inherit' });
-child.once('exit', code => { process.exitCode = code ?? 1; });
+for (const config of ['wrangler.jsonc', 'wrangler.test.jsonc']) {
+  const child = spawn(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'deploy', '-c', config, '--dry-run', '--outdir', resolve(directory, config, 'bundle')], { env, stdio: 'inherit' });
+  const code = await new Promise(resolve => child.once('exit', resolve));
+  if (code !== 0) { process.exitCode = code ?? 1; break; }
+}
