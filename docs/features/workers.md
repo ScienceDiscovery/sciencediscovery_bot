@@ -53,6 +53,10 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 
 源仓读取权限沿用看板要求：Contents、Issues、Pull requests、Actions、Checks、Commit statuses；目标仓需要 Contents 写与触发任务的 Actions 写权限。App 必须安装到两端，跨组织分别使用对应 installation。Actions 用 App 令牌提交 site，使已有 `pages.yml` 的 push 触发器生效；不能换成默认 GITHUB_TOKEN 写入后期待自动触发另一个工作流。
 
+在 App 注册页 **Permissions & events → Repository permissions → Actions** 选择 **Read and write** 后，还需目标组织批准 installation 的新增权限。应检查目标仓 installation 返回的 `permissions.actions` 已是 `write`，不能只看注册页。此权限与仓库 Actions 设置中的默认 `GITHUB_TOKEN` 权限不同；后者可以保持只读，Pages 工作流按 job 声明所需权限。
+
+验收分为三步：App 安装令牌成功触发 `collect.yml`；采集任务使用两个安装令牌读取源仓、提交目标仓 `site/`；该 App 提交触发 `pages.yml` 并部署成功。管理员手动触发成功只能验证后两步。仅配置看板仓不会切换当前 Node / Compose 的采集模式，正式切换仍需部署 Worker 并迁移 Webhook 接收链路。
+
 ## 上线前的步骤（本地验收不会执行）
 
 1. 将采集工作流和校验脚本同步到正式、测试看板仓，保留各自的 `site/data/snapshot.json`；配置 App 权限、仓库变量与 Secrets，并分别验收真实采集工作流。
