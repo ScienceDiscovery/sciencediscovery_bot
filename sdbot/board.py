@@ -111,7 +111,13 @@ class StaticBoardUpdater(BoardUpdater):
         env = {k: v for k, v in os.environ.items() if k in (
             "PATH", "LANG", "LC_ALL", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
             "https_proxy", "http_proxy", "no_proxy", "SSL_CERT_FILE")}
-        env.update(GITHUB_TOKEN=self.cfg.board_token, PYTHONDONTWRITEBYTECODE="1")
+        source_token = publish_token = self.cfg.board_token
+        if self.cfg.github_app_id:
+            from .github_app import GitHubApp
+            app = GitHubApp(self.cfg.github_app_id, self.cfg.github_app_private_key)
+            source_token = app.token_for(self.cfg.board_track_repo)
+            publish_token = app.token_for(self.cfg.board_repo, write=True)
+        env.update(GITHUB_TOKEN=source_token, GSB_PUBLISH_TOKEN=publish_token, PYTHONDONTWRITEBYTECODE="1")
         result = subprocess.run([sys.executable, str(self.cfg.board_source_dir / "publish.py"),
             "--repo", self.cfg.board_track_repo, "--output", str(self.cfg.data_dir / "board-site"),
             "--publish-repo", self.cfg.board_repo], env=env, capture_output=True, text=True, timeout=600)

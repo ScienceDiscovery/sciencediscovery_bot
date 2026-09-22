@@ -1,6 +1,6 @@
 # sciencediscovery_bot
 
-以 Webhook 为入口的可扩展事件总线。支持 GitHub App、普通组织／仓库 Webhook 和 GitCode 接入，保存投递请求与响应；业务按订阅监听事件，可用于静态看板更新等扩展。Python 3.10+，仅使用标准库。
+以 Webhook 为入口的可扩展事件总线。支持 GitHub App、普通组织／仓库 Webhook 和 GitCode 接入，保存投递请求与响应；业务按订阅监听事件，可用于静态看板更新等扩展。Python 3.10+；App 发布凭据使用 cryptography 签名。
 
 默认只处理 `openJiuwen-ai/sciencediscovery`（正式）和 `ScienceDiscovery/sciencediscovery`（测试）的 GitHub 事件；其他 Webhook 仍完整记录。分析业务当前为占位，静态看板发布需要另外配置凭据。
 

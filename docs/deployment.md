@@ -2,9 +2,12 @@
 
 ## 宿主机
 
-Python 3.10+，无第三方 Python 依赖。在仓库目录准备本地 `.env`，只在本地填写密钥，然后加载环境：
+Python 3.10+。Webhook 接收使用标准库；GitHub App 发布使用 requirements.txt 中固定的 cryptography。在仓库目录准备本地 `.env`，只在本地填写密钥，然后加载环境：
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env 后
 set -a
@@ -52,7 +55,9 @@ docker compose down
 | SDBOT_RUN_DIR | .run | 宿主脚本 PID／日志目录 |
 | SDBOT_LOG_LEVEL | INFO | 进程日志级别 |
 | SDBOT_BOARD_TARGETS | 空 | 源仓 → Pages 仓 JSON 映射 |
-| SDBOT_BOARD_GITHUB_TOKEN | 无 | 可选发布凭据，只在本地提供 |
+| SDBOT_GITHUB_APP_ID | 无 | App ID 或 Client ID，用于发布身份 |
+| SDBOT_GITHUB_APP_PRIVATE_KEY | 无 | App RSA PEM 私钥，支持字面 \n 换行，只在本地提供 |
+| SDBOT_BOARD_GITHUB_TOKEN | 无 | 兼容静态令牌模式，与 App 模式互斥 |
 | SDBOT_BOARD_SOURCE_DIR | 同级 github_status_board | 宿主 publish.py 所在目录 |
 | SDBOT_BOARD_SOURCE_DIR_HOST | ../github_status_board | Compose 只读挂载的宿主路径 |
 | SDBOT_BOARD_DEBOUNCE / REFRESH | 20 / 3600 秒 | 全名 SDBOT_BOARD_DEBOUNCE、SDBOT_BOARD_REFRESH；下限 1 / 60 秒 |

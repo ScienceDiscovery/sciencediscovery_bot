@@ -1,7 +1,9 @@
-# sciencediscovery_bot: webhook receiver, standard library only.
+# sciencediscovery_bot: webhook receiver and optional GitHub App publisher.
 FROM python:3.12-slim
 
 WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py ./
 COPY sdbot ./sdbot
 COPY scripts ./scripts

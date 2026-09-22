@@ -16,3 +16,4 @@ __pycache__
 README.md
 docker-compose.yml
 docker-compose.board.yml
+.venv

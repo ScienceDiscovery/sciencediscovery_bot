@@ -2,10 +2,11 @@
 
 ## 项目与边界
 
-这是 Python 标准库实现的 Webhook 事件总线。`server.py` 提供独立的 webhook 和本机管理监听；`sdbot/pipeline.py` 负责验签、归一化、仓库范围和去重；`sdbot/bus.py` 分发订阅，`sdbot/subscriptions.py` 注册业务。投递存档独立于业务是否处理。
+这是以 Python 标准库接收 Webhook 的事件总线，GitHub App RSA 签名使用 cryptography。`server.py` 提供独立的 webhook 和本机管理监听；`sdbot/pipeline.py` 负责验签、归一化、仓库范围和去重；`sdbot/bus.py` 分发订阅，`sdbot/subscriptions.py` 注册业务。投递存档独立于业务是否处理。
 
 - 默认仅处理 `openJiuwen-ai/sciencediscovery` 与 `ScienceDiscovery/sciencediscovery`；其他 Webhook 仍归档。
 - 公网仅开放 webhook 协议与最小健康响应。配置、监听点、历史与重放只在本机管理端提供；隧道不得指向管理端口。
+- 看板使用 App 安装令牌读源仓、写目标仓 main/site/；不同组织分别取令牌。Pages 部署交给目标仓 Actions，发布成功提交不等于 Pages 已部署。
 - 分析业务默认占位；看板发布可选启用。新增业务通过订阅注册接入，不在 HTTP handler 或 Pipeline 中堆叠业务分支。
 - 监听点页面必须读取实际注册表；不能另写一份展示用的监听清单。
 - 慢任务由业务自己的后台队列执行。处理器不能修改传入事件，必须考虑重复投递和重放，不承诺全局恰好一次执行。

@@ -5,11 +5,14 @@
 在仓库根目录运行，临时数据留在工作区：
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install -r requirements.txt
 mkdir -p .tmp/tests
 TMPDIR="$PWD/.tmp/tests" python3 -m unittest discover -s tests -v
 ```
 
-测试包含验签、GitHub／GitCode 归一化、merge、事件总线与注册规则、单监听器失败隔离、仓库限制、去重、归档、HTTP 详情／重放、管理访问保护和独立发布队列。HTTP 测试启动自己的 loopback 随机端口，不使用运行中的服务或数据卷。
+测试包含验签、GitHub／GitCode 归一化、merge、事件总线与注册规则、单监听器失败隔离、仓库限制、去重、归档、HTTP 详情／重放、管理访问保护和独立发布队列、App RSA 签名／安装令牌／最小权限。HTTP 测试启动自己的 loopback 随机端口，不使用运行中的服务或数据卷。
 
 新增业务至少验证一次应触发和一次不应触发；新增选择条件、启用模式或路由时核对实际注册清单与执行结果。重放生成新 delivery，不能把它当重复投递跳过。
 

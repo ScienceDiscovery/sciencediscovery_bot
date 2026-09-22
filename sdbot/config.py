@@ -78,6 +78,8 @@ class Config:
     board_targets: dict[str, str] = field(default_factory=dict)  # GitHub source -> Pages repository
     board_source_dir: Path = ROOT.parent / "github_status_board"
     board_token: str = field(default="", repr=False)
+    github_app_id: str = ""
+    github_app_private_key: str = field(default="", repr=False)
     board_debounce: int = 20
     board_refresh: int = 3600
 
@@ -99,6 +101,8 @@ class Config:
             board_targets=json.loads(os.environ.get("SDBOT_BOARD_TARGETS") or "{}"),
             board_source_dir=Path(_str("SDBOT_BOARD_SOURCE_DIR", str(cls.board_source_dir))),
             board_token=os.environ.get("SDBOT_BOARD_GITHUB_TOKEN", "").strip(),
+            github_app_id=os.environ.get("SDBOT_GITHUB_APP_ID", "").strip(),
+            github_app_private_key=os.environ.get("SDBOT_GITHUB_APP_PRIVATE_KEY", "").strip(),
             board_debounce=_int("SDBOT_BOARD_DEBOUNCE", 20),
             board_refresh=_int("SDBOT_BOARD_REFRESH", 3600),
         )
@@ -141,8 +145,19 @@ class Config:
             if not all(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", r) for r in (self.board_repo, self.board_track_repo)):
                 problems.append("board repositories must be owner/name")
         if self.board_repo or self.board_targets:
-            if not self.board_token or not self.secret_for("github"):
-                problems.append("board publishing requires a GitHub token and GitHub webhook secret")
+            app_configured = bool(self.github_app_id and self.github_app_private_key)
+            if not (self.board_token or app_configured) or not self.secret_for("github"):
+                problems.append("board publishing requires GitHub App credentials (or a token) and GitHub webhook secret")
+            if (self.github_app_id or self.github_app_private_key) and not app_configured:
+                problems.append("GitHub App ID and private key must both be configured")
+            if app_configured and self.board_token:
+                problems.append("choose GitHub App credentials or board token, not both")
+            if app_configured:
+                try:
+                    from .github_app import load_private_key
+                    load_private_key(self.github_app_private_key)
+                except (ImportError, ValueError, TypeError):
+                    problems.append("GitHub App RSA private key is invalid or cryptography is unavailable")
             if not (self.board_source_dir / "publish.py").is_file():
                 problems.append("board publisher script is missing")
             if self.board_debounce < 1 or self.board_refresh < 60:

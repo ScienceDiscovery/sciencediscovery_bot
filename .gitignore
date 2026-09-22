@@ -11,3 +11,4 @@
 *.pfx
 __pycache__/
 *.pyc
+.venv/
