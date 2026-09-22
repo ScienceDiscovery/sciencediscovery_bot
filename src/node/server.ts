@@ -103,7 +103,7 @@ export async function start(cfg: Config): Promise<{ app: BotApplication; webhook
   if (problems.length) throw new Error(problems.join('; '));
   const enabled = Object.keys(targets(cfg)).length > 0;
   if (enabled) {
-    await access(resolve(cfg.board_source_dir, 'publish.py'));
+    if (cfg.board_execution === 'local') await access(resolve(cfg.board_source_dir, 'publish.py'));
     if (cfg.github_app_id) await loadPrivateKey(cfg.github_app_private_key);
   }
   const board = enabled ? await createBoards(cfg) : undefined;

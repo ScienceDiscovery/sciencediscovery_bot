@@ -106,3 +106,42 @@ test('replay CLI fixture preparation supports fresh/kept IDs, invalid HMAC and s
   assert.equal(asCurl(code, 'http://localhost/webhook').includes(secret), false);
   assert.match(asCurl(code, 'http://localhost/webhook'), /SDBOT_GITCODE_WEBHOOK_SECRET/);
 });
+
+test('Actions queue persists dispatch acknowledgement without claiming a Pages commit', async () => {
+  const state = memory(); let calls = 0;
+  const queue = await BoardQueue.open('a/source', 'a/board', state, async generation => {
+    calls++; assert.equal(generation, 2); return { dispatched: true };
+  }, 20, 3600, undefined, 'github_actions');
+  await queue.requestRefresh(); await queue.requestRefresh(); await queue.runOnce();
+  assert.equal(calls, 1); assert.equal(queue.status().execution, 'github_actions');
+  assert.equal(queue.status().pending, false); assert.equal(queue.status().commit, null);
+  assert.equal(queue.status().last_success, null); assert.ok(queue.status().last_dispatch);
+  const restarted = await BoardQueue.open('a/source', 'a/board', state, async () => { throw new Error('not due'); }, 20, 3600, undefined, 'github_actions');
+  assert.equal(restarted.status().completed, 2);
+  assert.equal(restarted.status().last_dispatch, queue.status().last_dispatch);
+});
+
+test('Node Actions adapter needs no Python source and requests only target Actions permission', async t => {
+  const { createBoards } = await import('../src/node/board.js');
+  const h = await harness({ board_execution: 'github_actions', board_source_dir: 'does-not-exist',
+    board_targets: { 'ScienceDiscovery/sciencediscovery': 'ScienceDiscovery/github-status-board-test' },
+    github_app_id: '1234', github_app_private_key: privateKey });
+  t.after(h.cleanup);
+  const calls: {url: string; options: RequestInit}[] = [];
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({url: String(url), options});
+    if (String(url).endsWith('/installation')) return Response.json({id: 123});
+    if (String(url).endsWith('/access_tokens')) return Response.json({token: 'isolated-dispatch-token', expires_at: new Date(Date.now()+3600000).toISOString()});
+    return new Response(null, {status: 204});
+  };
+  const boards = await createBoards(h.cfg);
+  await boards.queues[0].requestRefresh(); await boards.queues[0].runOnce();
+  assert.deepEqual(JSON.parse(String(calls[1].options.body)).permissions, {metadata: 'read', actions: 'write'});
+  assert.match(calls[2].url, /github-status-board-test\/actions\/workflows\/collect.yml\/dispatches$/);
+  assert.equal(JSON.parse(String(calls[2].options.body)).inputs.source_repository, 'ScienceDiscovery/sciencediscovery');
+  assert.equal(boards.queues[0].status().commit, null);
+  assert.ok(boards.queues[0].status().last_dispatch);
+  assert.equal((await createBoards(h.cfg)).queues[0].status().completed, 1);
+});

@@ -43,6 +43,8 @@ npm run test:e2e:workers
 
 需要检查运行中的本机 webhook 时，使用 `npm run replay -- --all` 回放全部 fixture，或指定文件（如 `npm run replay -- fixtures/github/ping.json`）；通过 `--url`、`--admin-url` 选择目标，并从环境提供与接收器一致的密钥。回放会留下真实投递记录，业务可能被触发；正式验收优先使用隔离服务和一次性数据，不混入日常部署。
 
+Actions 触发模式还需验证队列重启后恢复、失败不确认代数，以及 `last_dispatch` 不被误报成 `last_success` 或 Pages 提交。看板仓负责历史续跑与指标缓存的 Python、浏览器及真实 Actions 验证。
+
 ## 提交前
 
 - 文档：核对对应特性、API、配置、启用条件和边界，检查 [docs 目录](README.md)与相对链接。

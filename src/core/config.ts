@@ -9,7 +9,7 @@ export interface Config {
   data_dir: string; static_dir: string; max_body_bytes: number; dedupe_window: number;
   repos: string[]; secrets: Record<string, string>; log_level: string;
   board_targets: Record<string, string>; board_repo: string; board_track_repo: string;
-  board_source_dir: string; board_token: string; board_debounce: number; board_refresh: number;
+  board_source_dir: string; board_token: string; board_debounce: number; board_refresh: number; board_execution: 'local' | 'github_actions';
   github_app_id: string; github_app_private_key: string;
   require_signature?: boolean;
 }
@@ -29,6 +29,7 @@ export function configFromEnv(env: Environment = {}, root = '.'): Config {
     board_targets: JSON.parse(str('SDBOT_BOARD_TARGETS', '{}')),
     board_repo: str('SDBOT_BOARD_REPO').trim(), board_track_repo: str('SDBOT_BOARD_TRACK_REPO').trim(),
     board_source_dir: str('SDBOT_BOARD_SOURCE_DIR', `${root}/../github_status_board`),
+    board_execution: str('SDBOT_BOARD_EXECUTION', 'local') as Config['board_execution'],
     board_token: str('SDBOT_BOARD_GITHUB_TOKEN').trim(), board_debounce: int('SDBOT_BOARD_DEBOUNCE', 20), board_refresh: int('SDBOT_BOARD_REFRESH', 3600),
     github_app_id: str('SDBOT_GITHUB_APP_ID').trim(), github_app_private_key: str('SDBOT_GITHUB_APP_PRIVATE_KEY').trim(),
   };
@@ -40,6 +41,7 @@ export const tracks = (cfg: Config, repo: string, provider = 'github'): boolean 
 export const targets = (cfg: Config): Record<string, string> => Object.keys(cfg.board_targets || {}).length ? cfg.board_targets : cfg.board_repo ? { [cfg.board_track_repo]: cfg.board_repo } : {};
 export function validateConfig(cfg: Config): string[] {
   const problems: string[] = [];
+  if (!['local', 'github_actions'].includes(cfg.board_execution)) problems.push('board execution must be local or github_actions');
   const mapping = targets(cfg);
   const pairs = Object.entries(mapping);
   if (typeof cfg.board_targets !== 'object' || cfg.board_targets === null || Array.isArray(cfg.board_targets) ||
@@ -55,6 +57,7 @@ export function validateConfig(cfg: Config): string[] {
     if (!cfg.secrets.github || !(cfg.board_token || (cfg.github_app_id && cfg.github_app_private_key))) problems.push('board publishing requires GitHub App credentials (or a token) and GitHub webhook secret');
     if (!!cfg.github_app_id !== !!cfg.github_app_private_key) problems.push('GitHub App ID and private key must both be configured');
     if (cfg.github_app_id && cfg.board_token) problems.push('choose GitHub App credentials or board token, not both');
+    if (cfg.board_execution === 'github_actions' && !cfg.github_app_id) problems.push('Actions dispatch requires GitHub App credentials');
     if (cfg.board_debounce < 1 || cfg.board_refresh < 60) problems.push('board debounce must be >=1s and refresh >=60s');
   }
   if (cfg.max_body_bytes <= 0 || !Number.isSafeInteger(cfg.max_body_bytes)) problems.push('body limit must be positive');

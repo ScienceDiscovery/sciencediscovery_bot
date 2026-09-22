@@ -1,8 +1,8 @@
 import { Mutex, category, nowISO, type Board, type BotEvent, type Doc } from './types.js';
 
-export interface PublicationState { requested: number; completed: number; last_success: string | null; commit: string | null; error: string | null; }
+export interface PublicationState { requested: number; completed: number; last_success: string | null; commit: string | null; error: string | null; last_dispatch?: string | null; }
 export interface StateStore { load(): Promise<Partial<PublicationState>>; save(state: PublicationState): Promise<void>; }
-export type Publisher = () => Promise<string>;
+export type Publisher = (generation: number) => Promise<string | { dispatched: true }>;
 export class BoardQueue {
   private readonly mutex = new Mutex();
   private state: PublicationState = { requested: 0, completed: 0, last_success: null, commit: null, error: null };
@@ -12,14 +12,14 @@ export class BoardQueue {
   private retryDelay = 30000;
   private lastAttempt = -Infinity;
   private constructor(readonly source: string, readonly repository: string, private readonly storage: StateStore, private readonly publish: Publisher,
-    private readonly debounce: number, private readonly refresh: number, private readonly clock: () => number) {}
-  static async open(source: string, repository: string, storage: StateStore, publish: Publisher, debounce = 20, refresh = 3600, clock = () => Date.now()): Promise<BoardQueue> {
-    const queue = new BoardQueue(source, repository, storage, publish, debounce * 1000, refresh * 1000, clock);
+    private readonly debounce: number, private readonly refresh: number, private readonly clock: () => number, readonly execution: 'local' | 'github_actions') {}
+  static async open(source: string, repository: string, storage: StateStore, publish: Publisher, debounce = 20, refresh = 3600, clock = () => Date.now(), execution: 'local' | 'github_actions' = 'local'): Promise<BoardQueue> {
+    const queue = new BoardQueue(source, repository, storage, publish, debounce * 1000, refresh * 1000, clock, execution);
     Object.assign(queue.state, await storage.load()); queue.due = clock() + debounce * 1000;
     if (!Number.isSafeInteger(queue.state.requested) || !Number.isSafeInteger(queue.state.completed) || queue.state.completed < 0 || queue.state.requested < queue.state.completed) throw new TypeError('invalid publication state');
     return queue;
   }
-  status(): Doc { return { enabled: true, source: this.source, repository: this.repository, pending: this.state.requested > this.state.completed, running: this.running, ...this.state }; }
+  status(): Doc { return { enabled: true, execution: this.execution, source: this.source, repository: this.repository, pending: this.state.requested > this.state.completed, running: this.running, ...this.state }; }
   async requestRefresh(): Promise<void> {
     await this.mutex.run(async () => {
       const pending = this.state.requested > this.state.completed;
@@ -39,10 +39,11 @@ export class BoardQueue {
     });
     if (generation === null) return false;
     try {
-      const commit = await this.publish();
-      if (!/^[0-9a-f]{40}$/.test(commit)) throw new TypeError('invalid publisher result');
+      const result = await this.publish(generation);
+      if (this.execution === 'local' ? typeof result !== 'string' || !/^[0-9a-f]{40}$/.test(result) : typeof result !== 'object' || result.dispatched !== true) throw new TypeError('invalid publisher result');
       await this.mutex.run(async () => {
-        const next = { ...this.state, completed: generation, commit, error: null, last_success: nowISO() };
+        const next = { ...this.state, completed: generation, error: null,
+          ...(typeof result === 'string' ? { commit: result, last_success: nowISO() } : { commit: null, last_success: null, last_dispatch: nowISO() }) };
         await this.storage.save(next); this.state = next; this.retryDelay = 30000;
         this.due = Math.max(this.clock() + this.debounce, this.lastAttempt + 60000); this.nextPeriodic = this.clock() + this.refresh;
       });

@@ -2,63 +2,49 @@
 
 ## 功能
 
-看板监听收到跟踪源仓的 Issue、PR、评审、merge、push、构建、检查、版本或标签事件后，将对应静态站点更新入队。两个站点分别向看板仓的 `main/site/` 提交静态文件，再由该仓 GitHub Actions 发布 Pages，浏览器无需访问 bot 或持有 GitHub 凭据。
+Bot 验证并归档 Webhook，事件总线匹配跟踪源仓后，合并刷新请求并触发相应看板仓的 `collect.yml`。Python 采集、同步进度、指标缓存、历史分片和静态页面均在看板仓的 Actions 内维护；`pages.yml` 负责部署。
 
-| 用途 | 来源 | 目标看板仓 | 站点 |
-| --- | --- | --- | --- |
-| 正式 | openJiuwen-ai/sciencediscovery | ScienceDiscovery/github-status-board | https://sciencediscovery.github.io/github-status-board/ |
-| 测试 | ScienceDiscovery/sciencediscovery | ScienceDiscovery/github-status-board-test | https://sciencediscovery.github.io/github-status-board-test/ |
+| 用途 | 来源 | 目标仓 |
+| --- | --- | --- |
+| 正式 | openJiuwen-ai/sciencediscovery | ScienceDiscovery/github-status-board |
+| 测试 | ScienceDiscovery/sciencediscovery | ScienceDiscovery/github-status-board-test |
 
-未配置发布时，NoopBoard 为 noop，只记录被调用；管理面板监听点显示“占位”。配置完成后使用 MultiBoard，监听点显示“已启用”及实际源仓范围。该状态仅表示后台发布业务启用，不能代替目标站点的最近成功时间。
+两个源仓之外的 Webhook 仍完整归档，不触发看板。看板仓本身产生的事件也仅归档，避免更新回环。未配置目标时使用 NoopBoard，占位行为不变。
 
 ## 配置和启动
 
-以下为现有 Node／Compose 路径。新增 Workers 路径通过持久 Alarm 触发看板仓 `collect.yml`，由 Actions 运行同一 Python 采集器；需要为目标仓授予 Actions 写权限并配置 Actions Secrets，详见 [Workers 与 Actions 采集](workers.md)。这两个运行路径不应同时更新同一个站点。
-
-准备静态看板源码，默认放在 bot 的同级 `github_status_board` 目录；发布器由该项目的 `publish.py` 实现。在 bot 本地 `.env` 配置以下映射及 GitHub App 的 App ID 与 RSA 私钥：
-
-```dotenv
-SDBOT_REPOS=openJiuwen-ai/sciencediscovery,ScienceDiscovery/sciencediscovery
-SDBOT_BOARD_TARGETS='{"openJiuwen-ai/sciencediscovery":"ScienceDiscovery/github-status-board","ScienceDiscovery/sciencediscovery":"ScienceDiscovery/github-status-board-test"}'
-SDBOT_BOARD_SOURCE_DIR_HOST=../github_status_board
-SDBOT_GITHUB_APP_ID=
-SDBOT_GITHUB_APP_PRIVATE_KEY=
-```
+本地 `.env` 设置 `SDBOT_BOARD_TARGETS` 源仓到目标仓的 JSON 映射、`SDBOT_GITHUB_APP_ID` 和 `SDBOT_GITHUB_APP_PRIVATE_KEY`，并保留 GitHub Webhook secret。选择 `SDBOT_BOARD_EXECUTION=github_actions` 后启动：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.board.yml up -d --build
 ```
 
-App 必须安装到源仓和目标仓，并获准读取源仓 Metadata / Contents / Issues / Pull requests / Actions / Checks / Commit statuses，写入目标仓 Contents。不同组织各有 installation，不能把源仓安装令牌拿去写另一个组织的仓库。App 不需要日常 Pages 管理权限或 Workflows 写权限。
+Compose 看板扩展默认使用 `github_actions`。宿主环境变量未指定执行方式时仍使用兼容的 `local`；该方式才需要同级看板源码与 Python。Actions 模式不检查或调用本地 `publish.py`，不在 Bot 内下载测试产物或生成站点。
 
-`SDBOT_GITHUB_APP_PRIVATE_KEY` 填 App 设置页生成的 PEM 私钥，仅存本地 `.env` 或环境变量；单行值可用字面的 `\n` 表示换行，并用单引号包住整个值。App ID / Client ID 均可作为 `SDBOT_GITHUB_APP_ID`。Webhook secret 仅用于接收验签，不能替代 App 私钥。不要把密钥粘贴进聊天、提交或日志。
+目标仓必须配置变量 `SDBOT_GITHUB_APP_ID`、Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，且已有 `collect.yml` 与 `pages.yml`。私钥支持多行 PEM 或字面 `\n`，仅保存到已忽略的环境文件与 Actions Secrets；不放入 dispatch 参数、日志或页面。
 
-`src/core/github-app.ts` 用 Web Crypto 做 RS256 签名（PKCS#1／PKCS#8），通过 GitHub API 按配置的 repository 查找 installation。每次后台发布及重试均重新换取两个短期安装令牌：源仓令牌仅授予该源仓的读取权限，目标令牌仅授予该看板仓的 Metadata read / Contents write。GitHub 安装令牌通常一小时过期，本地要求剩余有效期覆盖十分钟发布期限；不缓存到磁盘。失败按原队列重试，不回退个人 gh 凭据。
+App 安装到源仓及目标仓。Bot 触发时只申请目标仓 Metadata read / Actions write 的短期令牌。Actions 采集时分别申请源仓 Contents / Issues / Pull requests / Actions / Checks / Commit statuses read，和目标仓 Contents write。不同组织分别取安装令牌；不复用个人 gh 凭据。Pages 部署使用 Actions 的 `GITHUB_TOKEN`（contents read / pages write / id-token write）。
 
-兼容手工部署的 `SDBOT_BOARD_GITHUB_TOKEN`，但它不能与 App ID／私钥模式混用。GitHub webhook secret 仍须配置；启用发布时缺少密钥、凭据、RSA 支持或 publish.py 会拒绝启动。
+旧单目标 `SDBOT_BOARD_REPO` / `SDBOT_BOARD_TRACK_REPO` 兼容，但不能与多目标混用。来源必须在全局跟踪范围，不能是目标仓。静态 `SDBOT_BOARD_GITHUB_TOKEN` 仅用于 `local` 模式，不能与 App 配置混用。
 
-宿主机发布配置源码路径使用 `SDBOT_BOARD_SOURCE_DIR`。Compose 的 `_HOST` 路径只用于把源码只读挂入容器 `/opt/github-status-board`。停用发布时去除发布目标配置并使用基础 compose，事件接收与归档继续工作。
+## 调度和持久状态
 
-旧 `SDBOT_BOARD_REPO` / `SDBOT_BOARD_TRACK_REPO` 单目标配置仍兼容，但不能与多目标映射同时设置。来源须纳入全局允许列表；拒绝重复源、重复目标以及目标同时作为源，防止互相覆盖或发布事件回环。
+`src/core/bus.ts` 声明实际监听；`MultiBoard` 为每个源仓选择独立 `BoardQueue`。队列先保存请求代数，再返回 queued；默认合并 20 秒，最小触发间隔 60 秒，失败按 30～600 秒退避。启动及每小时请求兜底刷新。执行中收到的新代数留到下一轮。
 
-## 主要实现
+`src/node/board.ts` 在 Actions 模式调用共享 `dispatchCollection`，每站仅保存小型 `board-dispatch.json`（代数、最后触发时间、错误类别）。完整 Webhook 存档独立保留，规则未改变。旧本地采集的 `board-publication.json` 不混用。
 
-`src/core/bus.ts` 的 registerBuiltin 声明监听事件；普通 PR 更新排除 merge，合并由专门订阅处理。MultiBoard 根据 source 选择一个 BoardQueue；每个源与目标组合拥有独立目录、队列文件、异步任务、输出目录和重试状态。
+管理状态包含 `execution=github_actions`、`pending`、`running`、`last_dispatch` 和 `error`。成功 dispatch 只表明 GitHub 接受请求，`commit` 和 `last_success` 保持 null；采集和部署结果分别看目标仓的 Collect dashboard data / Deploy dashboard Pages。网络异常可能重复触发，不承诺全局恰好一次执行。
 
-默认 20 秒合并事件，单站点发布间隔至少 60 秒；失败按 30～600 秒退避。启动及每小时兜底采集，即使漏收事件也能更新。队列先写盘再返回 queued，进程重启恢复；发布期间新到达的请求保留到下一轮，一站失败不阻断另一站。换目标不会继承旧站点成功状态。
+Workers 使用持久 Alarm 和事务 outbox 调用同一个 Actions 入口，详见 [Workers 指南](workers.md)。不要同时运行两个 Bot 调度同站点。切换 Node 到 Actions 不会自动部署 Cloudflare Worker。
 
-`src/node/board.ts` 在后台以 Python 3 子进程调用外部看板项目的 publish.py，最长等待 600 秒，仅传入源仓短期令牌 `GITHUB_TOKEN`、目标短期令牌 `GSB_PUBLISH_TOKEN` 和必要网络环境，不继承 App 私钥、Webhook、admin 或 cloudflared 密钥。成功要求返回提交 SHA，失败只记录错误类别。`board.targets` 分别报告 pending、running、last_success、commit 和 error。提交成功后 Pages 仍有部署延迟。
+## 看板仓负责的工作
 
-静态发布器只导出公开源仓与公开目标，基于目标 main 的已有 tree 非强制原子更新 `site/` 内的八个站点文件，保留源码与工作流；来源／目标映射也在看板仓校验。Issue、PR、门禁、每日构建、版本测试与 E2E 计数由真实 API／报告采集。缺失、下载超时或不可解析的测试报告保留未知，不用测试文件数替代通过用例数。具体采集和 UI 说明由[看板仓文档](https://github.com/ScienceDiscovery/github-status-board)维护。
+每次从 main 读取 `.sync/` 和 `site/data/history/`，在请求／时间预算内增量刷新、补历史、重试报告。进度与数据在同一提交内写入；使用准确 checkout 父提交，冲突则失败并从新 main 重试，禁止强推。每小时第 17、47 分钟定时续跑；无站点变化只更新进度，不触发 Pages。
 
-## Actions 发布 Pages
+Issue / PR 和 run / attempt 指标分片长期保留；不复制测试日志、截图、trace 或逐用例明细。已有指标不会因产物过期清零。浏览器“历史数据”页可查询全部已采集记录；同步尚未补齐会显示状态。详细契约见[看板采集文档](https://github.com/ScienceDiscovery/github-status-board/blob/main/docs/incremental-history.md)。
 
-目标看板仓需先有 `.github/workflows/pages.yml`，在 Settings → Pages 将 Source 设为 **GitHub Actions**。这是一次性仓库管理操作。工作流监听 main 的 `site/**` 更新，也可手动执行；只上传 site 目录，并使用 Actions 自身的 `GITHUB_TOKEN`（contents read、pages write、id-token write）部署到 github-pages environment。单独执行 Pages 部署不需要 App 私钥；启用 Workers 的 `collect.yml` 采集时，采集工作流另需 App 私钥 Secret。
-
-Bot 的提交由 App 安装身份完成，可以触发 push 工作流。`board.targets[].last_success` 和 commit 代表提交成功；Pages 是否发布成功还需看 Actions 的 **Deploy dashboard Pages** 运行及站点实际内容。队列不会把 Actions 的部署失败误报为 GitHub 提交失败；部署失败可在目标仓重跑工作流。历史 gh-pages 分支可保留，但不再作为发布来源。
-
-正式和测试仓的 main 含有各自 site 快照，不能把一个站点的整条分支强制覆盖另一个仓。维护共享源码时只同步源码／工作流变更，保留各自 site 数据。两个看板仓产生的 webhook 仍只归档，不触发源仓更新，避免发布回环。
+`pages.yml` 只上传 `site/`；`.sync/` 不部署到 Pages，但看板仓公开，故它也只能包含公开进度和指标。正式与测试 main 各有数据，维护共享代码时保留双方的 `.sync/` 与 `site/`，不得互相覆盖。
 
 ## 验证
 
-实现：`src/core/board.ts`、`github-app.ts`、`config.ts`、`bus.ts`、`src/node/board.ts`、`docker-compose.board.yml`。`tests-ts/board-app.test.ts` 验证 RSA 签名、过期令牌、安装隔离、最小权限、队列合并／恢复／重试和凭据边界；`core.test.ts` 验证注册与全局范围；监听点浏览器旅程验证双目标状态。验收自动更新时需核对排队、提交 SHA 和 Pages 可见内容，不能仅以 Webhook 200 作为发布成功。Workers 的存储／调度和外部采集器边界见[运行环境说明](typescript-runtime.md)。
+`npm run check`、`npm test` 覆盖 Webhook 完整存档、范围／去重、队列恢复、触发失败重试、App 最小权限及管理状态。`tests-ts/board-app.test.ts` 明确验证 dispatch 不伪造提交或发布成功。实际部署验收应核对 Actions 完成、进度与数据同一提交、Pages 完成及站点内容。

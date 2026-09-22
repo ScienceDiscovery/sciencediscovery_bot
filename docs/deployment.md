@@ -54,6 +54,7 @@ docker compose down
 | SDBOT_DATA_DIR | .data，容器 /data | 私有投递与队列目录 |
 | SDBOT_RUN_DIR | .run | 宿主脚本 PID／日志目录 |
 | SDBOT_LOG_LEVEL | INFO | 进程日志级别 |
+| SDBOT_BOARD_EXECUTION | 宿主 local；Compose 扩展 github_actions | 仅触发 Actions，或兼容本地 Python 采集 |
 | SDBOT_BOARD_TARGETS | 空 | 源仓 → Pages 仓 JSON 映射 |
 | SDBOT_GITHUB_APP_ID | 无 | App ID 或 Client ID，用于发布身份 |
 | SDBOT_GITHUB_APP_PRIVATE_KEY | 无 | App RSA PEM 私钥，支持字面 \n 换行，只在本地提供 |

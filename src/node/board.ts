@@ -2,7 +2,8 @@ import { mkdir, readFile, open, rename } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { BoardQueue, MultiBoard, type PublicationState, type StateStore } from '../core/board.js';
+import { BoardQueue, MultiBoard, type PublicationState, type StateStore, type Publisher } from '../core/board.js';
+import { dispatchCollection } from '../core/actions.js';
 import { targets, type Config, type Environment } from '../core/config.js';
 import { GitHubApp } from '../core/github-app.js';
 import { digest } from '../core/signature.js';
@@ -33,7 +34,11 @@ export async function createBoards(cfg: Config): Promise<MultiBoard> {
   for (const [source, destination] of Object.entries(targets(cfg))) {
     const identity = (await digest(utf8.encode(source.toLowerCase() + ':' + destination.toLowerCase()))).slice(0, 24);
     const directory = join(cfg.data_dir, 'boards', identity);
-    const publish = async (): Promise<string> => {
+    const publish: Publisher = async (generation) => {
+      if (cfg.board_execution === 'github_actions') {
+        await dispatchCollection(new GitHubApp(cfg.github_app_id, cfg.github_app_private_key), source, destination, generation);
+        return { dispatched: true };
+      }
       let sourceToken = cfg.board_token, publishToken = cfg.board_token;
       if (cfg.github_app_id) {
         const app = new GitHubApp(cfg.github_app_id, cfg.github_app_private_key);
@@ -48,7 +53,8 @@ export async function createBoards(cfg: Config): Promise<MultiBoard> {
       if (!result.ok || typeof result.commit !== 'string' || !/^[0-9a-f]{40}$/.test(result.commit)) throw new TypeError('invalid publisher result');
       return result.commit;
     };
-    queues.push(await BoardQueue.open(source, destination, new FileState(join(directory, 'board-publication.json')), publish, cfg.board_debounce, cfg.board_refresh));
+    const stateFile = cfg.board_execution === 'github_actions' ? 'board-dispatch.json' : 'board-publication.json';
+    queues.push(await BoardQueue.open(source, destination, new FileState(join(directory, stateFile)), publish, cfg.board_debounce, cfg.board_refresh, undefined, cfg.board_execution));
   }
   return new MultiBoard(queues);
 }
