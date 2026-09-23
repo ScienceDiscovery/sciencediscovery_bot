@@ -8,6 +8,8 @@
 
 同 Worker 的只读管理页面和 API 已实现、部署，仍待 Cloudflare Access 应用及成员配置；配置缺失时拒绝查询，Webhook 接收和归档继续工作。管理重放已移除，内容分析监听器仍为占位。这些边界不能当成已经完成的业务能力。
 
+Bot 仓目前没有 GitHub Actions 部署工作流；已验证的发布方式是维护者使用 Wrangler 分别部署两套配置。下文的 Git 自动部署是接入方案，本次文档更新没有启用云端构建或改变运行版本。
+
 ## 仓库与职责
 
 | 对象 | 职责 |
@@ -33,6 +35,12 @@ flowchart TD
     PENDING -->|归档事务提交后| ALARM[持久 Alarm 合并与重试]
     ALARM -->|App 安装令牌 / workflow_dispatch| COLLECT[看板仓 collect.yml]
     TIMER[看板仓定时或手动运行] --> COLLECT
+    COLLECT -->|请求运行身份| OIDC[GitHub OIDC]
+    OIDC -->|短期身份 JWT| COLLECT
+    COLLECT -->|OIDC JWT / source 或 target| BROKER[同 Worker /actions/token]
+    BROKER -->|校验身份后用 App 私钥| INSTALL[GitHub 安装令牌 API]
+    INSTALL -->|指定仓库和权限| BROKER
+    BROKER -->|源仓读令牌 / 看板写令牌| COLLECT
     COLLECT -->|Python 采集器读取| API[源仓 GitHub API 与测试产物]
     API --> DATA[进度 .sync/ 与公开数据 site/ 原子提交]
     DATA -->|site/ 有变化| PAGES[pages.yml 发布 GitHub Pages]
@@ -43,7 +51,7 @@ flowchart TD
 
 1. HTTP 接收原始字节，`Pipeline` 验签后解析并归一化事件，检查允许的源仓与 delivery 去重。只有有效且匹配的事件进入业务监听；未知、重复、范围外或验签失败的投递仍保存各自请求和应用响应。存储失败返回 503，不确认已保存。
 2. Worker 的看板监听器仅暂存刷新意图。R2 正文／详情写入成功后，SQLite 事务一起提交索引、去重和刷新待办；随后由持久 Alarm 触发 `collect.yml`，HTTP 请求不会等待 Python 采集结束。
-3. `collect.yml` 从目标 main 读取上轮进度与历史，校验唯一源仓映射，用 OIDC 向对应 Worker 换取 App 安装令牌读取 GitHub API，再将新进度与变化数据一起提交到看板仓。
+3. `collect.yml` 从目标 main 读取上轮进度与历史，校验唯一源仓映射。GitHub 为采集 job 签发 OIDC 身份；对应 Worker 的 `/actions/token` 校验该身份后，用本环境 App 私钥分别申请源仓只读、看板仓 Contents 写安装令牌。采集器用这些令牌读取 GitHub API，再将新进度与变化数据一起提交到看板仓；结束时尝试撤销令牌。Bot 的 dispatch 参数不携带令牌，看板 Actions 不保存 App 私钥。
 4. `pages.yml` 只在 `site/` 变化或手动运行时上传整个 `site/`。仅进度变化不触发部署；页面无变化时不能把“没有新 Pages 运行”判成采集失败。
 
 Webhook 已接受、Actions 已触发、采集提交成功、Pages 部署成功是四个独立状态。Bot 的 `last_dispatch` 只代表触发成功，最终结果分别查看采集与发布工作流。详情见[看板更新](features/board-publication.md)。
@@ -53,12 +61,14 @@ Webhook 已接受、Actions 已触发、采集提交成功、Pages 部署成功�
 | 位置 | 实现内容 |
 | --- | --- |
 | `src/core/` | 标准 Fetch／Web Crypto；`pipeline.ts` 管验签、范围和去重，`bus.ts` 管监听注册与分发，`github-app.ts` 管 App 身份，`actions.ts` 管工作流触发 |
-| `src/worker/` | Worker 入口、Access 校验、SQLite Durable Object、R2 归档和持久 Alarm；不运行 Node 子进程或 Python |
+| `src/worker/` | Worker 入口、Access 管理鉴权、`actions-auth.ts` 的 OIDC 令牌兑换、SQLite Durable Object、R2 归档和持久 Alarm；不运行 Node 子进程或 Python |
 | `src/node/` | 本机双端口、JSONL／文件归档、Actions 触发，以及兼容的 Python 子进程采集模式 |
 | `static/index.html` | Bot 管理面板的事件记录与监听点页面；与公开 Pages 看板是两个不同界面 |
 | 看板仓 `publish.py`、`gsb/`、工作流 | Python 增量采集、历史回填、测试报告解析、提交和 Pages 发布 |
 
 私有 R2 保存请求正文及脱敏请求头／响应详情，SQLite 保存索引、计数、有限 delivery 去重窗口和刷新待办。Bot 不保存看板的历史回填游标、整套项目快照或测试日志，但会持续保存完整投递档案，因此不能把 Bot 总存储量理解成恒定的小缓存。
+
+OIDC 兑换不进入 Webhook 档案。SQLite 只额外保存短期的运行／尝试／用途签发记录，防止同一采集尝试反复领取令牌；不保存 JWT、安装令牌或 App 私钥。校验条件、失败与重试行为见 [Actions OIDC 临时凭据](features/actions-oidc.md)。
 
 看板仓 `.sync/` 保存水位、回填／对账游标和指标缓存；`site/data/snapshot.json` 保存当前摘要，`site/data/history/` 保存历史分片及索引。`.sync/` 不上传到 Pages，但公开仓库中的文件仍是公开信息。旧本机 Webhook 档案不参与看板采集，不迁移不会清空已有看板历史。
 
@@ -66,7 +76,7 @@ Webhook 已接受、Actions 已触发、采集提交成功、Pages 部署成功�
 
 ## GitHub App 与凭据
 
-Webhook secret 用于校验收到的请求；App 私钥用于签发短期 JWT，再换取指定 installation、指定仓库和权限的安装令牌；Cloudflare Access 用于管理员登录。这三种身份用途独立，不能互换。
+Webhook secret 用于校验收到的请求；App 私钥用于签发短期 JWT，再换取指定 installation、指定仓库和权限的安装令牌；GitHub OIDC 用于证明采集工作流身份；Cloudflare Access 用于管理员登录。这四种认证用途独立，不能互换。
 
 | 操作 | 身份与权限边界 |
 | --- | --- |
@@ -88,6 +98,24 @@ App 的安装范围与 Bot 的业务范围分别管理。两套 App 可以安装
 Worker 的 Webhook 路径只提供协议与最小健康检查；独立 `/actions/token` 端点只接受通过 OIDC 验证的采集工作流；`/admin/` 及其 API 必须先通过 Access 签名、issuer、AUD、有效期和域名校验。它与接收服务共用部署，只提供查询，没有管理重放。Node 的管理端仅在 loopback 提供，cloudflared 只用于可选本机部署，不能转发管理端口。Worker 本身无需 cloudflared。
 
 日常流程为本地离线测试 → 独立测试实例和测试看板联调 → 固定候选提交 → 正式发布。两套 Bot 不同时常驻调度同一看板；关闭 Cron 不等于停掉持久 Alarm，停用调度须清空对应看板目标。Bot 推送代码、Worker 发布和 Pages 发布是独立动作，不能把代码上传说成 Worker 已更新。验证与回退见[Workers 指南](features/workers.md)、[云端管理](features/cloud-admin.md)和[验证指南](testing.md)。
+
+## Bot 代码自动部署（接入方案）
+
+推荐先用 Cloudflare Workers Builds 连接 Bot 代码仓：测试实例监听测试分支（建议 `develop`），通过校验后部署 `wrangler.test.jsonc`；正式实例监听 `main`，合入经过测试的代码后部署 `wrangler.jsonc`。两者都使用现有独立实例和存储。测试分支名称是接入建议，需先创建；不要把同一个 main 推送直接当成“先测试、再正式”的发布门禁。[Workers Builds 官方说明](https://developers.cloudflare.com/workers/ci-cd/builds/)
+
+```mermaid
+flowchart LR
+    DEV[Bot 测试分支] --> TB[Workers Builds / 校验与测试]
+    TB --> TW[测试 Worker / 测试配置]
+    TW --> CHECK[测试 App 与测试看板联调]
+    CHECK --> MERGE[合入 Bot main]
+    MERGE --> PB[Workers Builds / 校验与测试]
+    PB --> PW[正式 Worker / 正式配置]
+```
+
+也可用 Bot 仓的 GitHub Actions 调用 Wrangler，适合需要把测试、部署批准和结果统一放在 GitHub 的流程；需要独立 Cloudflare 部署凭据。已有看板 OIDC 只兑换 GitHub App 安装令牌，不提供 Cloudflare 部署权限。[GitHub Actions 官方部署说明](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)
+
+无论选择哪一种，Bot 代码部署、看板数据采集、Pages 发布都分别运行；自动部署不会迁移或清空旧档案和看板数据。具体控制台步骤、分支与命令见 [Worker 自动部署](features/worker-delivery.md)。
 
 ## 配置入 Git 与公开文档
 

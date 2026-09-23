@@ -10,6 +10,7 @@
 | [管理面板](features/admin-panel.md) | 事件页、监听点页、管理 API、浏览器时区与访问保护 |
 | [TypeScript 与运行环境](features/typescript-runtime.md) | Web 标准核心、Node 适配、Workers 验证与持久化边界 |
 | [Workers 与 Actions 采集](features/workers.md) | R2／SQLite 归档、持久调度、本地模拟器、采集工作流与上线准备 |
+| [Worker 自动部署](features/worker-delivery.md) | Workers Builds／GitHub Actions 接入方案、分支映射、构建命令与部署授权 |
 | [Actions OIDC 临时凭据](features/actions-oidc.md) | Worker 集中管理 App 私钥、工作流身份校验、最小权限令牌与环境隔离 |
 | [云端只读管理](features/cloud-admin.md) | 同 Worker 鉴权端点、Access 配置、正式／测试隔离与旧档案边界 |
 | [部署与配置](deployment.md) | 宿主机、Compose、cloudflared、配置变量与数据位置 |
