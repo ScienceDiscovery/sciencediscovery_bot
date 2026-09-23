@@ -4,7 +4,7 @@
 
 本页说明如何把 Bot 代码仓的更新发布到现有正式／测试 Worker。看板仓的 `collect.yml` 采集 GitHub 数据，`pages.yml` 发布静态看板，这两条工作流不部署 Bot。
 
-目前 Bot 仓没有 GitHub Actions 部署工作流；已验证发布方式是手动调用 Wrangler。以下是可执行的接入方案，尚未由本次文档更新连接 Workers Builds、创建测试分支或启用自动发布。运行时继续使用各自已有的 App、Secrets、Durable Object、R2、路由与业务映射。
+维护者已完成 Cloudflare Workers Builds 控制台接入，Bot 仓的 `develop` 分支也已建立；首次接入及后续发布均需核验提交触发、分支映射与实际部署结果。下面保留接入设置与验收方法。Bot 仓没有额外的 GitHub Actions 部署工作流，Wrangler 手动部署仍可用于维护。运行时继续使用各自已有的 App、Secrets、Durable Object、R2、路由与业务映射。
 
 ## 两种方式
 
@@ -25,7 +25,7 @@ Workers Builds 原生支持 Git 仓推送触发；GitHub Actions 也是官方支
 | --- | --- | --- |
 | Git repository | 同一个 Bot 代码仓 | 同一个 Bot 代码仓 |
 | Root directory | 仓库根目录 | 仓库根目录 |
-| Production branch | `develop`（接入前创建） | `main` |
+| Production branch | `develop` | `main` |
 | Build command | 下方共同命令 | 下方共同命令 |
 | Deploy command | `npx wrangler deploy -c wrangler.test.jsonc` | `npx wrangler deploy -c wrangler.jsonc` |
 | Preview builds | 关闭，使用现有独立测试实例 | 关闭 |

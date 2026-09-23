@@ -8,7 +8,7 @@
 
 同 Worker 的只读管理页面和 API 已实现、部署，仍待 Cloudflare Access 应用及成员配置；配置缺失时拒绝查询，Webhook 接收和归档继续工作。管理重放已移除，内容分析监听器仍为占位。这些边界不能当成已经完成的业务能力。
 
-Bot 仓目前没有 GitHub Actions 部署工作流；已验证的发布方式是维护者使用 Wrangler 分别部署两套配置。下文的 Git 自动部署是接入方案，本次文档更新没有启用云端构建或改变运行版本。
+Bot 仓采用 Cloudflare Workers Builds 连接 GitHub；维护者已完成控制台接入，`develop` 分支已建立。发布时须核对提交触发、分支与实例对应关系及实际部署结果，配置完成不等于构建或上线成功。Bot 仓无需额外的 GitHub Actions 部署工作流，Wrangler 手动部署保留为维护入口。
 
 ## 仓库与职责
 
@@ -101,7 +101,7 @@ Worker 的 Webhook 路径只提供协议与最小健康检查；独立 `/actions
 
 ## Bot 代码自动部署（接入方案）
 
-推荐先用 Cloudflare Workers Builds 连接 Bot 代码仓：测试实例监听测试分支（建议 `develop`），通过校验后部署 `wrangler.test.jsonc`；正式实例监听 `main`，合入经过测试的代码后部署 `wrangler.jsonc`。两者都使用现有独立实例和存储。测试分支名称是接入建议，需先创建；不要把同一个 main 推送直接当成“先测试、再正式”的发布门禁。[Workers Builds 官方说明](https://developers.cloudflare.com/workers/ci-cd/builds/)
+Workers Builds 的环境对应关系为：测试实例监听 `develop`，通过校验后部署 `wrangler.test.jsonc`；正式实例监听 `main`，合入经过测试的代码后部署 `wrangler.jsonc`。两者都使用现有独立实例和存储；控制台配置与验收须核对这组对应关系，不要把同一个 main 推送直接当成“先测试、再正式”的发布门禁。[Workers Builds 官方说明](https://developers.cloudflare.com/workers/ci-cd/builds/)
 
 ```mermaid
 flowchart LR
