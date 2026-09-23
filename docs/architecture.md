@@ -43,7 +43,7 @@ flowchart TD
 
 1. HTTP 接收原始字节，`Pipeline` 验签后解析并归一化事件，检查允许的源仓与 delivery 去重。只有有效且匹配的事件进入业务监听；未知、重复、范围外或验签失败的投递仍保存各自请求和应用响应。存储失败返回 503，不确认已保存。
 2. Worker 的看板监听器仅暂存刷新意图。R2 正文／详情写入成功后，SQLite 事务一起提交索引、去重和刷新待办；随后由持久 Alarm 触发 `collect.yml`，HTTP 请求不会等待 Python 采集结束。
-3. `collect.yml` 从目标 main 读取上轮进度与历史，校验唯一源仓映射，用 App 安装令牌读取 GitHub API，再将新进度与变化数据一起提交到看板仓。
+3. `collect.yml` 从目标 main 读取上轮进度与历史，校验唯一源仓映射，用 OIDC 向对应 Worker 换取 App 安装令牌读取 GitHub API，再将新进度与变化数据一起提交到看板仓。
 4. `pages.yml` 只在 `site/` 变化或手动运行时上传整个 `site/`。仅进度变化不触发部署；页面无变化时不能把“没有新 Pages 运行”判成采集失败。
 
 Webhook 已接受、Actions 已触发、采集提交成功、Pages 部署成功是四个独立状态。Bot 的 `last_dispatch` 只代表触发成功，最终结果分别查看采集与发布工作流。详情见[看板更新](features/board-publication.md)。
@@ -72,8 +72,8 @@ Webhook secret 用于校验收到的请求；App 私钥用于签发短期 JWT，
 | --- | --- |
 | 接收 App 或普通 Webhook | 校验 Webhook secret；接收本身不需要 App 私钥。普通 Webhook 同样可触发已有业务，但后续私有仓读取／工作流触发仍需独立授权 |
 | Bot 触发看板采集 | 目标看板仓安装令牌：Metadata read、Actions write |
-| Actions 读取源仓 | 源仓安装令牌：Contents、Issues、Pull requests、Actions、Checks、Commit statuses read |
-| Actions 提交看板仓 | 目标仓安装令牌：Contents write；与跨组织源仓令牌分别申请 |
+| Actions 读取源仓 | OIDC 向对应 Worker 换取源仓安装令牌：Contents、Issues、Pull requests、Actions、Checks、Commit statuses read |
+| Actions 提交看板仓 | OIDC 向对应 Worker 换取目标仓安装令牌：Contents write；与跨组织源仓令牌分别申请 |
 | Actions 发布 Pages | job 级 `GITHUB_TOKEN`：Contents read、Pages write、ID token write |
 | Worker 部署／资源配置 | Cloudflare 的部署授权，与 GitHub App 凭据独立；不在运行时管理页或 Pages 中提供 |
 
@@ -81,9 +81,9 @@ App 注册权限、各组织 installation 批准的权限、Webhook 事件订阅
 
 ## 部署、管理与隔离调试
 
-正式和测试使用同一份 TypeScript 源码、两份 Wrangler 配置，分别部署独立 Worker、Durable Object 命名空间、R2 和 Secrets。正式仅调度正式看板，测试仅面向实验源仓和测试看板；不能给测试实例复用正式 App 私钥。测试看板 Actions 的 App ID 与私钥必须同时属于测试 App；仅替换 Worker 凭据或仅修改 Actions 的 App ID 都不能完成整条链路的切换。两个看板仓各自只保存本站源仓映射，更新共享代码时保留配置、历史与独有功能。
+正式和测试使用同一份 TypeScript 源码、两份 Wrangler 配置，分别部署独立 Worker、Durable Object 命名空间、R2 和 Secrets。正式仅调度正式看板，测试仅面向实验源仓和测试看板；不能给测试实例复用正式 App 私钥。测试看板 Actions 通过 OIDC 向测试 Worker 申请临时令牌，正式看板只向正式 Worker 申请；Actions 不保存 App 私钥，两个 Worker 分别固定各自看板身份与源仓映射。两个看板仓各自只保存本站源仓映射，更新共享代码时保留配置、历史与独有功能。
 
-Worker 的公开路径只有 Webhook 协议与最小健康检查；`/admin/` 及其 API 必须先通过 Access 签名、issuer、AUD、有效期和域名校验。它与接收服务共用部署，只提供查询，没有管理重放。Node 的管理端仅在 loopback 提供，cloudflared 只用于可选本机部署，不能转发管理端口。Worker 本身无需 cloudflared。
+Worker 的 Webhook 路径只提供协议与最小健康检查；独立 `/actions/token` 端点只接受通过 OIDC 验证的采集工作流；`/admin/` 及其 API 必须先通过 Access 签名、issuer、AUD、有效期和域名校验。它与接收服务共用部署，只提供查询，没有管理重放。Node 的管理端仅在 loopback 提供，cloudflared 只用于可选本机部署，不能转发管理端口。Worker 本身无需 cloudflared。
 
 日常流程为本地离线测试 → 独立测试实例和测试看板联调 → 固定候选提交 → 正式发布。两套 Bot 不同时常驻调度同一看板；关闭 Cron 不等于停掉持久 Alarm，停用调度须清空对应看板目标。Bot 推送代码、Worker 发布和 Pages 发布是独立动作，不能把代码上传说成 Worker 已更新。验证与回退见[Workers 指南](features/workers.md)、[云端管理](features/cloud-admin.md)和[验证指南](testing.md)。
 
@@ -91,4 +91,4 @@ Worker 的公开路径只有 Webhook 协议与最小健康检查；`/admin/` 及
 
 本仓按部署配置随代码评审的方式保留 `wrangler.jsonc` 和 `wrangler.test.jsonc`，维护入口、绑定、迁移、Cron、路由与非秘密 vars。Cloudflare 推荐把 Wrangler 配置作为部署配置的权威来源；部署标识与凭据值应分别管理。此处保留已跟踪的非秘密配置，不另造一套易失配的私有配置副本。[官方配置说明](https://developers.cloudflare.com/workers/wrangler/configuration/)
 
-App 私钥、Webhook secret、API／Tunnel token 只放 Workers Secrets、Actions Secrets 或已忽略的本地环境文件，不写入 Wrangler `vars`、源码、日志或文档；示例只写变量名和占位符。账号邮箱、实际账户标识和管理成员名单不纳入公开架构说明。文档使用角色名，不复制配置中的实际实例名称或访问域名。[官方 Secrets 说明](https://developers.cloudflare.com/workers/configuration/secrets/)
+App 私钥、Webhook secret、API／Tunnel token 只放 Workers Secrets 或已忽略的本地环境文件；看板 Actions 通过 [OIDC 临时凭据](features/actions-oidc.md)接入，不保留 App 私钥，不写入 Wrangler `vars`、源码、日志或文档；示例只写变量名和占位符。账号邮箱、实际账户标识和管理成员名单不纳入公开架构说明。文档使用角色名，不复制配置中的实际实例名称或访问域名。[官方 Secrets 说明](https://developers.cloudflare.com/workers/configuration/secrets/)

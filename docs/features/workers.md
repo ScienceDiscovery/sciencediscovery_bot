@@ -6,7 +6,7 @@ Worker 保留 Webhook 验签、事件总线、配置的源仓范围、全量投�
 
 现有正式服务使用 `wrangler.jsonc`，App Webhook URL 使用正式接收域名下的 `/webhook/github`。该实例仅将 `openJiuwen-ai/sciencediscovery` 映射到 `ScienceDiscovery/github-status-board`，启用持久 Alarm 与每五分钟的修复 Cron。本地 Compose 的 bot 与 cloudflared 已停止，数据卷保留；不要为查看旧档案直接恢复带看板调度的整套服务。
 
-独立测试实例使用 `wrangler.test.jsonc`，接收地址使用独立测试域名下的 `/webhook/github`。它使用自己的 SQLite Durable Object、私有 R2、测试 App 与 Webhook secret；只允许实验源仓，唯一目标为 `ScienceDiscovery/sciencediscovery` → `ScienceDiscovery/github-status-board-test`。测试配置启用持久 Alarm 和每五分钟修复 Cron，须在测试 App 安装到实验源仓及测试看板仓、云端 Secrets 和看板 Actions 凭据验证通过后部署。测试看板的仓库变量与私钥必须属于测试 App；创建 App 或配置 Worker Secrets 不会自动更新 GitHub Actions。
+独立测试实例使用 `wrangler.test.jsonc`，接收地址使用独立测试域名下的 `/webhook/github`。它使用自己的 SQLite Durable Object、私有 R2、测试 App 与 Webhook secret；只允许实验源仓，唯一目标为 `ScienceDiscovery/sciencediscovery` → `ScienceDiscovery/github-status-board-test`。测试配置启用持久 Alarm 和每五分钟修复 Cron，须在测试 App 安装到实验源仓及测试看板仓、云端 Secrets 和看板 Actions 凭据验证通过后部署。测试看板通过 OIDC 向测试 Worker 兑换临时凭据，工作流不再保存测试 App 私钥。
 
 两个实例均提供最小健康检查 `/healthz`。同域名的 `/admin/` 已随代码部署，但目前尚未配置 Access 应用与 issuer／AUD，返回 503 `admin unavailable`，不能登录查询；这不影响 Webhook 接收与云端存档。开通步骤见[云端只读管理](cloud-admin.md)。App ID 是非敏感配置，密钥单独保存在云端 Secrets。部署到另一账号时应替换 App ID、域名及资源名称；首次部署先按下文关闭调度和 routes，不能照搬正式启用配置。
 
@@ -53,9 +53,9 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 
 ## Actions 配置
 
-两个看板仓都需要 `collect.yml`、`collection_context.py` 和已有采集器代码。每个看板仓的 `board-config.json` 只保存本站映射，相同工作流按运行仓选择唯一源仓，拒绝另一个环境的目标或源仓；正式与测试快照不能互相覆盖。
+两个看板仓都需要 `collect.yml`、`collection_context.py`、`collect_with_oidc.py` 和已有采集器代码。每个看板仓的 `board-config.json` 只保存本站映射，相同工作流按运行仓选择唯一源仓，拒绝另一个环境的目标或源仓；正式与测试快照不能互相覆盖。
 
-正式目标仓使用正式 App，测试目标仓使用测试 App。在各目标仓设置仓库变量 `SDBOT_GITHUB_APP_ID`、仓库 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`。私钥可以使用多行 PEM。不要放入 workflow 文件、inputs、输出或 artifact。工作流通过 `actions/create-github-app-token@v2` 分别申请源仓只读和目标仓 Contents 写令牌，并在任务结束时撤销。
+正式与测试目标仓分别配置 `SDBOT_TOKEN_BROKER_URL` 和 `SDBOT_TOKEN_AUDIENCE` 两个 Actions Variables；私钥仅由对应 Worker 使用。`collect_with_oidc.py` 校验本站映射后，通过工作流 OIDC 身份换取源仓只读／目标仓 Contents 写令牌，采集后尝试撤销。Worker 同时固定看板仓／组织 ID、main 与 collect.yml；详见 [Actions OIDC](actions-oidc.md)。
 
 源仓读取权限沿用看板要求：Contents、Issues、Pull requests、Actions、Checks、Commit statuses；目标仓需要 Contents 写与触发任务的 Actions 写权限。App 必须安装到两端，跨组织分别使用对应 installation。Actions 用 App 令牌提交 site，使已有 `pages.yml` 的 push 触发器生效；不能换成默认 GITHUB_TOKEN 写入后期待自动触发另一个工作流。
 
@@ -65,12 +65,12 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 
 ## 新账号首次上线步骤（本地验收不会执行）
 
-前提：两个看板仓已有采集工作流、脚本及各自的 `.sync/` 与 `site/`；App 权限、仓库变量和 Secrets 已配置，并通过真实采集和 Pages 验收。更新共享源码时保留各站数据和独立功能，不重新初始化同步进度。
+前提：两个看板仓已有采集工作流、脚本及各自的 `.sync/` 与 `site/`；App 权限、Worker Secrets、OIDC 信任和看板仓变量已配置，并通过真实采集和 Pages 验收。更新共享源码时保留各站数据和独立功能，不重新初始化同步进度。
 
 1. 在目标 Cloudflare 账号开通 R2，创建私有归档 bucket；名称与对应 Wrangler 配置的 `r2_buckets[].bucket_name` 一致。不启用公开域名或公开读取，不配置未经评估的自动删除规则。
 2. 使用 `npx wrangler login --device` 授权部署工具，再用 `npx wrangler whoami` 核对账号；账号有多个时在配置中明确 `account_id`。Tunnel token 不能代替 Workers 部署授权。
 3. 首次部署保持 `workers_dev=false`、`preview_urls=false`、无 routes、`triggers.crons=[]`、`SDBOT_BOARD_TARGETS="{}"`。执行 `npm run workers:check` 只做本地检查；`npx wrangler deploy` 才会实际创建／更新云端 Worker 与 SQLite Durable Object 命名空间。首次初始化之后不要随意改类名、迁移标签、Worker 名称或 `archive-v1`，以免指向另一份历史。该阶段没有公开入口或 Cron，不要求未配置 Secrets 的服务已经能处理请求。
-4. 在 Worker 的 Settings → Variables and Secrets 中添加 Secret：`SDBOT_GITHUB_WEBHOOK_SECRET`、可选 `SDBOT_GITCODE_WEBHOOK_SECRET`、`SDBOT_GITHUB_APP_PRIVATE_KEY`。私钥保留完整多行 PEM，通过页面 Deploy 生效；不要放进普通 `vars`、工作流 inputs 或聊天。将非敏感的 `SDBOT_GITHUB_APP_ID` 写入 Wrangler `vars`。本机 `.env` 与 GitHub Actions Secrets 不会自动复制到 Worker。至少一个平台必须有密钥；未配置密钥的平台直接拒绝，Worker 不支持免签接入。
+4. 在 Worker 的 Settings → Variables and Secrets 中添加 Secret：`SDBOT_GITHUB_WEBHOOK_SECRET`、可选 `SDBOT_GITCODE_WEBHOOK_SECRET`、`SDBOT_GITHUB_APP_PRIVATE_KEY`。私钥保留完整多行 PEM，通过页面 Deploy 生效；不要放进普通 `vars`、工作流 inputs 或聊天。将非敏感的 `SDBOT_GITHUB_APP_ID` 写入 Wrangler `vars`。本机 `.env` 不会自动复制到 Worker；看板 Actions 不保存 App 私钥。至少一个平台必须有密钥；未配置密钥的平台直接拒绝，Worker 不支持免签接入。
 5. 为 Worker 选择一个新的域名，在 Settings → Domains & Routes 添加 Custom Domain，并将对应 `routes` 同步回 Wrangler 配置；先保留当前 Tunnel 域名。检查新地址的 `/healthz` 只返回 `{"ok":true}`、`/api/status` 返回 404，再使用 `/webhook/github` 接收签名投递。Webhook 地址不能要求浏览器交互登录。
 6. GitHub App 的 Webhook URL 属于 App 注册配置，修改会影响该 App 的全部安装；不能借此只切测试仓。先在实验源仓配置独立的临时仓库 Webhook，指向新地址，保持原 App 地址不动。先验证归档，再停用 Compose 对测试看板的自动触发并让 Worker 仅启用测试目标；核对签名失败、未知事件、重复投递、R2／SQLite 留存及真实采集／Pages 结果。
 7. 启用采集时配置 `SDBOT_BOARD_TARGETS` 的 JSON 字符串映射，并恢复 `triggers.crons=["*/5 * * * *"]` 后部署。看板目标一旦启用并初始化，即使没有新投递，也可能经 Alarm 触发周期刷新；仅关闭 Cron 不能停用持久 Alarm。首次准备同时保持目标为空，正式切换前停用旧进程对应的看板触发，避免两套 Bot 重复调度。

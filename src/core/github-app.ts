@@ -2,6 +2,7 @@ import { base64, fromBase64 } from './signature.js';
 import { object, utf8, type Doc } from './types.js';
 
 export class GitHubAppAuthError extends Error { constructor() { super('GitHub App authentication failed'); } }
+export interface InstallationGrant { token: string; expires_at: string; }
 const base64url = (bytes: Uint8Array): string => base64(bytes).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
 function der(tag: number, bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   const length: number[] = []; let remaining = bytes.length;
@@ -41,19 +42,22 @@ export class GitHubApp {
     } catch { throw new GitHubAppAuthError(); }
   }
   async tokenFor(repository: string, write = false): Promise<string> {
+    return (await this.grantForCollection(repository, write)).token;
+  }
+  async grantForCollection(repository: string, write = false): Promise<InstallationGrant> {
     const permissions: Doc = { metadata: 'read', contents: write ? 'write' : 'read' };
     if (!write) Object.assign(permissions, { issues: 'read', pull_requests: 'read', actions: 'read', checks: 'read', statuses: 'read' });
     return this.installationToken(repository, permissions);
   }
   async tokenForWorkflow(repository: string): Promise<string> {
-    return this.installationToken(repository, { metadata: 'read', actions: 'write' });
+    return (await this.installationToken(repository, { metadata: 'read', actions: 'write' })).token;
   }
-  private async installationToken(repository: string, permissions: Doc): Promise<string> {
+  private async installationToken(repository: string, permissions: Doc): Promise<InstallationGrant> {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new TypeError('invalid repository');
     const installation = await this.request('GET', `/repos/${repository}/installation`);
     if (!Number.isSafeInteger(installation.id) || Number(installation.id) <= 0 || installation.suspended_at) throw new GitHubAppAuthError();
     const result = await this.request('POST', `/app/installations/${installation.id}/access_tokens`, { repositories: [repository.split('/')[1]], permissions });
     if (typeof result.token !== 'string' || !result.token || typeof result.expires_at !== 'string' || !(Date.parse(result.expires_at) > this.clock() + 660000)) throw new GitHubAppAuthError();
-    return result.token;
+    return { token: result.token, expires_at: result.expires_at };
   }
 }

@@ -9,6 +9,7 @@ import { WorkerArchive } from './archive.js';
 import { WorkerBoard } from './board.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
 import { authorizeAdmin } from './access.js';
+import { exchangeActionsToken } from './actions-auth.js';
 import panel from '../../static/index.html';
 
 export class BotObject extends DurableObject<WorkerEnv> {
@@ -38,6 +39,17 @@ export class BotObject extends DurableObject<WorkerEnv> {
   query(path: string): Promise<Response> {
     return this.app.readAdmin(new Request('https://admin.internal' + path));
   }
+  claimCredential(key: string, expires: number): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      sql.exec('CREATE TABLE IF NOT EXISTS credential_claims (id TEXT PRIMARY KEY, expires INTEGER NOT NULL)');
+      sql.exec('DELETE FROM credential_claims WHERE expires < ?', Math.floor(Date.now() / 1000) - 60);
+      if (sql.exec('SELECT id FROM credential_claims WHERE id = ?', key).toArray().length) return false;
+      // Keep a run's issuance guard for a day, including retries with a fresh OIDC JWT.
+      sql.exec('INSERT INTO credential_claims VALUES (?, ?)', key, Math.max(expires, Math.floor(Date.now() / 1000) + 86400));
+      return true;
+    });
+  }
   async wake(): Promise<void> { await this.mutex.run(() => this.board.schedule()); }
   async alarm(): Promise<void> {
     const jobs = await this.mutex.run(async () => { const result = this.board.claim(); await this.board.schedule(); return result; });
@@ -56,6 +68,8 @@ export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     try {
       const url = new URL(request.url);
+      if (url.pathname === '/actions/token') return await exchangeActionsToken(request, env);
+      if (url.pathname === '/actions' || url.pathname.startsWith('/actions/')) return jsonResponse({ ok: false, error: 'not found' }, 404);
       if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
         const denied = await authorizeAdmin(request, env);
         if (denied) return denied;

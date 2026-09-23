@@ -15,6 +15,9 @@
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     "SDBOT_ENVIRONMENT": "production",
+    "SDBOT_ACTIONS_AUDIENCE": "sdbot:actions:production",
+    "SDBOT_ACTIONS_REPOSITORY_ID": "1379305235",
+    "SDBOT_ACTIONS_OWNER_ID": "329935216",
     "SDBOT_ADMIN_HOSTNAME": "sciencediscovery-bot-worker.llmbots.co",
     "SDBOT_GITHUB_APP_ID": "5016872",
     "SDBOT_REPOS": "openJiuwen-ai/sciencediscovery",

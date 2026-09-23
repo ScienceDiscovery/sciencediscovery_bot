@@ -29,7 +29,7 @@ Worker 用 jose 验证 RS256 签名、固定 issuer、AUD、有效期与主体�
 | `wrangler.jsonc` | 正式实例 | 正式独立归档桶及对象命名空间 | 正式源仓 → 正式看板已启用，Cron 每五分钟 |
 | `wrangler.test.jsonc` | 测试实例 | 测试独立归档桶及对象命名空间 | 仅实验源仓映射到测试看板，独立 App 与调度 |
 
-两套命名空间、Secrets 和部署版本分开，测试不得绑定正式存储或保存正式 App 私钥。测试实例与测试看板 Actions 均使用独立测试 App，分别配置其 ID／私钥；测试 App 只需安装到实验源仓及测试看板仓。新环境凭据未齐备时保持目标映射为空，验证凭据后才部署启用配置。
+两套命名空间、Secrets 和部署版本分开，测试不得绑定正式存储或保存正式 App 私钥。测试实例使用独立测试 App 私钥，测试看板 Actions 通过 OIDC 换取临时令牌；测试 App 只需安装到实验源仓及测试看板仓。新环境凭据未齐备时保持目标映射为空，验证凭据后才部署启用配置。
 
 `npm run workers:check` 对两份配置做本地 dry-run，不创建远端资源。真实发布分别使用 `npx wrangler deploy -c wrangler.jsonc` 和 `npx wrangler deploy -c wrangler.test.jsonc`；发布前确认当前登录账号、私有 bucket、Secrets 与调度范围。要开放管理登录还必须配置 Access 策略；认证未完成时保持拒绝访问。配置里声明 bucket 不代表它已经在账号创建。
 
