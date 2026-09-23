@@ -21,7 +21,7 @@ npm run workers:check
 
 23 组旧版样例的归一化字段和路由结果固定在 `tests-ts/fixtures/expected-events.json`，作为迁移兼容基线；测试不依赖 Python。`workers.test.ts` 在真实 workerd 中执行共享核心，不开启 Node 兼容标记；测试内存归档和辅助查询路径不能用于生产。
 
-`worker-adapter.test.mjs` 直接打包 `src/worker/index.ts`，使用本地持久 SQLite／R2。它验证并发重复投递、记录筛选与移除重放后的无副作用检查、进程重建后的去重与历史、App 最小权限、双仓持久 Alarm 调度以及远端触发失败后的重试；不会访问真实 GitHub 或执行真实发布。Actions 配置另在看板仓执行 `python3 -m unittest discover -s tests -v`；远端 runner／Pages 结果仍需上线阶段验收。
+`worker-adapter.test.mjs` 直接打包 `src/worker/index.ts`，使用本地持久 SQLite／R2。它验证并发重复投递、记录筛选与移除重放后的无副作用检查、进程重建后的去重与历史、App 最小权限、双仓持久 Alarm 调度以及远端触发失败后的重试；不会访问真实 GitHub 或执行真实发布。`actions-auth.test.mjs` 验证真实 workerd 中的 OIDC 签名、固定仓库／组织 ID、main 与工作流身份（包括直接任务的 job_workflow_ref）、跨环境拒绝、读写最小权限、持久签发限制和凭据不归档。Actions 配置另在看板仓执行 `python3 -m unittest discover -s tests -v`；远端 runner／Pages 结果仍需上线阶段验收。
 
 新增业务至少验证一次应触发和一次不应触发；新增选择条件、启用模式或路由时核对实际注册清单与执行结果。管理查询不能新建投递或触发业务；开发 fixture 的新 delivery 不能当作平台重复投递。
 

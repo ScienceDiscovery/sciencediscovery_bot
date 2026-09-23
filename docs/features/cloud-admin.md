@@ -12,7 +12,7 @@
 
 ## Access 配置
 
-1. 在 Cloudflare Zero Trust 创建 self-hosted Access 应用，保护接收域名的 `/admin` 及所有 `/admin/*` 路径。只允许指定成员登录；不要把整个接收域名配置为需要登录，否则 GitHub 无法投递。
+1. 在 Cloudflare Zero Trust 创建 self-hosted Access 应用，保护接收域名的 `/admin` 及所有 `/admin/*` 路径。只允许指定成员登录；不要把整个接收域名配置为需要登录，否则 GitHub 无法投递，Actions 也无法使用 OIDC 兑换令牌。`/actions/token` 由 Worker 自行校验 GitHub OIDC，不要求浏览器 Access 登录。
 2. 在对应 Wrangler 配置的 `vars` 中设置 `SDBOT_ACCESS_ISSUER=https://<team>.cloudflareaccess.com`、`SDBOT_ACCESS_AUD=<application-aud>` 和 `SDBOT_ADMIN_HOSTNAME=<管理所在域名>`。issuer 不带尾部斜杠，AUD 为对应 Access 应用的标识；这些不是私钥。正式与测试分别配置。
 3. 部署后验证未认证访问被拦截，指定成员登录后可打开 `/admin/`、查询真实云端记录。确认 `/webhook/github` 的签名请求不受登录限制，`/api/status` 仍为 404。
 

@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-正式 Bot 已运行在 Cloudflare Workers，接收 App 投递并触发正式看板采集；真实事件到采集提交的链路已验证。本地 Compose 已停止，旧档案卷保留且不迁移。测试 Worker 已独立部署，独立测试 App 已创建。仓库配置为两套单源仓链路：正式 App／Worker／看板与测试 App／Worker／看板分别配置；修改 Git 中的配置不代表云端已生效，上线仍须通过各自凭据、Webhook、采集与部署验证。
+正式和测试 Bot 已分别运行在 Cloudflare Workers，各自只处理对应源仓、使用独立 App 与存储，并调度自己的看板。两站 Actions 已改为通过 OIDC 向对应 Worker 换取临时安装令牌；真实采集与 App 提交已验证，工作流不再读取 App 私钥。本地 Compose 已停止，旧档案卷保留且不迁移。
 
 同 Worker 的只读管理页面和 API 已实现、部署，仍待 Cloudflare Access 应用及成员配置；配置缺失时拒绝查询，Webhook 接收和归档继续工作。管理重放已移除，内容分析监听器仍为占位。这些边界不能当成已经完成的业务能力。
 
