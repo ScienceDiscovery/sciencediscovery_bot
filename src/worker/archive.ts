@@ -15,8 +15,17 @@ export class WorkerArchive implements Archive {
       CREATE INDEX IF NOT EXISTS delivery_lookup ON deliveries(delivery_id, seq);
       CREATE INDEX IF NOT EXISTS delivery_repo ON deliveries(repo, seq);
       CREATE TABLE IF NOT EXISTS seen (provider TEXT, delivery_id TEXT, seq INTEGER, PRIMARY KEY(provider, delivery_id));
+      CREATE INDEX IF NOT EXISTS seen_order ON seen(seq);
       CREATE TABLE IF NOT EXISTS totals (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS routes (name TEXT PRIMARY KEY, value INTEGER NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS routes (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);`);
+    // Storage bills every row a query reads, so the window size is kept as a
+    // counter instead of being recounted. Existing archives count it once.
+    if (!this.sql.exec("SELECT 1 FROM counters WHERE name='seen'").toArray().length)
+      this.sql.exec("INSERT INTO counters VALUES ('seen', (SELECT COUNT(*) FROM seen))");
+  }
+  private remembered(): number {
+    return this.sql.exec<{ value: number }>("SELECT value FROM counters WHERE name='seen'").one().value;
   }
   seen(provider: string, delivery: string): boolean {
     return !!delivery && this.sql.exec('SELECT 1 FROM seen WHERE provider=? AND delivery_id=?', provider, delivery).toArray().length > 0;
@@ -38,8 +47,13 @@ export class WorkerArchive implements Archive {
       if (record.status === 'accepted') {
         if (!record.duplicate) increment('routes', string(record.route).slice(0, 4096));
         if (record.delivery_id) {
+          const known = this.seen(string(record.provider), string(record.delivery_id)), size = this.remembered();
           this.sql.exec('INSERT INTO seen VALUES (?,?,?) ON CONFLICT(provider,delivery_id) DO UPDATE SET seq=excluded.seq', string(record.provider), string(record.delivery_id), seq);
-          this.sql.exec('DELETE FROM seen WHERE seq NOT IN (SELECT seq FROM seen ORDER BY seq DESC LIMIT ?)', this.window);
+          // Keep the newest `window` deliveries. The seq index lets this read only
+          // the rows it forgets rather than rescanning the whole window.
+          const next = size + Number(!known);
+          if (next > this.window) this.sql.exec('DELETE FROM seen WHERE rowid IN (SELECT rowid FROM seen ORDER BY seq LIMIT ?)', next - this.window);
+          if (Math.min(next, this.window) !== size) this.sql.exec("UPDATE counters SET value=? WHERE name='seen'", Math.min(next, this.window));
         }
       }
       this.commitPending();
@@ -79,6 +93,6 @@ export class WorkerArchive implements Archive {
     const counts: Doc = { accepted: 0, ignored: 0, rejected: 0, duplicate: 0 };
     for (const row of this.sql.exec<{ name: string; value: number }>('SELECT * FROM totals').toArray()) counts[row.name] = row.value;
     counts.by_route = Object.fromEntries(this.sql.exec<{ name: string; value: number }>('SELECT * FROM routes').toArray().map(row => [row.name, row.value]));
-    return { counts, last: (await this.recent(1))[0] || null, remembered_deliveries: this.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM seen').one().n };
+    return { counts, last: (await this.recent(1))[0] || null, remembered_deliveries: this.remembered() };
   }
 }

@@ -47,7 +47,7 @@ SQLite、R2 模拟数据及运行时文件保存在 `.wrangler/local/`，正常 
 - `src/core/actions.ts`：只为目标看板仓申请 `Metadata: read / Actions: write` 安装令牌，调用固定 `collect.yml`、固定 `main`，传入源仓和刷新编号。私钥、令牌、原始 Webhook 内容不会作为工作流 inputs 传递。
 - `tools/workers-local.mjs` 与 `src/worker/local-admin.ts`：本地管理桥和现有面板。校验 loopback hostname，并继续拒绝 Cf-* 头；公网 bundle 包含受认证保护的管理页面，不包含本地管理桥。
 
-去重沿用最近 2000 个已接受 delivery 的窗口，可由 `SDBOT_DEDUPE_WINDOW` 调整；被去重的重复请求仍独立归档。SQL 筛选索引字段最多 4096 字符，完整字段保存在 R2 详情中。只读查询／分页协议与 Node 管理端一致，旧文件归档不会自动导入这个新存储。
+去重沿用最近 2000 个已接受 delivery 的窗口，可由 `SDBOT_DEDUPE_WINDOW` 调整；被去重的重复请求仍独立归档。窗口大小保存在 `counters` 计数行，新 delivery 超出窗口时按 `seq` 索引删除最旧的记录，每次只读取被删除的行，不再每次扫描整个窗口；旧存储首次加载时统计一次现有窗口大小。SQL 筛选索引字段最多 4096 字符，完整字段保存在 R2 详情中。只读查询／分页协议与 Node 管理端一致，旧文件归档不会自动导入这个新存储。
 
 Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch 接口没有本项目可依赖的去重键，因此不承诺远端任务恰好执行一次。采集是重新计算快照，目标仓 `concurrency` 串行执行，提交仍是非强制更新。工作流失败不会把旧页面删掉。
 
@@ -58,6 +58,18 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 正式与测试配置均开启 Workers Logs（`observability.logs.enabled` 与 `invocation_logs`），用于排查线上请求和 Durable Object 调用失败。代码本身不输出 `console` 日志，平台为每次调用记录请求方法、URL、响应状态、耗时和未捕获异常，不记录请求或响应正文。日志只在 Cloudflare 账号控制台可见，保留期由套餐决定。
 
 平台会把 cookie 以及名称含 `auth`、`key`、`secret`、`token`、`jwt` 的请求头值替换为 `REDACTED`，因此 `/actions/token` 的 OIDC Bearer 凭据不会以明文进入日志。GitHub／GitCode 的 `x-*-signature-256` 不在平台脱敏范围，会按原值记录；签名只能核验对应那一次投递正文，不能推出 Webhook secret，而正文不进入日志。投递存档中的请求头仍由 `safeHeaders` 另行脱敏。Worker 顶层对未处理异常统一返回 503、不输出原因，排查时对照同一时刻 `BotObject` 的调用记录。[Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)、[脱敏规则](https://developers.cloudflare.com/workers/runtime-apis/handlers/tail/)
+
+### 存储读取成本
+
+Durable Objects 的 SQLite 按读取与写入的行数计量，免费额度按账号统计、每天 00:00 UTC 重置；额度用尽后所有 Durable Object 调用都会失败，Webhook、令牌兑换和健康检查均返回 503。因此热路径只做有索引的定点读写：去重窗口按上述计数淘汰，令牌兑换的过期清理使用 `credential_claims(expires)` 索引，只读取已过期的记录。在默认 2000 的窗口下实测每个动作的行数：
+
+| 动作 | 读取 | 写入 |
+| --- | --- | --- |
+| 范围内 Webhook（已接受） | 8 | 11 |
+| 范围外 Webhook（仅归档） | 1 | 7 |
+| 一次令牌兑换（已有 2000 条有效记录） | 1 | 3 |
+
+优化前后两项的读取分别约为 8000 行和 2000 行，随窗口或当日兑换次数增长。`tests-ts/worker-storage-cost.test.mjs` 限定这两条路径的读写上界。按免费额度，写入量（每天 10 万行）会先于读取量成为上限，约相当于每天 9000～14000 次投递。[计价与额度](https://developers.cloudflare.com/durable-objects/platform/pricing/)
 
 ## Actions 配置
 

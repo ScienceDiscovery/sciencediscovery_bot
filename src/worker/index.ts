@@ -19,6 +19,9 @@ export class BotObject extends DurableObject<WorkerEnv> {
   constructor(ctx: DurableObjectState, env: WorkerEnv) {
     super(ctx, env);
     const cfg = workerConfig(env);
+    // The expiry index lets each exchange read only the claims it removes.
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS credential_claims (id TEXT PRIMARY KEY, expires INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS credential_claims_expiry ON credential_claims(expires);`);
     this.board = new WorkerBoard(ctx.storage, cfg);
     const archive = new WorkerArchive(ctx.storage, env.ARCHIVE, cfg.dedupe_window, () => this.board.commitPending());
     const save = archive.save.bind(archive);
@@ -42,7 +45,6 @@ export class BotObject extends DurableObject<WorkerEnv> {
   claimCredential(key: string, expires: number): boolean {
     return this.ctx.storage.transactionSync(() => {
       const sql = this.ctx.storage.sql;
-      sql.exec('CREATE TABLE IF NOT EXISTS credential_claims (id TEXT PRIMARY KEY, expires INTEGER NOT NULL)');
       sql.exec('DELETE FROM credential_claims WHERE expires < ?', Math.floor(Date.now() / 1000) - 60);
       if (sql.exec('SELECT id FROM credential_claims WHERE id = ?', key).toArray().length) return false;
       // Keep a run's issuance guard for a day, including retries with a fresh OIDC JWT.
