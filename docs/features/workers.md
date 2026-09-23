@@ -6,7 +6,7 @@ Worker 保留 Webhook 验签、事件总线、配置的源仓范围、全量投�
 
 现有正式服务使用 `wrangler.jsonc`，App Webhook URL 使用正式接收域名下的 `/webhook/github`。该实例仅将 `openJiuwen-ai/sciencediscovery` 映射到 `ScienceDiscovery/github-status-board`，启用持久 Alarm 与每五分钟的修复 Cron。本地 Compose 的 bot 与 cloudflared 已停止，数据卷保留；不要为查看旧档案直接恢复带看板调度的整套服务。
 
-独立测试实例使用 `wrangler.test.jsonc`，接收地址使用独立测试域名下的 `/webhook/github`。它使用自己的 SQLite Durable Object、私有 R2 和 Webhook secret，没有正式 App 私钥；只允许实验源仓、看板目标为空、Cron 关闭。待测试 App 创建后，替换测试实例的 Webhook secret，设置测试 App ID／私钥，并把唯一目标配置为 `ScienceDiscovery/sciencediscovery` → `ScienceDiscovery/github-status-board-test`。测试 App 需安装到实验源仓及测试看板仓。
+独立测试实例使用 `wrangler.test.jsonc`，接收地址使用独立测试域名下的 `/webhook/github`。它使用自己的 SQLite Durable Object、私有 R2、测试 App 与 Webhook secret；只允许实验源仓，唯一目标为 `ScienceDiscovery/sciencediscovery` → `ScienceDiscovery/github-status-board-test`。测试配置启用持久 Alarm 和每五分钟修复 Cron，须在测试 App 安装到实验源仓及测试看板仓、云端 Secrets 和看板 Actions 凭据验证通过后部署。测试看板的仓库变量与私钥必须属于测试 App；创建 App 或配置 Worker Secrets 不会自动更新 GitHub Actions。
 
 两个实例均提供最小健康检查 `/healthz`。同域名的 `/admin/` 已随代码部署，但目前尚未配置 Access 应用与 issuer／AUD，返回 503 `admin unavailable`，不能登录查询；这不影响 Webhook 接收与云端存档。开通步骤见[云端只读管理](cloud-admin.md)。App ID 是非敏感配置，密钥单独保存在云端 Secrets。部署到另一账号时应替换 App ID、域名及资源名称；首次部署先按下文关闭调度和 routes，不能照搬正式启用配置。
 
@@ -41,7 +41,7 @@ SQLite、R2 模拟数据及运行时文件保存在 `.wrangler/local/`，正常 
 
 - `src/worker/index.ts`：公开 Fetch、Access 鉴权管理、Cron 与 `BotObject`。所有投递都进入固定名称 `archive-v1`，避免多个 Worker 实例各自去重。管理路径通过 Access JWT 校验后仅可调用只读 RPC；未认证路径不会转入管理方法。
 - `src/worker/archive.ts`：完整正文和包含请求／应用响应的详情先写 R2，随后用 SQLite 事务写查询索引、计数、delivery 去重和待刷新状态。存储失败返回 503，不确认成功；失败前写入的 R2 对象可能成为未索引对象，后续维护不能只按日期随意清理。
-- `src/worker/board.ts`：订阅处理器暂存本次刷新意图，只有归档事务成功才计入 `requested`。同仓短时间事件合并，默认 20 秒去抖、成功触发间隔至少 60 秒；失败从 30 秒指数退避到 600 秒。发送前保存 120 秒执行租约，崩溃后恢复。Alarm 执行期间不阻塞新投递；正式实例每五分钟 Cron 修复调度，空闲站点默认每小时刷新一次。测试配置保持关闭 Cron 与看板目标，便于先配置独立 App。
+- `src/worker/board.ts`：订阅处理器暂存本次刷新意图，只有归档事务成功才计入 `requested`。同仓短时间事件合并，默认 20 秒去抖、成功触发间隔至少 60 秒；失败从 30 秒指数退避到 600 秒。发送前保存 120 秒执行租约，崩溃后恢复。Alarm 执行期间不阻塞新投递；正式实例每五分钟 Cron 修复调度，空闲站点默认每小时刷新一次。测试实例采用同样的调度规则，但只操作测试看板；停用任何环境时清空该环境的目标映射。
 - `src/core/actions.ts`：只为目标看板仓申请 `Metadata: read / Actions: write` 安装令牌，调用固定 `collect.yml`、固定 `main`，传入源仓和刷新编号。私钥、令牌、原始 Webhook 内容不会作为工作流 inputs 传递。
 - `tools/workers-local.mjs` 与 `src/worker/local-admin.ts`：本地管理桥和现有面板。校验 loopback hostname，并继续拒绝 Cf-* 头；公网 bundle 包含受认证保护的管理页面，不包含本地管理桥。
 
@@ -53,9 +53,9 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 
 ## Actions 配置
 
-两个看板仓都需要 `collect.yml`、`collection_context.py` 和已有采集器代码。相同工作流按照运行仓从 `board-config.json` 选择唯一源仓，拒绝传入另一个源仓或未知目标；正式与测试快照不能互相覆盖。
+两个看板仓都需要 `collect.yml`、`collection_context.py` 和已有采集器代码。每个看板仓的 `board-config.json` 只保存本站映射，相同工作流按运行仓选择唯一源仓，拒绝另一个环境的目标或源仓；正式与测试快照不能互相覆盖。
 
-在各目标仓设置仓库变量 `SDBOT_GITHUB_APP_ID`、仓库 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`。私钥可以使用多行 PEM。不要放入 workflow 文件、inputs、输出或 artifact。工作流通过 `actions/create-github-app-token@v2` 分别申请源仓只读和目标仓 Contents 写令牌，并在任务结束时撤销。
+正式目标仓使用正式 App，测试目标仓使用测试 App。在各目标仓设置仓库变量 `SDBOT_GITHUB_APP_ID`、仓库 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`。私钥可以使用多行 PEM。不要放入 workflow 文件、inputs、输出或 artifact。工作流通过 `actions/create-github-app-token@v2` 分别申请源仓只读和目标仓 Contents 写令牌，并在任务结束时撤销。
 
 源仓读取权限沿用看板要求：Contents、Issues、Pull requests、Actions、Checks、Commit statuses；目标仓需要 Contents 写与触发任务的 Actions 写权限。App 必须安装到两端，跨组织分别使用对应 installation。Actions 用 App 令牌提交 site，使已有 `pages.yml` 的 push 触发器生效；不能换成默认 GITHUB_TOKEN 写入后期待自动触发另一个工作流。
 

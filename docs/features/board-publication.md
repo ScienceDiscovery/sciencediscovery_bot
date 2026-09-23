@@ -9,7 +9,7 @@ Bot 验证并归档 Webhook，事件总线匹配跟踪源仓后，合并刷新�
 | 正式 | openJiuwen-ai/sciencediscovery | ScienceDiscovery/github-status-board |
 | 测试 | ScienceDiscovery/sciencediscovery | ScienceDiscovery/github-status-board-test |
 
-两个源仓之外的 Webhook 仍完整归档，不触发看板。看板仓本身产生的事件也仅归档，避免更新回环。未配置目标时使用 NoopBoard，占位行为不变。
+正式和测试 Worker 分别只处理表中对应的一行，使用不同 App；每个看板仓的 `board-config.json` 也只保留自己的一行。测试凭据不用于正式看板。各实例范围之外的 Webhook 仍完整归档，不触发看板。看板仓本身产生的事件也仅归档，避免更新回环。未配置目标时使用 NoopBoard，占位行为不变。
 
 ## 配置和启动
 
@@ -21,7 +21,7 @@ docker compose -f docker-compose.yml -f docker-compose.board.yml up -d --build
 
 Compose 看板扩展默认使用 `github_actions`。宿主环境变量未指定执行方式时仍使用兼容的 `local`；该方式才需要同级看板源码与 Python。Actions 模式不检查或调用本地 `publish.py`，不在 Bot 内下载测试产物或生成站点。
 
-目标仓必须配置变量 `SDBOT_GITHUB_APP_ID`、Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，且已有 `collect.yml` 与 `pages.yml`。私钥支持多行 PEM 或字面 `\n`，仅保存到已忽略的环境文件与 Actions Secrets；不放入 dispatch 参数、日志或页面。
+正式与测试目标仓分别使用对应 App。目标仓必须配置变量 `SDBOT_GITHUB_APP_ID`、Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，且已有 `collect.yml` 与 `pages.yml`。私钥支持多行 PEM 或字面 `\n`，仅保存到已忽略的环境文件与 Actions Secrets；不放入 dispatch 参数、日志或页面。
 
 App 安装到源仓及目标仓。Bot 触发时只申请目标仓 Metadata read / Actions write 的短期令牌。Actions 采集时分别申请源仓 Contents / Issues / Pull requests / Actions / Checks / Commit statuses read，和目标仓 Contents write。不同组织分别取安装令牌；不复用个人 gh 凭据。Pages 部署使用 Actions 的 `GITHUB_TOKEN`（contents read / pages write / id-token write）。
 

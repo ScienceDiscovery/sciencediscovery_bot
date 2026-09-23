@@ -11,12 +11,13 @@
   "durable_objects": { "bindings": [{ "name": "BOT", "class_name": "BotObject" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BotObject"] }],
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "sciencediscovery-bot-test-archive" }],
-  "triggers": { "crons": [] },
+  "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     "SDBOT_ENVIRONMENT": "test",
+    "SDBOT_GITHUB_APP_ID": "5041384",
     "SDBOT_ADMIN_HOSTNAME": "sciencediscovery-bot-test.llmbots.co",
     "SDBOT_REPOS": "ScienceDiscovery/sciencediscovery",
-    "SDBOT_BOARD_TARGETS": "{}"
+    "SDBOT_BOARD_TARGETS": "{\"ScienceDiscovery/sciencediscovery\":\"ScienceDiscovery/github-status-board-test\"}"
   },
   "observability": { "enabled": false }
 }

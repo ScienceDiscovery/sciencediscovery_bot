@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-正式 Bot 已运行在 Cloudflare Workers，接收 App 投递并触发正式看板采集；真实事件到采集提交的链路已验证。本地 Compose 已停止，旧档案卷保留且不迁移。测试 Worker 已独立部署，测试 App 接入及测试看板凭据切换尚待完成，因此测试 Worker 暂不触发看板写入。
+正式 Bot 已运行在 Cloudflare Workers，接收 App 投递并触发正式看板采集；真实事件到采集提交的链路已验证。本地 Compose 已停止，旧档案卷保留且不迁移。测试 Worker 已独立部署，独立测试 App 已创建。仓库配置为两套单源仓链路：正式 App／Worker／看板与测试 App／Worker／看板分别配置；修改 Git 中的配置不代表云端已生效，上线仍须通过各自凭据、Webhook、采集与部署验证。
 
 同 Worker 的只读管理页面和 API 已实现、部署，仍待 Cloudflare Access 应用及成员配置；配置缺失时拒绝查询，Webhook 接收和归档继续工作。管理重放已移除，内容分析监听器仍为占位。这些边界不能当成已经完成的业务能力。
 
@@ -81,7 +81,7 @@ App 注册权限、各组织 installation 批准的权限、Webhook 事件订阅
 
 ## 部署、管理与隔离调试
 
-正式和测试使用同一份 TypeScript 源码、两份 Wrangler 配置，分别部署独立 Worker、Durable Object 命名空间、R2 和 Secrets。正式仅调度正式看板，测试仅面向实验源仓和测试看板；不能给测试实例复用正式 App 私钥。测试 App 就绪后，还需同步替换测试看板 Actions 的 App 凭据，才完成整条测试链路的凭据隔离。
+正式和测试使用同一份 TypeScript 源码、两份 Wrangler 配置，分别部署独立 Worker、Durable Object 命名空间、R2 和 Secrets。正式仅调度正式看板，测试仅面向实验源仓和测试看板；不能给测试实例复用正式 App 私钥。测试看板 Actions 的 App ID 与私钥必须同时属于测试 App；仅替换 Worker 凭据或仅修改 Actions 的 App ID 都不能完成整条链路的切换。两个看板仓各自只保存本站源仓映射，更新共享代码时保留配置、历史与独有功能。
 
 Worker 的公开路径只有 Webhook 协议与最小健康检查；`/admin/` 及其 API 必须先通过 Access 签名、issuer、AUD、有效期和域名校验。它与接收服务共用部署，只提供查询，没有管理重放。Node 的管理端仅在 loopback 提供，cloudflared 只用于可选本机部署，不能转发管理端口。Worker 本身无需 cloudflared。
 

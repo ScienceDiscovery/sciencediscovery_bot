@@ -6,7 +6,7 @@
 
 - 默认仅处理 `openJiuwen-ai/sciencediscovery` 与 `ScienceDiscovery/sciencediscovery`；其他 Webhook 仍归档。
 - Webhook 路径只提供协议与最小健康响应。Worker 的 `/admin` 及子路径必须先验证 Cloudflare Access 身份，再提供只读管理；Node 管理端仍仅本机访问，隧道不得指向管理端口。管理重放按钮与 API 已移除。
-- 看板采集由 Bot 触发目标仓 Actions：正式 Worker 只处理正式源仓，测试 Worker 只处理实验源仓；测试 App 就绪前不启用测试实例的看板调度。Bot 只保留调度状态，进度、历史与指标缓存保存在各看板仓；完整 Webhook 归档不变。Actions 使用 App 安装令牌读源仓、将进度与 site 原子提交；不同组织分别取令牌。Pages 独立部署，dispatch、提交和部署成功必须区分。
+- 看板采集由 Bot 触发目标仓 Actions：正式 Worker 只处理正式源仓，测试 Worker 只处理实验源仓；两套实例分别使用各自的 App ID、私钥和 Webhook secret，看板仓 Actions 使用对应 App 凭据；新环境凭据验证通过后才能启用调度。Bot 只保留调度状态，进度、历史与指标缓存保存在各看板仓；完整 Webhook 归档不变。Actions 使用 App 安装令牌读源仓、将进度与 site 原子提交；不同组织分别取令牌。Pages 独立部署，dispatch、提交和部署成功必须区分。
 - 分析业务默认占位；看板发布可选启用。新增业务通过订阅注册接入，不在 HTTP handler 或 Pipeline 中堆叠业务分支。
 - 监听点页面必须读取实际注册表；不能另写一份展示用的监听清单。
 - 慢任务由业务自己的后台队列执行。处理器不能修改传入事件，必须考虑重复投递和重放，不承诺全局恰好一次执行。
@@ -14,7 +14,7 @@
 - Worker 管理页面和只读查询与接收端共用部署。必须验证固定 issuer、AUD、签名和有效期，并限定管理域名；不能仅凭 Header 或路径绕过认证调用管理 RPC。本地管理桥不打包进部署产物；管理读取不得调度任务或执行重放。正式使用 `wrangler.jsonc`，测试使用 `wrangler.test.jsonc`，两者不得共用存储或正式 App 私钥。
 - GitHub App 请求使用不跟随重定向的 Fetch，并拒绝非成功状态；不能泄漏认证到跳转地址。共享客户端需要通过 workerd 的真实外部请求模拟验证，不能仅用签名测试代表运行环境兼容。
 
-同步两看板仓的共享源码前，必须比较目标 main 与共同基线；目标仓独有修改做三方合并并在该目标源码上验证。只更新本次明确的文件，保留各自 `site/` 和 `.sync/`。
+同步两看板仓的共享源码前，必须比较目标 main 与共同基线；目标仓独有修改做三方合并并在该目标源码上验证。只更新本次明确的文件，保留各自 `site/` 和 `.sync/`；各仓 `board-config.json` 只保留自己的源仓映射，不能随共享代码互相覆盖。
 
 ## 文档与功能同步
 
