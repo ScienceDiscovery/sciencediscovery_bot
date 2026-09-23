@@ -28,4 +28,4 @@ Authorization、Cookie、Token、Secret、Signature、API key 等请求头值脱
 
 Worker 的鉴权管理入口查询云端实际接收记录，旧 Node 档案不迁移；原数据卷保留供本机查询。看板的数据源是 GitHub API，进度及已取得指标在看板仓 `.sync/`、`site/`，不依赖旧 Webhook 档案。完整性仍受上游可读范围及测试报告保留期限制。详见[云端只读管理](cloud-admin.md)。
 
-实现：`src/core/archive.ts`、`pipeline.ts`、`http.ts`、`src/node/archive.ts` 和 `server.ts`。`Archive` 接口隔离持久化实现；当前生产使用 JSONL 与文件，旧 Python 格式直接兼容。验证：`tests-ts/archive-http.test.ts`、`core.test.ts` 和 `test/journey-webhook-details.spec.cjs`。
+实现：`src/core/archive.ts`、`pipeline.ts`、`http.ts`、`src/worker/archive.ts` 和 `src/node/archive.ts`。`Archive` 接口隔离持久化实现；正式 Worker 使用 R2 与 SQLite，Node 使用 JSONL 与文件并兼容旧 Python 格式。验证：`tests-ts/archive-http.test.ts`、`core.test.ts` 和 `test/journey-webhook-details.spec.cjs`。

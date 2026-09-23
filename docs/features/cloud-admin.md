@@ -24,10 +24,10 @@ Worker 用 jose 验证 RS256 签名、固定 issuer、AUD、有效期与主体�
 
 ## 正式与测试
 
-| 配置 | Worker | R2 | 业务范围 |
+| 配置 | 运行环境 | 存储边界 | 业务范围 |
 | --- | --- | --- | --- |
-| `wrangler.jsonc` | `sciencediscovery-bot` | `sciencediscovery-bot-archive` | 正式源仓 → 正式看板已启用，Cron 每五分钟 |
-| `wrangler.test.jsonc` | `sciencediscovery-bot-test` | `sciencediscovery-bot-test-archive` | 仅实验源仓，初始 targets 为空、Cron 关闭 |
+| `wrangler.jsonc` | 正式实例 | 正式独立归档桶及对象命名空间 | 正式源仓 → 正式看板已启用，Cron 每五分钟 |
+| `wrangler.test.jsonc` | 测试实例 | 测试独立归档桶及对象命名空间 | 仅实验源仓，初始 targets 为空、Cron 关闭 |
 
 两套命名空间、Secrets 和部署版本分开，测试不得绑定正式存储或保存正式 App 私钥。测试 App 尚未创建时，可以初始化独立实例并设置一次性测试 Webhook secret，但不启用看板写入。之后由测试 App 接管该 secret，并配置测试 App ID／私钥及实验源仓到测试看板的唯一映射。
 

@@ -4,9 +4,9 @@
 
 Worker 保留 Webhook 验签、事件总线、配置的源仓范围、全量投递存档与最小公开响应；看板采集由目标看板仓的 GitHub Actions 执行，Python 采集器继续使用。无需在 Worker 内启动 Python，也不依赖 cloudflared。
 
-现有正式服务使用 `wrangler.jsonc`，App Webhook URL 为 `https://sciencediscovery-bot-worker.llmbots.co/webhook/github`。该实例仅将 `openJiuwen-ai/sciencediscovery` 映射到 `ScienceDiscovery/github-status-board`，启用持久 Alarm 与每五分钟的修复 Cron。本地 Compose 的 bot 与 cloudflared 已停止，数据卷保留；不要为查看旧档案直接恢复带看板调度的整套服务。
+现有正式服务使用 `wrangler.jsonc`，App Webhook URL 使用正式接收域名下的 `/webhook/github`。该实例仅将 `openJiuwen-ai/sciencediscovery` 映射到 `ScienceDiscovery/github-status-board`，启用持久 Alarm 与每五分钟的修复 Cron。本地 Compose 的 bot 与 cloudflared 已停止，数据卷保留；不要为查看旧档案直接恢复带看板调度的整套服务。
 
-独立测试实例使用 `wrangler.test.jsonc`，接收地址为 `https://sciencediscovery-bot-test.llmbots.co/webhook/github`。它使用自己的 SQLite Durable Object、私有 R2 和 Webhook secret，没有正式 App 私钥；只允许实验源仓、看板目标为空、Cron 关闭。待测试 App 创建后，替换测试实例的 Webhook secret，设置测试 App ID／私钥，并把唯一目标配置为 `ScienceDiscovery/sciencediscovery` → `ScienceDiscovery/github-status-board-test`。测试 App 需安装到实验源仓及测试看板仓。
+独立测试实例使用 `wrangler.test.jsonc`，接收地址使用独立测试域名下的 `/webhook/github`。它使用自己的 SQLite Durable Object、私有 R2 和 Webhook secret，没有正式 App 私钥；只允许实验源仓、看板目标为空、Cron 关闭。待测试 App 创建后，替换测试实例的 Webhook secret，设置测试 App ID／私钥，并把唯一目标配置为 `ScienceDiscovery/sciencediscovery` → `ScienceDiscovery/github-status-board-test`。测试 App 需安装到实验源仓及测试看板仓。
 
 两个实例均提供最小健康检查 `/healthz`。同域名的 `/admin/` 已随代码部署，但目前尚未配置 Access 应用与 issuer／AUD，返回 503 `admin unavailable`，不能登录查询；这不影响 Webhook 接收与云端存档。开通步骤见[云端只读管理](cloud-admin.md)。App ID 是非敏感配置，密钥单独保存在云端 Secrets。部署到另一账号时应替换 App ID、域名及资源名称；首次部署先按下文关闭调度和 routes，不能照搬正式启用配置。
 
@@ -61,13 +61,13 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 
 在 App 注册页 **Permissions & events → Repository permissions → Actions** 选择 **Read and write** 后，还需目标组织批准 installation 的新增权限。应检查目标仓 installation 返回的 `permissions.actions` 已是 `write`，不能只看注册页。此权限与仓库 Actions 设置中的默认 `GITHUB_TOKEN` 权限不同；后者可以保持只读，Pages 工作流按 job 声明所需权限。
 
-验收分为三步：App 安装令牌成功触发 `collect.yml`；采集任务使用两个安装令牌读取源仓、原子提交目标仓 `.sync/` 与 `site/`；该 App 提交触发 `pages.yml` 并部署成功。管理员手动触发成功只能验证后两步。Node／Compose 可用 `SDBOT_BOARD_EXECUTION=github_actions` 切换为相同触发流程，无需先部署 Worker。Worker 接管 Webhook 仍是独立部署与档案迁移步骤。
+验收分为三步：App 安装令牌成功触发 `collect.yml`；采集任务使用两个安装令牌读取源仓、原子提交目标仓 `.sync/` 与 `site/`；该 App 提交触发 `pages.yml` 并部署成功。管理员手动触发成功只能验证后两步。Node／Compose 可用 `SDBOT_BOARD_EXECUTION=github_actions` 切换为相同触发流程，无需先部署 Worker。Worker 接管 Webhook 仍需单独完成部署与接收切换；旧档案按既定方案保留，不迁移。
 
 ## 新账号首次上线步骤（本地验收不会执行）
 
 前提：两个看板仓已有采集工作流、脚本及各自的 `.sync/` 与 `site/`；App 权限、仓库变量和 Secrets 已配置，并通过真实采集和 Pages 验收。更新共享源码时保留各站数据和独立功能，不重新初始化同步进度。
 
-1. 在目标 Cloudflare 账号开通 R2，创建私有 `sciencediscovery-bot-archive` bucket；名称与 `wrangler.jsonc` 一致。不启用公开域名或公开读取，不配置未经评估的自动删除规则。
+1. 在目标 Cloudflare 账号开通 R2，创建私有归档 bucket；名称与对应 Wrangler 配置的 `r2_buckets[].bucket_name` 一致。不启用公开域名或公开读取，不配置未经评估的自动删除规则。
 2. 使用 `npx wrangler login --device` 授权部署工具，再用 `npx wrangler whoami` 核对账号；账号有多个时在配置中明确 `account_id`。Tunnel token 不能代替 Workers 部署授权。
 3. 首次部署保持 `workers_dev=false`、`preview_urls=false`、无 routes、`triggers.crons=[]`、`SDBOT_BOARD_TARGETS="{}"`。执行 `npm run workers:check` 只做本地检查；`npx wrangler deploy` 才会实际创建／更新云端 Worker 与 SQLite Durable Object 命名空间。首次初始化之后不要随意改类名、迁移标签、Worker 名称或 `archive-v1`，以免指向另一份历史。该阶段没有公开入口或 Cron，不要求未配置 Secrets 的服务已经能处理请求。
 4. 在 Worker 的 Settings → Variables and Secrets 中添加 Secret：`SDBOT_GITHUB_WEBHOOK_SECRET`、可选 `SDBOT_GITCODE_WEBHOOK_SECRET`、`SDBOT_GITHUB_APP_PRIVATE_KEY`。私钥保留完整多行 PEM，通过页面 Deploy 生效；不要放进普通 `vars`、工作流 inputs 或聊天。将非敏感的 `SDBOT_GITHUB_APP_ID` 写入 Wrangler `vars`。本机 `.env` 与 GitHub Actions Secrets 不会自动复制到 Worker。至少一个平台必须有密钥；未配置密钥的平台直接拒绝，Worker 不支持免签接入。
