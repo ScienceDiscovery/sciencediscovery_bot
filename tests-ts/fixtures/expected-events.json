@@ -229,8 +229,7 @@
       "route": "pull_request.synchronize"
     },
     "hooks": [
-      "analyze.on_pull_request",
-      "board.on_pull_request"
+      "analyze.on_pull_request"
     ],
     "handled": true
   },
@@ -263,8 +262,7 @@
       "route": "issue_comment.created"
     },
     "hooks": [
-      "analyze.on_issue_comment",
-      "board.on_issue_comment"
+      "analyze.on_issue_comment"
     ],
     "handled": true
   },
@@ -297,8 +295,7 @@
       "route": "issue_comment.created"
     },
     "hooks": [
-      "analyze.on_issue_comment",
-      "board.on_issue_comment"
+      "analyze.on_issue_comment"
     ],
     "handled": true
   },
@@ -329,10 +326,8 @@
       },
       "route": "push.pushed"
     },
-    "hooks": [
-      "board.on_push"
-    ],
-    "handled": true
+    "hooks": [],
+    "handled": false
   },
   "github/installation_created.json": {
     "event": {
@@ -395,8 +390,7 @@
       "route": "issue_comment.created"
     },
     "hooks": [
-      "analyze.on_issue_comment",
-      "board.on_issue_comment"
+      "analyze.on_issue_comment"
     ],
     "handled": true
   },
@@ -429,10 +423,8 @@
       },
       "route": "issue.assigned"
     },
-    "hooks": [
-      "board.on_issue"
-    ],
-    "handled": true
+    "hooks": [],
+    "handled": false
   },
   "github/issues_closed.json": {
     "event": {
@@ -493,10 +485,8 @@
       },
       "route": "issue.labeled"
     },
-    "hooks": [
-      "board.on_issue"
-    ],
-    "handled": true
+    "hooks": [],
+    "handled": false
   },
   "github/issues_opened.json": {
     "event": {
@@ -750,8 +740,7 @@
       "route": "pull_request.synchronize"
     },
     "hooks": [
-      "analyze.on_pull_request",
-      "board.on_pull_request"
+      "analyze.on_pull_request"
     ],
     "handled": true
   },
@@ -783,10 +772,8 @@
       },
       "route": "push.pushed"
     },
-    "hooks": [
-      "board.on_push"
-    ],
-    "handled": true
+    "hooks": [],
+    "handled": false
   },
   "github/unknown_star.json": {
     "event": {

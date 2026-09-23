@@ -78,7 +78,7 @@ test('production Worker: durable history, isolated admin, recovery and Actions o
     assert.equal((await admin.fetch('http://localhost/api/status', { headers: { ...auth, 'cf-ray': 'test' } })).status, 403);
     assert.equal((await admin.fetch('http://public.example/api/status', { headers: auth })).status, 403);
     assert.match(await (await admin.fetch('http://localhost/')).text(), /Webhook/);
-    assert.equal((await get('/api/listeners')).listeners.length, 11);
+    assert.equal((await get('/api/listeners')).listeners.length, 10);
   });
   await t.test('store exact exchanges; concurrent duplicates request only one refresh', async () => {
     const options = signed(issue(sources[0]), delivery);

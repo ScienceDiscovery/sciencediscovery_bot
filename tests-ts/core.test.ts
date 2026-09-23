@@ -113,3 +113,31 @@ for (const invalid of ['[]', 'null', 'true', '{broken', '\uFFFD']) test(`invalid
   const h = await harness(); t.after(h.cleanup); const body = new TextEncoder().encode(invalid), headers = new Headers({ 'x-github-event': 'ping', 'x-hub-signature-256': await sign(body, secret) });
   const reply = await h.pipeline.receive(headers, body); assert.equal(reply.status, 400); assert.equal((await h.store.recent(5)).length, 1);
 });
+
+test('board refreshes only when work reaches a steady state', async () => {
+  const calls: string[] = [];
+  const board = { mode: 'active' as const, repositories: ['owner/repo'], status: () => ({}),
+    handle: async (method: string, e: BotEvent) => { calls.push(`${method}:${e.kind}.${e.action}`); return { hook: 'board', method, status: 'queued' }; } };
+  const router = new Router(board);
+  const send = (kind: string, payload: Doc) => router.dispatch(normalize('github', new Headers({ 'x-github-event': kind }), { repository: { full_name: 'owner/repo' }, ...payload }));
+  const refreshes = [
+    ['issues', { action: 'opened' }], ['issues', { action: 'closed' }], ['issues', { action: 'reopened' }],
+    ['pull_request', { action: 'opened', pull_request: {} }], ['pull_request', { action: 'ready_for_review', pull_request: {} }],
+    ['pull_request', { action: 'closed', pull_request: { merged: false } }], ['pull_request', { action: 'closed', pull_request: { merged: true } }],
+    ['pull_request_review', { action: 'submitted' }], ['workflow_run', { action: 'completed' }], ['release', { action: 'published' }],
+  ] as const;
+  for (const [kind, payload] of refreshes) await send(kind, payload);
+  assert.deepEqual(calls, ['on_issue:issue.opened', 'on_issue:issue.closed', 'on_issue:issue.reopened', 'on_pull_request:pull_request.opened',
+    'on_pull_request:pull_request.ready_for_review', 'on_pull_request:pull_request.closed', 'on_pull_request_merged:pull_request.merged',
+    'on_pull_request:pull_request_review.submitted', 'on_run_completed:workflow_run.completed', 'on_release:release.published']);
+  calls.length = 0;
+  // Progress and edits wait for the scheduled refresh instead of dispatching collection.
+  const progress = [
+    ['workflow_run', { action: 'requested' }], ['workflow_run', { action: 'in_progress' }], ['workflow_job', { action: 'completed' }],
+    ['check_run', { action: 'completed' }], ['check_suite', { action: 'completed' }], ['status', {}], ['push', { ref: 'refs/heads/main' }],
+    ['create', { ref_type: 'tag' }], ['issues', { action: 'labeled' }], ['issues', { action: 'edited' }], ['issue_comment', { action: 'created' }],
+    ['pull_request', { action: 'synchronize', pull_request: {} }], ['pull_request_review_comment', { action: 'created' }], ['release', { action: 'created' }],
+  ] as const;
+  for (const [kind, payload] of progress) await send(kind, payload);
+  assert.deepEqual(calls, []);
+});

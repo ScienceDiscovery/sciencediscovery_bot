@@ -57,7 +57,7 @@ router.bus.subscribe({
 ## 内置业务
 
 - 内容分析：Issue opened／edited／reopened，Issue 评论，PR opened／synchronize／reopened／edited／ready_for_review、评审和合并；当前仅记录调用，不调用 LLM 或发评论。
-- 看板更新：Issue、评论、PR、评审、merge、push；workflow_run、workflow_job、check_run、check_suite、status、release、create、delete。普通 PR 监听排除 merge，避免一次合并重复更新。
+- 看板更新：只在稳定状态变化时刷新。Issue 新建、关闭、重新打开；PR 新建、关闭、重新打开、转为可评审、评审提交；PR 合并；`workflow_run.completed`（PR 门禁、main、Daily、Release 等运行结束）；`release.published`。运行中的 job／check、push、分支与标签创建删除、评论和编辑不触发，由空闲定时刷新与看板仓的定时采集补上。
 - 未配置发布时，看板监听处于占位状态；启用发布后显示 active，并列出实际来源范围。详见[看板更新](board-publication.md)。
 
 ## 可观测性与验证

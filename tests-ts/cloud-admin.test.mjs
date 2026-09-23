@@ -51,7 +51,7 @@ test('cloud management validates Access and is read-only on the public Worker', 
   assert.equal(detail.request.body, body); assert.equal(detail.request.headers.cookie, '[REDACTED]');
   assert.equal(detail.request.headers['cf-access-jwt-assertion'], '[REDACTED]');
   assert.deepEqual(JSON.parse(detail.response.body), await response.json());
-  assert.equal((await get('/admin/api/listeners')).listeners.length, 11);
+  assert.equal((await get('/admin/api/listeners')).listeners.length, 10);
   const before = await get('/admin/api/status');
   assert.equal(before.environment, 'test'); assert.equal(before.runtime, 'cloudflare');
   assert.equal(before.config.data_dir, undefined); assert.equal(before.config.webhook, undefined);

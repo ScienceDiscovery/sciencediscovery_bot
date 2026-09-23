@@ -100,7 +100,7 @@ test('management guard, exact public routes, pagination and listener inventory',
     if (path !== '/') assert.equal((await h.app.admin(new Request('http://localhost' + path))).status, 401);
   }
   const headers = { authorization: 'Bearer local-token' };
-  const inventory = await (await h.app.admin(new Request('http://localhost/api/listeners', { headers }))).json() as { listeners: unknown[] }; assert.equal(inventory.listeners.length, 11);
+  const inventory = await (await h.app.admin(new Request('http://localhost/api/listeners', { headers }))).json() as { listeners: unknown[] }; assert.equal(inventory.listeners.length, 10);
   for (let i = 0; i < 3; i++) { const d = await delivery(); await h.app.webhook(d.request()); }
   const page = object(await (await h.app.admin(new Request('http://localhost/api/events?limit=2', { headers }))).json()); assert.equal(page.count, 2); assert.equal(page.has_more, true);
   assert.equal((await h.app.admin(new Request('http://localhost/api/events?limit=wrong', { headers }))).status, 400);

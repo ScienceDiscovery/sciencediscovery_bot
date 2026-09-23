@@ -1,5 +1,4 @@
 import { category, object, outcome, routeOf, type Board, type BotEvent, type Doc, type Outcome } from './types.js';
-import { QUALITY_KINDS } from './events.js';
 
 export interface Listener {
   id: string; business: string; description: string; routes: readonly string[];
@@ -73,11 +72,15 @@ export function registerBuiltin(bus: EventBus, board: Board): void {
     ['on_pull_request_merged', ['pull_request.merged'], 'PR 合并后的分析入口；当前仅记录调用。'],
   ];
   for (const [method, routes, description] of analyze) bus.subscribe({ id: `analyze.${method}`, business: '内容分析', description, routes, mode: 'noop', handler: () => ({ hook: 'analyze', method, status: 'noop' }) });
+  // The dashboards show steady states. Refresh when work is created, closed or
+  // reviewed and when a workflow run finishes; progress events (jobs, checks,
+  // pushes, edits, comments) wait for the scheduled refresh.
   const boards: [string, string[], string[]?][] = [
-    ['on_issue', ['issue', 'issue.*']], ['on_issue_comment', ['issue_comment', 'issue_comment.*']],
-    ['on_pull_request', ['pull_request', 'pull_request.*', 'pull_request_review', 'pull_request_review.*'], ['pull_request.merged']],
-    ['on_pull_request_merged', ['pull_request.merged']], ['on_push', ['push', 'push.*']],
-    ['on_quality', QUALITY_KINDS.flatMap(kind => [kind, `${kind}.*`])],
+    ['on_issue', ['issue.opened', 'issue.closed', 'issue.reopened']],
+    ['on_pull_request', ['opened', 'closed', 'reopened', 'ready_for_review'].map(a => `pull_request.${a}`).concat('pull_request_review.submitted')],
+    ['on_pull_request_merged', ['pull_request.merged']],
+    ['on_run_completed', ['workflow_run.completed']],
+    ['on_release', ['release.published']],
   ];
   for (const [method, routes, exclude] of boards) bus.subscribe({ id: `board.${method}`, business: '看板更新', description: board.mode === 'active' ? '按源仓排队更新对应静态看板。' : '未启用静态发布，当前仅记录调用。',
     routes, exclude, mode: board.mode, providers: board.mode === 'active' ? ['github'] : [], repositories: board.repositories, handler: event => board.handle(method, event) });
