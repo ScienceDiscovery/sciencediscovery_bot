@@ -79,6 +79,8 @@ Webhook secret 用于校验收到的请求；App 私钥用于签发短期 JWT，
 
 App 注册权限、各组织 installation 批准的权限、Webhook 事件订阅以及 Bot 监听注册需要分别配置。只增加权限不会自动订阅新事件。新增业务通过事件总线注册，管理页读取实际注册表；慢任务自行进入持久队列，不能在接收 handler 中执行长任务。详见[事件总线](features/event-bus.md)与[接入说明](features/webhook-ingestion.md)。
 
+App 的安装范围与 Bot 的业务范围分别管理。两套 App 可以安装到其他仓库或同时安装到同一仓库，无需收窄安装范围。各实例通过 `SDBOT_REPOS` 和看板目标映射过滤业务：验签通过的范围外业务事件返回 200、归档为 `ignored`，不进入业务监听器或触发看板刷新；`ping` 仍按协议响应。OIDC 只信任对应看板工作流，签发的令牌仍限定为配置中的源仓读取或目标看板写入权限，不随 App 安装范围扩大。
+
 ## 部署、管理与隔离调试
 
 正式和测试使用同一份 TypeScript 源码、两份 Wrangler 配置，分别部署独立 Worker、Durable Object 命名空间、R2 和 Secrets。正式仅调度正式看板，测试仅面向实验源仓和测试看板；不能给测试实例复用正式 App 私钥。测试看板 Actions 通过 OIDC 向测试 Worker 申请临时令牌，正式看板只向正式 Worker 申请；Actions 不保存 App 私钥，两个 Worker 分别固定各自看板身份与源仓映射。两个看板仓各自只保存本站源仓映射，更新共享代码时保留配置、历史与独有功能。

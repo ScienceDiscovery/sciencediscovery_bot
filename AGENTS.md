@@ -5,6 +5,7 @@
 这是 TypeScript Webhook 事件总线。`src/core/` 使用标准 Fetch／Web Crypto，禁止依赖 Node 内置模块、文件系统或子进程；`src/node/` 实现 Node.js 22+ 双监听、JSONL 持久化、Actions 触发及兼容的外部采集器适配；`src/worker/` 使用 SQLite Durable Object、R2 与持久 Alarm，触发 GitHub Actions 执行采集。`core/pipeline.ts` 负责验签、归一化、仓库范围和去重；`core/bus.ts` 分发并注册业务。投递存档独立于业务是否处理。正式部署使用 Cloudflare Workers；Node／Compose 用于本机运行与回退。
 
 - 默认仅处理 `openJiuwen-ai/sciencediscovery` 与 `ScienceDiscovery/sciencediscovery`；其他 Webhook 仍归档。
+- App 安装范围可以重叠或覆盖其他仓库，不要求收窄安装范围；正式／测试业务隔离由各自的 `SDBOT_REPOS`、看板目标映射和 OIDC 信任配置实现。范围外投递继续归档，安装范围扩大不应扩大业务处理或临时令牌权限。
 - Webhook 路径只提供协议与最小健康响应。Worker 的 `/admin` 及子路径必须先验证 Cloudflare Access 身份，再提供只读管理；Node 管理端仍仅本机访问，隧道不得指向管理端口。管理重放按钮与 API 已移除。
 - 看板采集由 Bot 触发目标仓 Actions：正式 Worker 只处理正式源仓，测试 Worker 只处理实验源仓；两套实例分别使用各自的 App ID、私钥和 Webhook secret，看板仓 Actions 使用 OIDC 向对应 Worker 兑换临时安装令牌，不保存 App 私钥；新环境凭据验证通过后才能启用调度。Bot 只保留调度状态，进度、历史与指标缓存保存在各看板仓；完整 Webhook 归档不变。Actions 使用 App 安装令牌读源仓、将进度与 site 原子提交；不同组织分别取令牌。Pages 独立部署，dispatch、提交和部署成功必须区分。
 - 分析业务默认占位；看板发布可选启用。新增业务通过订阅注册接入，不在 HTTP handler 或 Pipeline 中堆叠业务分支。
