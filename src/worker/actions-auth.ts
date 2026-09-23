@@ -29,12 +29,13 @@ export async function exchangeActionsToken(request: Request, env: WorkerEnv): Pr
     const { payload: p } = await jwtVerify(token, keys, { issuer, audience, algorithms: ['RS256'],
       requiredClaims: ['sub', 'exp', 'iat', 'nbf', 'jti'], maxTokenAge: '10m', clockTolerance: 5 });
     const [owner, name] = destination.split('/');
+    // GitHub also includes job_workflow_ref for direct jobs; if present it must identify this same workflow.
     // Support GitHub's original and immutable subject formats, while always pinning IDs.
     const subjects = [`repo:${destination}:ref:refs/heads/main`, `repo:${owner}@${ownerId}/${name}@${repositoryId}:ref:refs/heads/main`];
     if (p.repository !== destination || p.repository_id !== repositoryId || p.repository_owner_id !== ownerId ||
         p.ref !== 'refs/heads/main' || p.ref_type !== 'branch' ||
         p.workflow_ref !== `${destination}/.github/workflows/collect.yml@refs/heads/main` ||
-        p.job_workflow_ref !== undefined || !['schedule', 'workflow_dispatch'].includes(String(p.event_name)) ||
+        (p.job_workflow_ref !== undefined && p.job_workflow_ref !== `${destination}/.github/workflows/collect.yml@refs/heads/main`) || !['schedule', 'workflow_dispatch'].includes(String(p.event_name)) ||
         !subjects.includes(String(p.sub)) || !/^[1-9]\d*$/.test(String(p.run_id)) || !/^[1-9]\d*$/.test(String(p.run_attempt))) {
       return fail('forbidden', 403);
     }

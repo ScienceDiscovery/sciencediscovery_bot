@@ -31,6 +31,7 @@ test('OIDC exchange binds identity and scope, persists issuance guards and never
     return new SignJWT({ iss: issuer, aud: audience, sub: `repo:example@100/board-test@200:ref:refs/heads/main`,
       iat: now, nbf: now, exp: now + 300, jti: crypto.randomUUID(), repository: destination, repository_id: '200', repository_owner_id: '100',
       ref: 'refs/heads/main', ref_type: 'branch', workflow_ref: destination + '/.github/workflows/collect.yml@refs/heads/main',
+      job_workflow_ref: destination + '/.github/workflows/collect.yml@refs/heads/main',
       event_name: 'workflow_dispatch', run_id: '300', run_attempt: '1', ...overrides }).setProtectedHeader({ alg: 'RS256', kid: key.kid }).sign(privateKey);
   };
   const exchange = (jwt, purpose = 'source', options = {}) => mf.dispatchFetch('http://localhost/actions/token', {
@@ -66,7 +67,7 @@ test('OIDC exchange binds identity and scope, persists issuance guards and never
   assert.match(calls[1].url, /installations\/11/); assert.match(calls[3].url, /installations\/22/);
   await mf.dispose(); mf = await workerRuntime({ directory, bindings, outboundService });
   assert.equal((await exchange(await token())).status, 409); // Fresh JWT cannot bypass the run-attempt guard.
-  assert.equal((await exchange(await token({ run_attempt: '2', event_name: 'schedule', sub: `repo:${destination}:ref:refs/heads/main` }))).status, 200);
+  assert.equal((await exchange(await token({ run_attempt: '2', job_workflow_ref: undefined, event_name: 'schedule', sub: `repo:${destination}:ref:refs/heads/main` }))).status, 200);
   failure = true;
   const failed = await exchange(await token({ run_attempt: '3' })); assert.equal(failed.status, 502);
   assert.doesNotMatch(await failed.text(), /private-upstream|scoped-secret/);

@@ -44,7 +44,7 @@ Worker 保留 `SDBOT_GITHUB_APP_ID` 和 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，
 
 - 固定 issuer 与 JWKS 地址、RS256、有效期、签发时间、audience；不跟随认证请求重定向。
 - 同时校验仓库名、不可变仓库／组织 ID、`main` 分支、固定 `.github/workflows/collect.yml`、事件类型为 schedule 或 workflow_dispatch。
-- subject 支持 GitHub 的原名称格式与包含不可变 ID 的格式；PR、tag、其他工作流和可复用工作流均不在当前信任范围。将来改变工作流结构需显式调整信任策略。
+- subject 支持 GitHub 的原名称格式与包含不可变 ID 的格式；PR、tag 和其他工作流均不在当前信任范围。GitHub 的直接执行任务也可能包含 `job_workflow_ref`；该字段存在时必须仍指向同一个 collect.yml，引用其他文件的可复用工作流会被拒绝。将来改变工作流结构需显式调整信任策略。
 - 源仓令牌仅包含 Metadata、Contents、Issues、Pull requests、Actions、Checks、Commit statuses read；看板令牌仅包含 Metadata read、Contents write。跨组织分别换取 installation 令牌。
 - Durable Object 原子记录仓库／run／attempt／purpose；每次运行尝试每种用途只能兑换一次。记录保留至少一天，过期记录在后续请求中清理；不保存 JWT、安装令牌或私钥。
 
