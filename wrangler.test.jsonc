@@ -22,5 +22,5 @@
     "SDBOT_REPOS": "ScienceDiscovery/sciencediscovery",
     "SDBOT_BOARD_TARGETS": "{\"ScienceDiscovery/sciencediscovery\":\"ScienceDiscovery/github-status-board-test\"}"
   },
-  "observability": { "enabled": false }
+  "observability": { "logs": { "enabled": true, "invocation_logs": true } }
 }

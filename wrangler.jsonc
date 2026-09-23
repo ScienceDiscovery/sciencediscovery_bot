@@ -23,5 +23,5 @@
     "SDBOT_REPOS": "openJiuwen-ai/sciencediscovery",
     "SDBOT_BOARD_TARGETS": "{\"openJiuwen-ai/sciencediscovery\":\"ScienceDiscovery/github-status-board\"}"
   },
-  "observability": { "enabled": false }
+  "observability": { "logs": { "enabled": true, "invocation_logs": true } }
 }

@@ -53,6 +53,12 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 
 管理状态中 `execution=github_actions`、`dispatched`、`last_dispatch` 只表示 GitHub 已接受任务；`last_success` 与 `commit` 不虚构发布结果。面板显示“已触发采集”。采集结果和 Pages 发布结果分别查看目标仓的两个 Actions 工作流。调度只重试触发失败，已被 GitHub 接受后发生的采集失败由下一轮刷新／人工重跑恢复。
 
+## 日志
+
+正式与测试配置均开启 Workers Logs（`observability.logs.enabled` 与 `invocation_logs`），用于排查线上请求和 Durable Object 调用失败。代码本身不输出 `console` 日志，平台为每次调用记录请求方法、URL、响应状态、耗时和未捕获异常，不记录请求或响应正文。日志只在 Cloudflare 账号控制台可见，保留期由套餐决定。
+
+平台会把 cookie 以及名称含 `auth`、`key`、`secret`、`token`、`jwt` 的请求头值替换为 `REDACTED`，因此 `/actions/token` 的 OIDC Bearer 凭据不会以明文进入日志。GitHub／GitCode 的 `x-*-signature-256` 不在平台脱敏范围，会按原值记录；签名只能核验对应那一次投递正文，不能推出 Webhook secret，而正文不进入日志。投递存档中的请求头仍由 `safeHeaders` 另行脱敏。Worker 顶层对未处理异常统一返回 503、不输出原因，排查时对照同一时刻 `BotObject` 的调用记录。[Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)、[脱敏规则](https://developers.cloudflare.com/workers/runtime-apis/handlers/tail/)
+
 ## Actions 配置
 
 两个看板仓都需要 `collect.yml`、`collection_context.py`、`collect_with_oidc.py` 和已有采集器代码。每个看板仓的 `board-config.json` 只保存本站映射，相同工作流按运行仓选择唯一源仓，拒绝另一个环境的目标或源仓；正式与测试快照不能互相覆盖。
