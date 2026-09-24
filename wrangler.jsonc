@@ -21,7 +21,10 @@
     "SDBOT_ADMIN_HOSTNAME": "sciencediscovery-bot-worker.llmbots.co",
     "SDBOT_GITHUB_APP_ID": "5016872",
     "SDBOT_REPOS": "openJiuwen-ai/sciencediscovery",
-    "SDBOT_BOARD_TARGETS": "{\"openJiuwen-ai/sciencediscovery\":\"ScienceDiscovery/github-status-board\"}"
+    "SDBOT_BOARD_TARGETS": "{\"openJiuwen-ai/sciencediscovery\":\"ScienceDiscovery/github-status-board\"}",
+    // Events within ten minutes share one collection: a busy source repository
+    // otherwise starts a collection and a Pages deployment for nearly every event.
+    "SDBOT_BOARD_DEBOUNCE": "600"
   },
   "observability": { "logs": { "enabled": true, "invocation_logs": true } }
 }

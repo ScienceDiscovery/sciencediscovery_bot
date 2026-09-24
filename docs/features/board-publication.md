@@ -29,7 +29,7 @@ App 安装到源仓及目标仓。Bot 触发时只申请目标仓 Metadata read 
 
 ## 调度和持久状态
 
-`src/core/bus.ts` 声明实际监听。Node 模式的 `MultiBoard` 为每个源仓选择独立 `BoardQueue`，先保存请求代数，再返回 queued；启动及每小时请求兜底刷新。Worker 模式的 `WorkerBoard` 将刷新意图与投递索引一起提交 SQLite，再由持久 Alarm 执行；默认合并 20 秒，最小触发间隔 60 秒，失败按 30～600 秒退避。执行中收到的新代数留到下一轮。
+`src/core/bus.ts` 声明实际监听。Node 模式的 `MultiBoard` 为每个源仓选择独立 `BoardQueue`，先保存请求代数，再返回 queued；启动及每小时请求兜底刷新。Worker 模式的 `WorkerBoard` 将刷新意图与投递索引一起提交 SQLite，再由持久 Alarm 执行；默认合并 20 秒，最小触发间隔 60 秒，失败按 30～600 秒退避；正式实例配置为合并 600 秒，即每 10 分钟至多触发一次采集（及随后的 Pages 部署），看板最多延迟约 10 分钟。执行中收到的新代数留到下一轮。
 
 `src/node/board.ts` 在 Actions 模式调用共享 `dispatchCollection`，每站仅保存小型 `board-dispatch.json`（代数、最后触发时间、错误类别）。完整 Webhook 存档独立保留，规则未改变。旧本地采集的 `board-publication.json` 不混用。
 

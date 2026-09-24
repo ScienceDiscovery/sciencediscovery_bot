@@ -63,7 +63,7 @@ docker compose down
 | SDBOT_BOARD_GITHUB_TOKEN | 无 | 兼容静态令牌模式，与 App 模式互斥 |
 | SDBOT_BOARD_SOURCE_DIR | 同级 github_status_board | 宿主 publish.py 所在目录 |
 | SDBOT_BOARD_SOURCE_DIR_HOST | ../github_status_board | Compose 只读挂载的宿主路径 |
-| SDBOT_BOARD_DEBOUNCE / REFRESH | 20 / 3600 秒 | 全名 SDBOT_BOARD_DEBOUNCE、SDBOT_BOARD_REFRESH；下限 1 / 60 秒 |
+| SDBOT_BOARD_DEBOUNCE / REFRESH | 20 / 3600 秒 | 全名 SDBOT_BOARD_DEBOUNCE、SDBOT_BOARD_REFRESH；下限 1 / 60 秒；正式 Worker 的合并窗口为 600 秒 |
 | CLOUDFLARE_TUNNEL_TOKEN | 无 | tunnel profile 的连接凭据 |
 
 Compose 仅传入 compose 文件中显式声明的环境变量；其余参数需要调整 Compose environment 或使用宿主模式。环境变量、`.env`、数据卷和密钥不进入仓库或文档，不要输出完整渲染后的 Compose 配置来排障。管理状态仅返回密钥是否配置，不返回值。
