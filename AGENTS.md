@@ -15,7 +15,7 @@
 - Worker 管理页面和只读查询与接收端共用部署。必须验证固定 issuer、AUD、签名和有效期，并限定管理域名；不能仅凭 Header 或路径绕过认证调用管理 RPC。本地管理桥不打包进部署产物；管理读取不得调度任务或执行重放。正式使用 `wrangler.jsonc`，测试使用 `wrangler.test.jsonc`，两者不得共用存储或正式 App 私钥。
 - `/actions/token` 是独立的凭据兑换协议，不进入投递归档。校验固定 GitHub issuer、audience、不可变仓库／组织 ID、main 分支、固定采集工作流和事件类型；只能签发配置中源仓读取与看板写入权限。令牌和 OIDC 凭据不能进入日志、工作流 inputs 或持久状态。
 - GitHub App 请求使用不跟随重定向的 Fetch，并拒绝非成功状态；不能泄漏认证到跳转地址。共享客户端需要通过 workerd 的真实外部请求模拟验证，不能仅用签名测试代表运行环境兼容。
-- GitCode 同步只推带前缀的非默认分支，保持 GitHub head SHA，不变基；对 GitCode MR 只创建、更新、关闭，禁止调用合并接口。令牌只从 `GITCODE_TOKEN` 读取；写入记录、Check 或公开数据的错误文本必须先经 `src/core/redact.ts` 脱敏再截断。
+- GitCode 同步只把 PR head 推到带前缀的非默认分支，保持 GitHub head SHA，不变基；GitCode 默认分支只在 GitHub 合并后快进到 GitHub 默认分支尖端，禁止强推或以全零旧 SHA 覆盖；只删除本 PR 的前缀同步分支；对 GitCode MR 只创建、更新、关闭，禁止调用合并接口。令牌只从 `GITCODE_TOKEN` 读取；写入记录、Check 或公开数据的错误文本必须先经 `src/core/redact.ts` 脱敏再截断。
 
 同步两看板仓的共享源码前，必须比较目标 main 与共同基线；目标仓独有修改做三方合并并在该目标源码上验证。只更新本次明确的文件，保留各自 `site/` 和 `.sync/`；各仓 `board-config.json` 只保留自己的源仓映射，不能随共享代码互相覆盖。
 

@@ -51,6 +51,14 @@ test('Worker: PR events sync through the durable queue with the original SHA; a 
       if (url.pathname === '/app/installations/22/access_tokens') return json({ token: 'ghs_boardonly', expires_at: new Date(Date.now() + 3600000).toISOString() });
       if (url.pathname.endsWith('/dispatches')) return new Response(null, { status: 204 });
       assert.equal(request.headers.get('authorization'), 'Bearer ' + GIT_FIXTURE.githubToken);
+      // Repository reads for the merge: GitHub's default branch, its tip and ancestry, answered from the local "GitHub" repository.
+      if (request.method === 'GET' && url.pathname === `/repos/${SOURCE}`) return json({ default_branch: 'main' });
+      if (request.method === 'GET' && url.pathname === `/repos/${SOURCE}/branches/main`) return json({ commit: { sha: w.git(w.github, 'rev-parse', 'refs/heads/main') } });
+      const compared = /\/compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})$/.exec(url.pathname);
+      if (request.method === 'GET' && compared) {
+        try { w.git(w.github, 'merge-base', '--is-ancestor', compared[1], compared[2]); } catch { return json({ message: 'not an ancestor or unknown' }, 404); }
+        return json({ status: compared[1] === compared[2] ? 'identical' : 'ahead' });
+      }
       const body = await request.json();
       const id = /check-runs\/(\d+)$/.exec(url.pathname)?.[1];
       const check = id ? Object.assign(checks.get(Number(id)), body) : { id: checks.size + 1, ...body };
@@ -125,13 +133,18 @@ test('Worker: PR events sync through the durable queue with the original SHA; a 
   doc = await snapshot();
   assert.equal(doc.records[0].action, 'codecheck'); assert.equal(doc.records[0].status, 'success'); assert.equal(doc.pulls[0].check, 'success');
 
+  // Before the merge GitCode main matches an older GitHub main; the merge fast-forwards it to GitHub main's tip.
+  w.git(w.gitcode, 'update-ref', 'refs/heads/main', w.ids.common);
   const merged = await fixture('github_pull_request_merged.json');
   merged.pull_request.head.sha = w.ids.head;
   await deliver(merged);
   await until(async () => (await snapshot()).records.some(r => r.action === 'merged'));
   doc = await snapshot();
   assert.equal(pulls.get(21).state, 'closed'); assert.match(pulls.get(21).body, /Merged on GitHub/);
-  assert.equal(doc.records[0].summary, '已在 GitHub 合并；已关闭 GitCode MR !21（未调用合并接口）');
+  assert.equal(doc.records[0].summary, `已在 GitHub 合并；已把 GitCode main 快进到 GitHub main 尖端 ${w.ids.githubOnly.slice(0, 7)}；已关闭 GitCode MR !21（未调用合并接口）；已删除 GitCode 分支 github-pr/120`);
+  assert.equal(w.git(w.gitcode, 'rev-parse', 'refs/heads/main'), w.ids.githubOnly, 'GitCode main is GitHub main, not the PR head');
+  assert.throws(() => w.git(w.gitcode, 'rev-parse', '--verify', '-q', 'refs/heads/github-pr/120'), 'the sync branch is deleted');
+  w.git(w.gitcode, 'fsck', '--connectivity-only', '--no-dangling');
   assert.equal(checks.size, 1); assert.equal([...checks.values()][0].conclusion, 'success', 'a written verdict is not cancelled by the merge');
 
   // The dashboard reads records with its collect.yml OIDC identity only.

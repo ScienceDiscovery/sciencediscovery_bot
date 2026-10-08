@@ -3,7 +3,9 @@
  * code runs in Node and in Workers. It copies one commit between two hosts while
  * keeping its SHA: GitHub's upload-pack (protocol v2) produces a self-contained
  * pack, which is streamed unchanged into GitCode's receive-pack. Packfiles are
- * never parsed or buffered whole.
+ * never parsed or buffered whole. Every ref update names the old SHA the
+ * receiver advertised, so nothing here force-pushes; deleting a branch is a
+ * separate command without a pack.
  */
 import { scrub } from './redact.js';
 import { utf8 } from './types.js';
@@ -17,6 +19,7 @@ export class GitTransferError extends Error {
 }
 export interface GitRemote { url: string; authorization: string }
 export interface PushResult { status: 'pushed' | 'unchanged'; old: string; new: string; ref: string }
+export interface DeleteResult { status: 'deleted' | 'absent'; old: string; ref: string }
 type Fetcher = typeof fetch;
 
 export function pktLine(value: string | Uint8Array): Uint8Array<ArrayBuffer> {
@@ -181,25 +184,35 @@ async function report(response: Response, ref: string): Promise<void> {
       if (text === 'unpack ok') unpacked = true;
       else if (text.startsWith('unpack ')) throw new GitTransferError('push_rejected', 'GitCode could not unpack the pushed objects: ' + serverText(text.slice(7)));
       else if (text === `ok ${ref}`) updated = true;
-      else if (text.startsWith(`ng ${ref} `)) throw new GitTransferError('push_rejected', `GitCode rejected ${ref}: ` + serverText(text.slice(ref.length + 4)));
+      else if (text.startsWith(`ng ${ref} `)) {
+        const reason = serverText(text.slice(ref.length + 4));
+        throw new GitTransferError(/non-fast-forward|fetch first/i.test(reason) ? 'not_fast_forward' : 'push_rejected', `GitCode rejected ${ref}: ` + reason);
+      }
       else if (text.startsWith('ERR ')) throw new GitTransferError('push_rejected', 'GitCode refused the push: ' + serverText(text.slice(4)));
     }
   } finally { await reader.cancel(); }
   if (!unpacked || !updated) throw new GitTransferError('push_rejected', 'GitCode did not confirm the branch update');
 }
 
+const safeBranchRef = (ref: string): boolean => /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(ref) && !ref.includes('..') && !ref.endsWith('/') && !ref.endsWith('.lock');
+
 /**
  * Make `target` ref point at `sha` on the receiving host, copying objects from
  * the source host. Haves are commits the receiver already holds; the sender
  * omits whatever it can prove is common, and sends the full history otherwise.
+ * With `fastForward`, the advertised old SHA must exist and the callback must
+ * confirm it is an ancestor of `sha`; the update still names that old SHA.
  */
-export async function pushCommit(options: { source: GitRemote; target: GitRemote; sha: string; ref: string; haves?: readonly string[]; fetcher?: Fetcher }): Promise<PushResult> {
+export async function pushCommit(options: { source: GitRemote; target: GitRemote; sha: string; ref: string; haves?: readonly string[]; fetcher?: Fetcher;
+  fastForward?: (old: string) => Promise<boolean> }): Promise<PushResult> {
   const { source, target, sha, ref } = options, fetcher = options.fetcher || ((...args) => fetch(...args));
   if (!SHA.test(sha)) throw new GitTransferError('invalid_sha', 'head is not a full SHA-1');
-  if (!/^refs\/heads\/[A-Za-z0-9._/-]+$/.test(ref) || ref.includes('..') || ref.endsWith('/') || ref.endsWith('.lock')) throw new GitTransferError('invalid_ref', 'unsafe branch name');
+  if (!safeBranchRef(ref)) throw new GitTransferError('invalid_ref', 'unsafe branch name');
   const advertisement = await receiveRefs(target, fetcher);
   const old = advertisement.refs.get(ref) || ZERO_SHA;
   if (old === sha) return { status: 'unchanged', old, new: sha, ref };
+  if (options.fastForward && (old === ZERO_SHA || !await options.fastForward(old)))
+    throw new GitTransferError('not_fast_forward', `${ref} is at ${old.slice(0, 7)}, which ${sha.slice(0, 7)} does not contain; only fast-forward updates are allowed`);
   if (!advertisement.capabilities.has('report-status')) throw new GitTransferError('protocol_unsupported', 'GitCode receive-pack does not report push status');
   const pack = await fetchPack(source, sha, [...advertisement.refs.values(), ...(options.haves || [])], fetcher);
   const command = concat([pktLine(`${old} ${sha} ${ref}\0report-status\n`), FLUSH]);
@@ -222,6 +235,21 @@ export async function pushCommit(options: { source: GitRemote; target: GitRemote
   } catch (error) { await packReader.cancel().catch(() => undefined); throw error; }
   await report(response, ref);
   return { status: 'pushed', old, new: sha, ref };
+}
+
+/** Delete `ref` on the receiving host: advertised old SHA → zero, no pack. A missing branch is already done. */
+export async function deleteRef(options: { target: GitRemote; ref: string; fetcher?: Fetcher }): Promise<DeleteResult> {
+  const { target, ref } = options, fetcher = options.fetcher || ((...args) => fetch(...args));
+  if (!safeBranchRef(ref)) throw new GitTransferError('invalid_ref', 'unsafe branch name');
+  const advertisement = await receiveRefs(target, fetcher);
+  const old = advertisement.refs.get(ref);
+  if (!old) return { status: 'absent', old: ZERO_SHA, ref };
+  if (!advertisement.capabilities.has('report-status') || !advertisement.capabilities.has('delete-refs')) throw new GitTransferError('protocol_unsupported', 'GitCode receive-pack does not allow reported branch deletion');
+  const body = concat([pktLine(`${old} ${ZERO_SHA} ${ref}\0report-status delete-refs\n`), FLUSH]);
+  const response = await call(fetcher, 'GitCode receive-pack', repoUrl(target, '/git-receive-pack'), { method: 'POST', body,
+    headers: headers(target, { 'Content-Type': 'application/x-git-receive-pack-request', Accept: 'application/x-git-receive-pack-result' }) }, 60000);
+  await report(response, ref);
+  return { status: 'deleted', old, ref };
 }
 
 export const basicAuthorization = (username: string, password: string): string => {

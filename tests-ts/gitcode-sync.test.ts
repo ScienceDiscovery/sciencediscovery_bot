@@ -20,6 +20,8 @@ const GITCODE_TOKEN = 'gitcode-fake-token-not-real-0123456789';
 const INSTALLATION_TOKEN = 'ghs_FAKEINSTALLATIONTOKEN0123456789abcdef';
 const SOURCE = 'openJiuwen-ai/sciencediscovery', TARGET = 'openJiuwen/sciencediscovery';
 const A = 'a'.repeat(39) + '1', B = 'b'.repeat(39) + '2';
+/** GitCode main before the merge, and GitHub main after it (a squash merge: neither is a PR head). */
+const MAIN_OLD = 'c'.repeat(40), MAIN_TIP = 'e'.repeat(39) + '3', ZERO = '0'.repeat(40);
 const PEM = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
 const fixture = async (name: string): Promise<Doc> => JSON.parse(await readFile(resolve('tests-ts/fixtures/gitcode-sync', name), 'utf8')) as Doc;
 const comments = await fixture('gitcode_comments.json');
@@ -36,8 +38,16 @@ class World {
   readonly pulls = new Map<number, Pull>();
   readonly comments = new Map<number, Doc[]>();
   readonly pushes: { sha: string; ref: string }[] = [];
-  readonly branches = new Map<string, string>();
+  /** Every ref update sent to GitCode, with the old SHA it named. */
+  readonly updates: { ref: string; old: string; new: string }[] = [];
+  readonly deletes: string[] = [];
+  readonly branches = new Map<string, string>([['refs/heads/main', MAIN_OLD]]);
   failPush: Error | null = null;
+  /** GitHub's view: the default branch tip, and how it relates to GitCode main. */
+  mainTip = MAIN_TIP;
+  compare = 'ahead';
+  /** GitCode refusing a non-fast-forward update of main on its side. */
+  rejectMain = false;
   failApi: { method: string; path: RegExp; status: number } | null = null;
   private nextCheck = 100;
   private nextPull = 11;
@@ -58,6 +68,10 @@ class World {
         return this.json({ token: INSTALLATION_TOKEN, expires_at: new Date(Date.now() + 3600000).toISOString() });
       }
       assert.equal(headers.get('authorization'), `Bearer ${INSTALLATION_TOKEN}`);
+      if (method === 'GET' && url.pathname === `/repos/${SOURCE}`) return this.json({ default_branch: 'main' });
+      if (method === 'GET' && url.pathname === `/repos/${SOURCE}/branches/main`) return this.json({ name: 'main', commit: { sha: this.mainTip } });
+      const compared = /^\/repos\/[^/]+\/[^/]+\/compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})$/.exec(url.pathname);
+      if (method === 'GET' && compared) { assert.equal(compared[2], this.mainTip); return this.json({ status: this.compare }); }
       const output = object(body.output);
       if (method === 'POST' && url.pathname === `/repos/${SOURCE}/check-runs`) {
         const check: Check = { id: this.nextCheck++, head_sha: String(body.head_sha), name: String(body.name), status: String(body.status), conclusion: body.conclusion as string | undefined,
@@ -103,17 +117,27 @@ class World {
     }
     throw new Error(`unexpected outbound request ${method} ${url}`);
   }) as typeof fetch;
-  push = async (options: { sha: string; ref: string; source: { authorization: string }; target: { authorization: string } }): Promise<PushResult> => {
+  push = async (options: { sha: string; ref: string; source: { authorization: string }; target: { authorization: string }; fastForward?: (old: string) => Promise<boolean> }): Promise<PushResult> => {
     assert.equal(options.target.authorization, basicAuthorization('sync-bot', GITCODE_TOKEN));
     assert.equal(options.source.authorization, basicAuthorization('x-access-token', INSTALLATION_TOKEN));
     if (this.failPush) throw this.failPush;
-    const old = this.branches.get(options.ref) || '0'.repeat(40);
-    // Like pushCommit: a branch already at the SHA needs no transfer.
+    const old = this.branches.get(options.ref) || ZERO;
+    // Like pushCommit: a branch already at the SHA needs no transfer; fast-forward-only updates check the advertised tip first.
     if (old === options.sha) return { status: 'unchanged', old, new: options.sha, ref: options.ref };
+    if (options.fastForward && (old === ZERO || !await options.fastForward(old))) throw new GitTransferError('not_fast_forward', `${options.ref} is at ${old.slice(0, 7)}; only fast-forward updates are allowed`);
+    this.updates.push({ ref: options.ref, old, new: options.sha });
+    if (this.rejectMain && options.ref === 'refs/heads/main') throw new GitTransferError('not_fast_forward', 'GitCode rejected refs/heads/main: non-fast-forward');
     this.pushes.push({ sha: options.sha, ref: options.ref });
     this.branches.set(options.ref, options.sha);
     for (const pull of this.pulls.values()) if (`refs/heads/${pull.head_ref}` === options.ref) pull.head_sha = options.sha;
     return { status: old === options.sha ? 'unchanged' : 'pushed', old, new: options.sha, ref: options.ref };
+  };
+  deleteRef = async (options: { ref: string; target: { url: string; authorization: string } }) => {
+    assert.equal(options.target.authorization, basicAuthorization('sync-bot', GITCODE_TOKEN));
+    const old = this.branches.get(options.ref);
+    if (!old) return { status: 'absent' as const, old: ZERO, ref: options.ref };
+    this.updates.push({ ref: options.ref, old, new: ZERO }); this.deletes.push(options.ref); this.branches.delete(options.ref);
+    return { status: 'deleted' as const, old, ref: options.ref };
   };
   checksFor(sha: string): Check[] { return [...this.checks.values()].filter(c => c.head_sha === sha); }
   /** How often the merge request comments were read: the observable cost of a verdict read. */
@@ -132,7 +156,7 @@ async function setup(extra: Environment = {}) {
   assert.deepEqual(validateConfig(cfg), []);
   const world = new World();
   let clock = Date.now();
-  const sync = await NodeGitCodeSync.open(cfg, () => ({ ...syncContext(cfg, world.fetcher, () => clock), push: world.push as never }));
+  const sync = await NodeGitCodeSync.open(cfg, () => ({ ...syncContext(cfg, world.fetcher, () => clock), push: world.push as never, deleteRef: world.deleteRef as never }));
   const archive = await FileArchive.open(directory, cfg.dedupe_window);
   const app = new BotApplication(new Pipeline(cfg, archive, new Router(undefined, sync)), async () => '');
   const send = async (name: string, deliveryId = randomUUID()): Promise<Doc> => {
@@ -285,7 +309,7 @@ test('a result comment ahead of its label gets one 30-second re-read, then waits
   assert.equal(check.conclusion, 'timed_out', 'a result comment without a label is still no verdict'); assert.equal(h.world.reads(), 5);
 });
 
-test('closed and merged only close the GitCode MR; reopen reopens it; the merge endpoint is never called', async t => {
+test('closed closes the MR and deletes the sync branch; merged also fast-forwards GitCode main to GitHub main; the merge endpoint is never called', async t => {
   const h = await setup(); t.after(h.cleanup);
   await h.send('github_pull_request_opened.json'); await h.tick();
   await h.send('github_pull_request_synchronize.json'); await h.tick();
@@ -293,22 +317,84 @@ test('closed and merged only close the GitCode MR; reopen reopens it; the merge 
   await h.send('github_pull_request_closed.json'); await h.tick();
   const pull = h.world.pulls.get(11)!;
   assert.equal(pull.state, 'closed'); assert.match(pull.body, /\*\*Closed on GitHub\*\*/);
+  assert.deepEqual(h.world.deletes, ['refs/heads/github-pr/120']); assert.equal(h.world.branches.has('refs/heads/github-pr/120'), false);
+  assert.equal(h.world.branches.get('refs/heads/main'), MAIN_OLD, 'closing without merging never touches main');
+  assert.ok(!h.world.updates.some(u => u.ref === 'refs/heads/main'));
   let [checkB] = h.world.checksFor(B);
   assert.equal(checkB.conclusion, 'cancelled'); assert.equal(checkB.title, 'Pull request closed on GitHub');
-  assert.equal((await h.records())[0].summary, 'GitHub PR 已关闭；已关闭 GitCode MR !11');
+  assert.equal((await h.records())[0].summary, 'GitHub PR 已关闭；已关闭 GitCode MR !11；已删除 GitCode 分支 github-pr/120');
   await h.send('github_pull_request_reopened.json'); await h.tick();
-  assert.equal(pull.state, 'open'); assert.equal(h.world.pushes.length, 2, 'the branch already holds B; reopen does not push again');
+  assert.equal(pull.state, 'open');
+  assert.deepEqual(h.world.pushes.at(-1), { sha: B, ref: 'refs/heads/github-pr/120' }, 'the deleted branch is pushed again on reopen');
   const waiting = h.world.checksFor(B).filter(c => c.status === 'in_progress');
   assert.equal(waiting.length, 1, 'a completed check run is not reopened; waiting again uses a new run');
   await h.send('github_pull_request_merged.json'); await h.tick();
+  // GitHub main's tip (a squash merge), not the PR head and not merge_commit_sha, goes to GitCode main as a fast-forward.
+  assert.deepEqual(h.world.updates.filter(u => u.ref === 'refs/heads/main'), [{ ref: 'refs/heads/main', old: MAIN_OLD, new: MAIN_TIP }]);
+  assert.equal(h.world.branches.get('refs/heads/main'), MAIN_TIP);
   assert.equal(pull.state, 'closed');
   assert.match(pull.body, /\*\*Merged on GitHub\*\* as `d{40}`/); assert.match(pull.body, /Closed here without merging/);
+  assert.equal(h.world.branches.has('refs/heads/github-pr/120'), false); assert.equal(h.world.deletes.length, 2);
   const merged = (await h.records())[0];
   assert.equal(merged.action, 'merged'); assert.equal(merged.status, 'success');
-  assert.equal(merged.summary, '已在 GitHub 合并；已关闭 GitCode MR !11（未调用合并接口）');
+  assert.equal(merged.summary, `已在 GitHub 合并；已把 GitCode main 快进到 GitHub main 尖端 ${MAIN_TIP.slice(0, 7)}；已关闭 GitCode MR !11（未调用合并接口）；已删除 GitCode 分支 github-pr/120`);
   assert.ok(!h.world.calls.some(call => /\/merge(\/|$)/.test(call)));
   [checkB] = h.world.checksFor(B).filter(c => c.id === waiting[0].id);
   assert.equal(checkB.conclusion, 'cancelled'); assert.equal(checkB.title, 'Pull request merged on GitHub');
+  // The same merge delivered again neither pushes main nor deletes again.
+  const updates = h.world.updates.length;
+  assert.equal(h.listener(await h.send('github_pull_request_merged.json')), 'duplicate');
+  await h.tick();
+  assert.equal(h.world.updates.length, updates); assert.equal(h.world.deletes.length, 2);
+});
+
+test('a merge that cannot fast-forward GitCode main never sends a zero old SHA; the MR is still closed and the branch deleted', async t => {
+  for (const reason of ['github', 'gitcode'] as const) {
+    const h = await setup(); t.after(h.cleanup);
+    await h.send('github_pull_request_opened.json'); await h.tick();
+    // GitCode main holds commits GitHub does not have, or GitCode itself refuses the update.
+    if (reason === 'github') h.world.compare = 'diverged'; else h.world.rejectMain = true;
+    await h.send('github_pull_request_merged.json'); await h.tick();
+    assert.equal(h.world.branches.get('refs/heads/main'), MAIN_OLD, 'main is not updated');
+    assert.ok(!h.world.updates.some(u => u.ref === 'refs/heads/main' && u.old === ZERO), 'no force through a zero old SHA');
+    assert.equal(h.world.updates.filter(u => u.ref === 'refs/heads/main').length, reason === 'github' ? 0 : 1, 'one attempt, no retry');
+    assert.equal(h.world.pulls.get(11)!.state, 'closed'); assert.deepEqual(h.world.deletes, ['refs/heads/github-pr/120']);
+    const [record] = await h.records();
+    assert.equal(record.status, 'error'); assert.equal(record.error_code, 'not_fast_forward');
+    assert.match(record.summary, /^已在 GitHub 合并；GitCode 默认分支未更新（not_fast_forward）；已关闭 GitCode MR !11（未调用合并接口）；已删除 GitCode 分支 github-pr\/120$/);
+    const pulls = (await h.sync.snapshot()).pulls as Doc[];
+    assert.equal(pulls[0].sync_status, 'merged'); assert.equal(pulls[0].error_code, 'not_fast_forward');
+    await h.tick(3600000);
+    assert.equal(h.world.updates.filter(u => u.ref === 'refs/heads/main').length, reason === 'github' ? 0 : 1, 'a refused fast-forward is not retried');
+  }
+});
+
+test('only this pull request\'s own prefixed branch is deleted, never the default branch', async t => {
+  for (const branch of ['main', 'feature/120', 'github-pr/7']) {
+    const h = await setup(); t.after(h.cleanup);
+    await h.send('github_pull_request_opened.json'); await h.tick();
+    if (branch === 'main') h.world.branches.set('refs/heads/main', MAIN_OLD);
+    const state = (await h.sync.store.get(120))!;
+    state.branch = branch; await h.sync.store.put(state);
+    await h.send('github_pull_request_closed.json'); await h.tick();
+    assert.deepEqual(h.world.deletes, [], `${branch} is not deleted`);
+    assert.equal(h.world.branches.get('refs/heads/main'), MAIN_OLD);
+    const [record] = await h.records();
+    assert.equal(record.status, 'error'); assert.equal(record.error_code, 'unsafe_branch'); assert.match(record.summary, /已关闭 GitCode MR !11；未删除 GitCode 分支/);
+  }
+});
+
+test('GitHub main is read again when a transient failure retries the merge', async t => {
+  const h = await setup(); t.after(h.cleanup);
+  await h.send('github_pull_request_opened.json'); await h.tick();
+  h.world.failApi = { method: 'PATCH', path: /\/pulls\/11$/, status: 503 };
+  await h.send('github_pull_request_merged.json'); await h.tick();
+  assert.equal((await h.records())[0].status, 'error'); assert.equal(h.world.branches.get('refs/heads/main'), MAIN_TIP, 'main was already fast-forwarded');
+  h.world.failApi = null; h.world.mainTip = 'f'.repeat(39) + '4';
+  await h.tick(61000);
+  assert.equal(h.world.branches.get('refs/heads/main'), h.world.mainTip, 'the retry uses the tip at that time');
+  assert.equal(h.world.pulls.get(11)!.state, 'closed'); assert.deepEqual(h.world.deletes, ['refs/heads/github-pr/120']);
+  assert.equal((await h.records())[0].status, 'success');
 });
 
 test('duplicate and stale deliveries are idempotent; nothing is pushed or created twice', async t => {

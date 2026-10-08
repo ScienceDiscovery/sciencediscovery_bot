@@ -13,9 +13,10 @@
 import type { Config, GitCodeSyncConfig } from './config.js';
 import { publicSyncConfig } from './config.js';
 import { GitCodeApi, GitCodeApiError, type GitCodeComment, type GitCodePull } from './gitcode-api.js';
-import { GitTransferError, basicAuthorization, pushCommit, type PushResult } from './git-http.js';
+import { GitTransferError, basicAuthorization, deleteRef, pushCommit, type DeleteResult, type GitRemote, type PushResult } from './git-http.js';
 import { GitHubApp, GitHubAppAuthError } from './github-app.js';
 import { GitHubCheckError, upsertCheck, type CheckConclusion } from './github-checks.js';
+import { GitHubRepoError, githubBranchTip, githubCompare, githubDefaultBranch } from './github-repo.js';
 import { scrub } from './redact.js';
 import { array, id, number, object, string, type BotEvent, type Doc, type PullRequestSync, type SyncDisabledReason } from './types.js';
 
@@ -149,18 +150,19 @@ export interface SyncContext {
   cfg: GitCodeSyncConfig; api: GitCodeApi; fetcher: typeof fetch; now: () => number;
   githubToken: () => Promise<string>;
   push: (options: Parameters<typeof pushCommit>[0]) => Promise<PushResult>;
+  deleteRef: (options: Parameters<typeof deleteRef>[0]) => Promise<DeleteResult>;
 }
 export function syncContext(cfg: Config, fetcher: typeof fetch = (...args) => fetch(...args), now = () => Date.now()): SyncContext {
   const sync = cfg.gitcode_sync, app = new GitHubApp(cfg.github_app_id, cfg.github_app_private_key, fetcher);
   let token: Promise<string> | null = null;
-  return { cfg: sync, fetcher, now, push: pushCommit,
+  return { cfg: sync, fetcher, now, push: pushCommit, deleteRef,
     api: new GitCodeApi({ api_url: sync.api_url, web_url: sync.web_url, token: sync.token, auth_mode: sync.auth_mode }, fetcher),
     githubToken: () => (token ??= app.tokenForSync(sync.source)) };
 }
 interface Failure { code: string; message: string; transient: boolean }
 class SyncFailure extends Error { constructor(readonly code: string, message: string, readonly transient = false) { super(message); } }
 function classify(error: unknown): Failure {
-  if (error instanceof SyncFailure || error instanceof GitTransferError || error instanceof GitCodeApiError) return { code: error.code, message: error.message, transient: error.transient };
+  if (error instanceof SyncFailure || error instanceof GitTransferError || error instanceof GitCodeApiError || error instanceof GitHubRepoError) return { code: error.code, message: error.message, transient: error.transient };
   if (error instanceof GitHubAppAuthError) return { code: 'github_app_unavailable', message: 'GitHub App token for the source repository was refused or unavailable; check the installation and its Contents, Pull requests and Checks permissions', transient: true };
   if (error instanceof GitHubCheckError) return { code: 'github_check_failed', message: error.message, transient: true };
   return { code: 'internal_error', message: 'unexpected error while syncing', transient: true };
@@ -264,27 +266,65 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
         await check(state.head_sha, { state: 'pending', status: 'in_progress', title: 'Waiting for CodeCheck on GitCode', summary: pendingSummary('waiting for the GitCode pipeline') });
       } else {
         const merged = state.action === 'merged';
+        if (!cfg.bases.includes(state.base)) {
+          state.done = state.generation; state.attempts = 0; state.sync_status = 'skipped'; state.poll_due = null; state.deadline = null; state.error_code = null; state.error = null;
+          record(state.action, 'skipped', `目标分支 ${state.base} 不在同步范围（${cfg.bases.join(', ')}），GitCode 上不做处理`);
+          return { state, records };
+        }
+        const gitcode = (repository: string): GitRemote => ({ url: `${cfg.web_url.replace(/\/+$/, '')}/${repository}.git`, authorization: basicAuthorization(cfg.username, cfg.token) });
+        const notes: string[] = [], problems: Failure[] = [];
+        // Every step is safe to repeat. A transient failure retries the whole close later; on the last
+        // attempt it is recorded like a permanent one so the remaining steps still run.
+        const step = async (failed: string, run: () => Promise<string>): Promise<void> => {
+          try { notes.push(await run()); }
+          catch (error) {
+            const failure = classify(error);
+            if (failure.transient && state.attempts + 1 < cfg.max_attempts) throw error;
+            problems.push(failure); notes.push(`${failed}（${failure.code}）`);
+          }
+        };
+        if (merged) await step('GitCode 默认分支未更新', async () => {
+          // GitHub's default branch tip, never the pull request head: a squash or rebase merge leaves the head off main.
+          const token = await ctx.githubToken(), githubDefault = await githubDefaultBranch(cfg.source, token, ctx.fetcher);
+          if (state.base !== githubDefault) return `目标分支 ${state.base} 不是 GitHub 默认分支，未更新 GitCode 默认分支`;
+          const gitcodeDefault = await ctx.api.defaultBranch(cfg.target);
+          if (gitcodeDefault !== githubDefault) throw new SyncFailure('default_branch_mismatch', `GitCode default branch ${gitcodeDefault || 'unknown'} is not GitHub's ${githubDefault}; it was not updated`);
+          const tip = await githubBranchTip(cfg.source, githubDefault, token, ctx.fetcher);
+          // Fast-forward only: the advertised GitCode tip must be an ancestor of GitHub's tip, and the push names it as the old value.
+          const pushed = await ctx.push({ sha: tip, ref: `refs/heads/${gitcodeDefault}`, fetcher: ctx.fetcher, target: gitcode(cfg.target),
+            source: { url: `${cfg.github_web_url.replace(/\/+$/, '')}/${cfg.source}.git`, authorization: basicAuthorization('x-access-token', token) },
+            fastForward: async old => ['ahead', 'identical'].includes(await githubCompare(cfg.source, old, tip, token, ctx.fetcher)) });
+          return pushed.status === 'pushed' ? `已把 GitCode ${gitcodeDefault} 快进到 GitHub ${githubDefault} 尖端 ${short(tip)}` : `GitCode ${gitcodeDefault} 已是 GitHub ${githubDefault} 尖端 ${short(tip)}`;
+        });
         let pull: GitCodePull | null = null;
         if (state.mr) { try { pull = await ctx.api.getPull(cfg.target, state.mr.number); } catch (error) { if (!(error instanceof GitCodeApiError && error.status === 404)) throw error; } }
         pull ??= await ctx.api.findPull(cfg.target, state.branch, cfg.push_repo);
-        if (!pull) {
-          record(state.action, 'skipped', merged ? '已在 GitHub 合并；GitCode 上没有对应 MR，无需关闭' : 'GitHub PR 已关闭；GitCode 上没有对应 MR，无需关闭');
-        } else {
+        if (!pull) notes.push('GitCode 上没有对应 MR，跳过关闭');
+        else {
           state.mr = { number: pull.number, url: pull.url };
           if (['open', 'opened', 'reopened'].includes(pull.state) || !pull.state) {
             // Close only. The GitCode merge endpoint is never called.
             pull = await ctx.api.updatePull(cfg.target, pull.number, { state: 'closed', body: mrBody(state, cfg, merged ? 'merged' : 'closed', now) });
-            record(state.action, 'success', merged ? `已在 GitHub 合并；已关闭 GitCode MR !${pull.number}（未调用合并接口）` : `GitHub PR 已关闭；已关闭 GitCode MR !${pull.number}`);
-          } else {
-            record(state.action, 'success', `${merged ? '已在 GitHub 合并' : 'GitHub PR 已关闭'}；GitCode MR !${pull.number} 已是 ${pull.state} 状态，未再修改`);
-          }
+            notes.push(`已关闭 GitCode MR !${pull.number}${merged ? '（未调用合并接口）' : ''}`);
+          } else notes.push(`GitCode MR !${pull.number} 已是 ${pull.state} 状态，未再修改`);
         }
+        await step(`未删除 GitCode 分支 ${state.branch}`, async () => {
+          // Only this pull request's own sync branch, and never a default or base branch.
+          const own = cfg.branch_prefix + state.pr, defaultBranch = await ctx.api.defaultBranch(cfg.push_repo);
+          if (state.branch !== own || !defaultBranch || state.branch === defaultBranch || cfg.bases.includes(state.branch))
+            throw new SyncFailure('unsafe_branch', `refusing to delete ${state.branch || 'an empty branch name'}: only ${own} may be deleted, never the default branch ${defaultBranch || 'unknown'} or a sync base`);
+          const removed = await ctx.deleteRef({ target: gitcode(cfg.push_repo), ref: `refs/heads/${state.branch}`, fetcher: ctx.fetcher });
+          return removed.status === 'deleted' ? `已删除 GitCode 分支 ${state.branch}` : `GitCode 分支 ${state.branch} 已不存在`;
+        });
+        const problem = problems[0];
+        record(state.action, problem ? 'error' : 'success', [merged ? '已在 GitHub 合并' : 'GitHub PR 已关闭', ...notes].join('；'), problem);
         if (state.check?.state === 'pending') {
           const sha = state.check.sha;
           await check(sha, { state: 'cancelled', status: 'completed', conclusion: 'cancelled', title: merged ? 'Pull request merged on GitHub' : 'Pull request closed on GitHub',
             summary: `The pull request was ${merged ? 'merged' : 'closed'} on GitHub before GitCode produced a CodeCheck verdict for \`${sha}\`. ${mrLink()} was closed without merging.` });
         }
-        state.done = state.generation; state.attempts = 0; state.poll_due = null; state.deadline = null; state.sync_status = merged ? 'merged' : 'closed'; state.error_code = null; state.error = null;
+        state.done = state.generation; state.attempts = 0; state.poll_due = null; state.deadline = null; state.sync_status = merged ? 'merged' : 'closed';
+        state.error_code = problem?.code ?? null; state.error = problem ? scrub(problem.message, secrets) : null;
       }
     } catch (error) {
       const failure = classify(error);

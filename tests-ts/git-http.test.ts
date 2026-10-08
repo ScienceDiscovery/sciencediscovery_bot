@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GitTransferError, basicAuthorization, pushCommit, receiveRefs } from '../src/core/git-http.js';
+import { GitTransferError, ZERO_SHA, basicAuthorization, deleteRef, pushCommit, receiveRefs } from '../src/core/git-http.js';
 import { GIT_FIXTURE, gitWorld } from './support/git-world.js';
 
 test('pushCommit copies a GitHub head into GitCode with the same SHA across diverged histories', { timeout: 60000 }, async t => {
@@ -42,4 +42,45 @@ test('pushCommit failures are typed and never expose credentials or change refs'
     error instanceof GitTransferError && ['object_unavailable', 'protocol_error'].includes(error.code));
   for (const ref of ['refs/heads/../main', 'refs/tags/v1', 'refs/heads/x.lock']) await assert.rejects(pushCommit({ source: w.source, target: w.target, sha: w.ids.head, ref }), /unsafe branch name/);
   assert.throws(() => w.git(w.gitcode, 'rev-parse', '--verify', '-q', 'refs/heads/github-pr/1'));
+});
+
+test('fast-forward-only pushes name the advertised tip, refuse anything else, and surface a server-side refusal', { timeout: 60000 }, async t => {
+  const w = await gitWorld(t);
+  const isAncestor = (old: string, sha: string): boolean => { try { w.git(w.work, 'merge-base', '--is-ancestor', old, sha); return true; } catch { return false; } };
+  const ref = 'refs/heads/mirror-main';
+  await pushCommit({ source: w.source, target: w.target, sha: w.ids.common, ref });
+  const checked: string[] = [];
+  const ff = (sha: string) => async (old: string) => { checked.push(old); return isAncestor(old, sha); };
+  assert.deepEqual(await pushCommit({ source: w.source, target: w.target, sha: w.ids.githubOnly, ref, fastForward: ff(w.ids.githubOnly) }),
+    { status: 'pushed', old: w.ids.common, new: w.ids.githubOnly, ref });
+  assert.deepEqual(checked, [w.ids.common], 'the callback sees the advertised tip');
+  // Moving back is not a fast-forward: refused before anything is sent.
+  await assert.rejects(pushCommit({ source: w.source, target: w.target, sha: w.ids.common, ref, fastForward: ff(w.ids.common) }),
+    (error: unknown) => error instanceof GitTransferError && error.code === 'not_fast_forward' && error.transient === false);
+  assert.equal(w.git(w.gitcode, 'rev-parse', ref), w.ids.githubOnly);
+  // A missing branch is not "behind": fast-forward-only never creates it from the zero SHA.
+  await assert.rejects(pushCommit({ source: w.source, target: w.target, sha: w.ids.head, ref: 'refs/heads/absent', fastForward: async () => true }), /not_fast_forward|only fast-forward/);
+  assert.throws(() => w.git(w.gitcode, 'rev-parse', '--verify', '-q', 'refs/heads/absent'));
+  // GitCode's own refusal of a non-fast-forward update is typed the same way.
+  w.git(w.gitcode, 'config', 'receive.denyNonFastForwards', 'true');
+  await assert.rejects(pushCommit({ source: w.source, target: w.target, sha: w.ids.common, ref }),
+    (error: unknown) => error instanceof GitTransferError && error.code === 'not_fast_forward' && /non-fast-forward/.test(error.message));
+  assert.equal(w.git(w.gitcode, 'rev-parse', ref), w.ids.githubOnly);
+});
+
+test('deleteRef removes a branch with the advertised old SHA and no pack; an absent branch is already done', { timeout: 60000 }, async t => {
+  const w = await gitWorld(t);
+  const ref = 'refs/heads/github-pr/1';
+  await pushCommit({ source: w.source, target: w.target, sha: w.ids.head, ref });
+  const before = w.requests.length;
+  assert.deepEqual(await deleteRef({ target: w.target, ref }), { status: 'deleted', old: w.ids.head, ref });
+  assert.throws(() => w.git(w.gitcode, 'rev-parse', '--verify', '-q', ref));
+  assert.ok(w.requests.slice(before).every(r => r.host === 'gitcode'), 'no pack is fetched from GitHub');
+  assert.equal(w.git(w.gitcode, 'rev-parse', 'refs/heads/main'), w.ids.gitcodeOnly, 'other branches stay');
+  assert.deepEqual(await deleteRef({ target: w.target, ref }), { status: 'absent', old: ZERO_SHA, ref });
+  for (const unsafe of ['refs/heads/../main', 'refs/tags/v1', 'refs/heads/x.lock']) await assert.rejects(deleteRef({ target: w.target, ref: unsafe }), /unsafe branch name/);
+  const wrong = { ...w.target, authorization: basicAuthorization(GIT_FIXTURE.gitcodeUser, 'wrong') };
+  await pushCommit({ source: w.source, target: w.target, sha: w.ids.head, ref });
+  await assert.rejects(deleteRef({ target: wrong, ref }), (error: unknown) => error instanceof GitTransferError && error.code === 'permission_denied');
+  assert.equal(w.git(w.gitcode, 'rev-parse', ref), w.ids.head);
 });

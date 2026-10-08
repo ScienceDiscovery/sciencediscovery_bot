@@ -9,10 +9,18 @@ GitHub 源仓的 PR 在创建、推送新提交、重新打开、关闭和合并
 | `pull_request.opened` | 把 PR head 原样推到 `<前缀><PR 号>` 分支（默认 `github-pr/123`），创建 MR，开始等待结论 |
 | `pull_request.synchronize` | 推送新 head，更新 MR 标题和正文中的 SHA；旧 head 上仍在等待的 Check 改为 cancelled |
 | `pull_request.reopened` | 重新打开 MR；分支已是同一 SHA 时不再传输，重新开始等待结论 |
-| `pull_request.closed`（未合并） | 只关闭 MR，正文记下「Closed on GitHub」 |
-| `pull_request.merged` | 只关闭 MR，正文记下「Merged on GitHub」和合并提交；**从不调用 GitCode 合并接口** |
+| `pull_request.closed`（未合并） | 关闭 MR，正文记下「Closed on GitHub」，再删除同步分支；不改 GitCode 默认分支 |
+| `pull_request.merged` | 先把 GitCode 默认分支快进到 GitHub 默认分支当时的尖端，再关闭 MR（正文记下「Merged on GitHub」和合并提交），最后删除同步分支；**从不调用 GitCode 合并接口** |
 
-MR 标题形如 `[GitHub #123] <PR 标题> (abc1234)`，正文包含 PR 链接、完整 head SHA、目标分支和「请勿在 GitCode 合并」说明。只同步目标分支在 `SDBOT_GITCODE_SYNC_BASES`（默认 `main`）内的 PR；其他 PR 记为「跳过」。
+MR 标题形如 `[GitHub #123] <PR 标题> (abc1234)`，正文包含 PR 链接、完整 head SHA、目标分支和「请勿在 GitCode 合并」说明。只同步目标分支在 `SDBOT_GITCODE_SYNC_BASES`（默认 `main`）内的 PR；其他 PR 的创建、关闭和合并都记为「跳过」。
+
+### 合并与关闭
+
+- 合并时推到 GitCode 的是 GitHub 默认分支在处理当时的尖端（经安装令牌读 `GET /repos/{源仓}/branches/{默认分支}`），不是 PR head：squash／rebase 合并后 head 不在 `main` 上；`merge_commit_sha` 只写进 MR 正文，与尖端不一致时以尖端为准。只在 PR 目标分支就是 GitHub 默认分支、且 GitCode 默认分支同名时更新；否则记录原因并跳过这一步。
+- GitCode 默认分支只快进：先读 receive-pack 广告里的当前尖端，经 GitHub compare 确认它是新尖端的祖先，再以这个旧 SHA 推送。GitCode 上有 GitHub 没有的提交、或 GitCode 自己以 non-fast-forward 拒绝时，记为错误 `not_fast_forward` 并不再重试，不会改用全零旧 SHA 或强推；这一次仍然关闭 MR、删除同步分支，记录写明默认分支未更新。
+- 删除同步分支用 receive-pack 把广告里的旧 SHA 更新为全零，不带 pack；分支已不存在即算完成。只删除 `refs/heads/<前缀><本 PR 号>`，且它不能是 GitCode 默认分支或任一同步目标分支，否则拒绝并记错误 `unsafe_branch`。
+- 三步都可重复执行：重试时默认分支已是尖端就不再推送，MR 已关闭就不再修改，分支已删就跳过。临时错误按退避重试整次处理，最后一次尝试时记为错误后继续剩余步骤。同一合并的重复投递不会再次推送或删除。PR 重新打开时同步分支会重新推送。
+- 已写出结论的 Check 保持原样；仍在等待的 Check 记为 cancelled。只处理新代码上线之后到达的关闭和合并事件，不补跑历史事件。
 
 GitHub Check（默认名 `CodeCheck (GitCode)`，标题和摘要为英文）的结果：
 
@@ -79,6 +87,7 @@ Webhook 只把对应 PR 的读取时间改成「现在」，由持久队列（Wo
 - `src/core/config.ts` 的 `tracks()`：同步启用时，同步目标仓的 GitCode 投递进入事件总线；其他 GitCode 仓仍只归档。目标仓不加入 `SDBOT_REPOS`，看板监听仍只收 GitHub。
 - `src/core/git-http.ts`：基于 Fetch 和流的 git smart-HTTP。向 GitHub upload-pack（协议 v2）要 PR head 的自包含 pack，原样流式写入 GitCode receive-pack，不解析、不整包缓存，也不变基，因此 GitCode 上的提交 SHA 与 GitHub 一致。`have` 取 GitCode 现有分支顶端和目标分支近 100 个提交；分支已是该 SHA 时只读一次广告、不传输。
 - `src/core/gitcode-api.ts`：GitCode REST v5（仓库、分支、MR 列表／创建／更新／详情、MR 提交数、评论）。没有实现合并接口。
+- `src/core/git-http.ts` 的 `pushCommit({ fastForward })` 与 `deleteRef()`：只快进的推送和不带 pack 的分支删除；`src/core/github-repo.ts` 读 GitHub 默认分支、分支尖端和 compare 结果。
 - `src/core/github-checks.ts` 与 `GitHubApp.tokenForSync()`：只申请源仓 Metadata／Contents／Pull requests 读和 Checks 写的安装令牌。已完成的 check run 不会改回进行中；再次等待时新建一条。
 - `src/core/redact.ts`：记录、Check 摘要和公开快照里的错误文本先删去令牌、`Authorization`／token 赋值、`user:pass@` URL，再截断。
 - Node：`src/node/gitcode-sync.ts` 用 `<数据目录>/gitcode-sync/state.json` 原子落盘，进程内每 5 秒排空到期任务。
@@ -89,7 +98,8 @@ Webhook 只把对应 PR 的读取时间改成「现在」，由持久队列（Wo
 
 ## 边界
 
-- 同步只推非默认、带前缀的分支，只创建、更新、关闭 MR；不合并、不删分支、不改 GitCode 默认分支或目标分支。关闭后的同步分支保留在 GitCode 上。
+- PR head 只推到带前缀的非默认分支；GitCode 默认分支只在 GitHub 合并后快进到 GitHub 默认分支尖端，从不强推、不回退。对 MR 只创建、更新、关闭，仍不调用 GitCode 合并接口；关闭和合并都会删除对应的 `github-pr/<号>` 同步分支，不删除其他分支，也不改其他目标分支。
+- 快进依赖 GitHub compare 判断祖先关系：GitCode 默认分支上有 GitHub 不知道的提交时，默认分支保持不变，需要人工处理后，后续合并才能继续快进。
 - 结论来自 GitCode 上的现有流水线，本功能不运行检查。2026-09-22 起 GitHub `main` 已删除 `.codearts/` 和 `.ci/codearts-*.sh`；若 GitCode 父流水线仍从 MR 的代码树执行这些脚本，基于新 `main` 的 PR 可能得不到结果评论和标签，Check 会一直进行中，直到超时记为 timed_out。上线前需在 GitCode／CodeArts 侧确认流水线能为这类 MR 产出结论。
 - 以评论时间判断新旧依赖 GitCode 与 Bot 的时钟，允许 30 秒偏差；CI 评论文案或标签名改变时需要同步修改判定规则和测试。
 - GitCode REST 的字段、`PRIVATE-TOKEN` 认证、`state` 取值与跨仓 `owner:branch` 写法按 v5 文档实现，没有对真实 GitCode 验证；git 推送用户名是否必须是令牌所属账号，也需上线时核对。
@@ -98,8 +108,8 @@ Webhook 只把对应 PR 的读取时间改成「现在」，由持久队列（Wo
 
 ## 验证入口
 
-- `tests-ts/gitcode-sync.test.ts`：opened／synchronize／reopened／closed／merged、同一投递重放与新投递重复、过期事件、GitCode 临时与永久失败、错误正文脱敏、历史分叉、范围外目标分支、结论规则与配置校验；GitCode Note Hook 与标签变化触发读取、同步后不再定时读取、其他作者／其他 MR／其他仓／未验签的投递不读取 GitCode、30 秒补读只有一次、截止读取补上丢失的 Webhook、默认 30 分钟一次跳到 timed_out、读取失败的有界退避、旧轮询状态的迁移。fixture 在 `tests-ts/fixtures/gitcode-sync/`。
-- `tests-ts/git-http.test.ts`：用本机 `git http-backend` 搭建分叉的「GitHub」「GitCode」裸仓，验证 SHA 不变、对象连通、重复推送不传输、非快进更新、错误凭据与不安全分支名。
-- `tests-ts/worker-gitcode-sync.test.mjs`：生产 Worker 包在 workerd 中跑完整链路（Webhook → outbox → Alarm → 真实 git 传输 → GitCode Note Hook 唤醒读取并写 success → 关闭 MR），以及 `/actions/gitcode-sync` 的 OIDC 保护和无凭据输出。
+- `tests-ts/gitcode-sync.test.ts`：opened／synchronize／reopened／closed／merged（合并推 GitHub `main` 尖端而非 PR head、关闭和合并都删除同步分支、非快进不发全零旧 SHA 且仍关闭和删除、只删本 PR 的前缀分支、重复投递不再推送或删除、重试读取当时的尖端）、同一投递重放与新投递重复、过期事件、GitCode 临时与永久失败、错误正文脱敏、历史分叉、范围外目标分支、结论规则与配置校验；GitCode Note Hook 与标签变化触发读取、同步后不再定时读取、其他作者／其他 MR／其他仓／未验签的投递不读取 GitCode、30 秒补读只有一次、截止读取补上丢失的 Webhook、默认 30 分钟一次跳到 timed_out、读取失败的有界退避、旧轮询状态的迁移。fixture 在 `tests-ts/fixtures/gitcode-sync/`。
+- `tests-ts/git-http.test.ts`：用本机 `git http-backend` 搭建分叉的「GitHub」「GitCode」裸仓，验证 SHA 不变、对象连通、重复推送不传输、非快进更新、错误凭据与不安全分支名，以及只快进推送（拒绝回退和从全零创建、服务端 non-fast-forward 拒绝）和分支删除。
+- `tests-ts/worker-gitcode-sync.test.mjs`：生产 Worker 包在 workerd 中跑完整链路（Webhook → outbox → Alarm → 真实 git 传输 → GitCode Note Hook 唤醒读取并写 success → 合并后快进 GitCode `main`、关闭 MR、删除同步分支），以及 `/actions/gitcode-sync` 的 OIDC 保护和无凭据输出。
 
 以上测试不访问真实 GitHub、GitCode 或 OpenLibing。
