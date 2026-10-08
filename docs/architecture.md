@@ -56,17 +56,19 @@ flowchart TD
 
 Webhook 已接受、Actions 已触发、采集提交成功、Pages 部署成功是四个独立状态。Bot 的 `last_dispatch` 只代表触发成功，最终结果分别查看采集与发布工作流。详情见[看板更新](features/board-publication.md)。
 
+配置 GitCode 同步目标后，PR 事件还会进入第二个业务队列：同一个持久 Alarm 用源仓只读、Checks 可写的安装令牌，把 PR head 原样推到 GitCode 同步分支并创建或关闭 MR（从不合并），再回读 MR 上的 CodeCheck 标签与结果评论，写成源仓 head 提交上的 GitHub Check。同步记录由看板采集工作流以同一 OIDC 身份经 `/actions/gitcode-sync` 读取，随 `site/` 一起提交和发布。Webhook 已接受、分支已推送、MR 已更新、CodeCheck 出结论、看板已发布同样是各自独立的状态。详见 [GitHub PR 同步到 GitCode](features/gitcode-sync.md)。
+
 ## Bot 代码与存储边界
 
 | 位置 | 实现内容 |
 | --- | --- |
-| `src/core/` | 标准 Fetch／Web Crypto；`pipeline.ts` 管验签、范围和去重，`bus.ts` 管监听注册与分发，`github-app.ts` 管 App 身份，`actions.ts` 管工作流触发 |
+| `src/core/` | 标准 Fetch／Web Crypto；`pipeline.ts` 管验签、范围和去重，`bus.ts` 管监听注册与分发，`github-app.ts` 管 App 身份，`actions.ts` 管工作流触发，`gitcode-sync.ts`／`git-http.ts`／`gitcode-api.ts` 管 GitCode 同步与 git 传输 |
 | `src/worker/` | Worker 入口、Access 管理鉴权、`actions-auth.ts` 的 OIDC 令牌兑换、SQLite Durable Object、R2 归档和持久 Alarm；不运行 Node 子进程或 Python |
 | `src/node/` | 本机双端口、JSONL／文件归档、Actions 触发，以及兼容的 Python 子进程采集模式 |
 | `static/index.html` | Bot 管理面板的事件记录与监听点页面；与公开 Pages 看板是两个不同界面 |
 | 看板仓 `publish.py`、`gsb/`、工作流 | Python 增量采集、历史回填、测试报告解析、提交和 Pages 发布 |
 
-私有 R2 保存请求正文及脱敏请求头／响应详情，SQLite 保存索引、计数、有限 delivery 去重窗口和刷新待办。Bot 不保存看板的历史回填游标、整套项目快照或测试日志，但会持续保存完整投递档案，因此不能把 Bot 总存储量理解成恒定的小缓存。
+私有 R2 保存请求正文及脱敏请求头／响应详情，SQLite 保存索引、计数、有限 delivery 去重窗口和刷新待办；启用 GitCode 同步时还保存每个 PR 的同步状态和最近 300 条脱敏同步记录。Bot 不保存看板的历史回填游标、整套项目快照或测试日志，但会持续保存完整投递档案，因此不能把 Bot 总存储量理解成恒定的小缓存。
 
 OIDC 兑换不进入 Webhook 档案。SQLite 只额外保存短期的运行／尝试／用途签发记录，防止同一采集尝试反复领取令牌；不保存 JWT、安装令牌或 App 私钥。校验条件、失败与重试行为见 [Actions OIDC 临时凭据](features/actions-oidc.md)。
 

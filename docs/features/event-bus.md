@@ -59,9 +59,10 @@ router.bus.subscribe({
 - 内容分析：Issue opened／edited／reopened，Issue 评论，PR opened／synchronize／reopened／edited／ready_for_review、评审和合并；当前仅记录调用，不调用 LLM 或发评论。
 - 看板更新：只在稳定状态变化时刷新。Issue 新建、关闭、重新打开；PR 新建、关闭、重新打开、转为可评审、评审提交；PR 合并；`workflow_run.completed`（PR 门禁、main、Daily、Release 等运行结束）；`release.published`。运行中的 job／check、push、分支与标签创建删除、评论和编辑不触发，由空闲定时刷新与看板仓的定时采集补上。
 - 未配置发布时，看板监听处于占位状态；启用发布后显示 active，并列出实际来源范围。详见[看板更新](board-publication.md)。
+- GitCode 同步：PR opened／synchronize／reopened／closed／merged。监听器只把每个 PR 的最新期望状态写入持久队列，推送、MR 操作和 CodeCheck 回读由队列在 Webhook 之外完成。没有 `GITCODE_TOKEN`、`SDBOT_GITCODE_SYNC_TARGET=off`、缺少 GitHub App 凭据或缺少 GitHub Webhook secret 时，以 `enabled: false` 注册，监听点页显示「已停用」并列出全部原因，不改变 PR 投递的 hooks，也不让 Worker 停止服务。详见 [GitHub PR 同步到 GitCode](gitcode-sync.md)。
 
 ## 可观测性与验证
 
 `GET /api/listeners` 只在管理端列出实际注册表，绝不序列化回调对象、密钥或代码路径。投递摘要中的 listeners 保存监听 ID 与结果状态；errors 仅保存异常类别，避免异常消息夹带凭据。公开响应仍只有协议必要字段。
 
-实现：`src/core/bus.ts`、`pipeline.ts`、`events.ts`、`archive.ts`。验证：`tests-ts/core.test.ts`、`board-app.test.ts`、`archive-http.test.ts` 和监听点浏览器旅程。新业务必须验证应匹配／不应匹配、失败隔离、范围限制、重复投递，并更新对应特性文档及[目录](../README.md)。
+实现：`src/core/bus.ts`、`pipeline.ts`、`events.ts`、`archive.ts`。验证：`tests-ts/core.test.ts`、`board-app.test.ts`、`archive-http.test.ts`、`gitcode-sync.test.ts` 和监听点浏览器旅程。新业务必须验证应匹配／不应匹配、失败隔离、范围限制、重复投递，并更新对应特性文档及[目录](../README.md)。

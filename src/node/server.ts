@@ -4,14 +4,15 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BotApplication, VERSION, jsonResponse, type Capture } from '../core/http.js';
-import { configFromEnv, targets, validateConfig, type Config } from '../core/config.js';
+import { boardBlocked, configFromEnv, targets, validateConfig, type Config } from '../core/config.js';
 import { loadPrivateKey } from '../core/github-app.js';
 import { Pipeline, rejected } from '../core/pipeline.js';
-import { Router } from '../core/bus.js';
+import { NoopBoard, NoopSync, Router } from '../core/bus.js';
 import { jsonBytes } from '../core/types.js';
 import { FileArchive } from './archive.js';
 import { responseHeaders } from '../core/archive.js';
 import { createBoards } from './board.js';
+import { NodeGitCodeSync } from './gitcode-sync.js';
 
 function incomingHeaders(req: IncomingMessage): Headers {
   const headers = new Headers();
@@ -101,13 +102,17 @@ export function listener(app: BotApplication, admin: boolean): Server {
 export async function start(cfg: Config): Promise<{ app: BotApplication; webhook: Server; admin?: Server; close: () => Promise<void> }> {
   const problems = validateConfig(cfg);
   if (problems.length) throw new Error(problems.join('; '));
-  const enabled = Object.keys(targets(cfg)).length > 0;
+  // Targets without publishing credentials leave the board disabled (with a reason) instead of refusing to start.
+  const blocked = boardBlocked(cfg), enabled = Object.keys(targets(cfg)).length > 0 && !blocked;
   if (enabled) {
     if (cfg.board_execution === 'local') await access(resolve(cfg.board_source_dir, 'publish.py'));
     if (cfg.github_app_id) await loadPrivateKey(cfg.github_app_private_key);
   }
-  const board = enabled ? await createBoards(cfg) : undefined;
-  const app = new BotApplication(new Pipeline(cfg, await FileArchive.open(cfg.data_dir, cfg.dedupe_window), new Router(board)), () => readFile(resolve(cfg.static_dir, 'index.html'), 'utf8'));
+  const boards = enabled ? await createBoards(cfg) : undefined;
+  const board = boards ?? (blocked ? new NoopBoard(blocked) : undefined);
+  if (cfg.gitcode_sync.enabled) await loadPrivateKey(cfg.github_app_private_key);
+  const sync = cfg.gitcode_sync.enabled ? await NodeGitCodeSync.open(cfg) : new NoopSync(cfg.gitcode_sync.disabled_reasons);
+  const app = new BotApplication(new Pipeline(cfg, await FileArchive.open(cfg.data_dir, cfg.dedupe_window), new Router(board, sync)), () => readFile(resolve(cfg.static_dir, 'index.html'), 'utf8'));
   const webhook = listener(app, false), admin = cfg.admin_enabled ? listener(app, true) : undefined;
   const listen = (server: Server, port: number, host: string) => new Promise<void>((done, reject) => {
     const failed = (error: Error) => reject(error);
@@ -117,7 +122,9 @@ export async function start(cfg: Config): Promise<{ app: BotApplication; webhook
   try { await listen(webhook, cfg.webhook_port, cfg.webhook_host); if (admin) await listen(admin, cfg.admin_port, cfg.admin_host); }
   catch (error) { await closeServer(webhook); await closeServer(admin); throw error; }
   // Queue tasks run independently; a slow source never blocks webhook responses or the other board.
-  const timers = board?.queues.map(queue => setInterval(() => { void queue.tick().catch(() => { console.error('board queue unavailable; retrying'); }); }, 1000)) || [];
+  const timers = boards?.queues.map(queue => setInterval(() => { void queue.tick().catch(() => { console.error('board queue unavailable; retrying'); }); }, 1000)) || [];
+  // GitCode sync work never runs inside a webhook request; it drains its own persistent queue.
+  if (sync instanceof NodeGitCodeSync) timers.push(setInterval(() => { void sync.tick().catch(() => { console.error('gitcode sync queue unavailable; retrying'); }); }, 5000));
   return { app, webhook, admin, close: async () => { timers.forEach(clearInterval); await Promise.all([closeServer(webhook), closeServer(admin)]); } };
 }
 async function main(): Promise<void> {

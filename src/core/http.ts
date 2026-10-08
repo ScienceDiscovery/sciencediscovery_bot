@@ -69,8 +69,10 @@ export class BotApplication {
       if (shell) return new Response(await this.panel(), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', Server: 'sciencediscovery-bot' } });
       if (request.method === 'GET') {
         if (path === '/healthz') return jsonResponse({ ok: true, uptime_s: Math.round((Date.now() - this.started) / 100) / 10 });
-        if (path === '/api/status') return jsonResponse({ ok: true, version: VERSION, started_at: this.started / 1000, board: this.pipeline.router.board.status(), config: publicConfig(cfg), ...await store.status() });
+        if (path === '/api/status') return jsonResponse({ ok: true, version: VERSION, started_at: this.started / 1000, board: this.pipeline.router.board.status(),
+          gitcode_sync: await this.pipeline.router.sync.status(), config: publicConfig(cfg), ...await store.status() });
         if (path === '/api/listeners') return jsonResponse({ ok: true, listeners: this.pipeline.router.bus.inventory(), repositories: cfg.repos });
+        if (path === '/api/gitcode-sync') return jsonResponse(await this.pipeline.router.sync.snapshot());
         if (path === '/api/events') {
           const limitText = url.searchParams.get('limit') ?? '50', offsetText = url.searchParams.get('offset') ?? '0';
           if (![limitText, offsetText].every(v => /^-?\d+$/.test(v) && Number.isSafeInteger(Number(v)))) return fail('limit and offset must be integers', 400);

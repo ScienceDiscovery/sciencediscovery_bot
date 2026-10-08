@@ -56,3 +56,15 @@ export interface Board {
   handle(method: string, event: BotEvent): Promise<Doc>;
   status(): Doc;
 }
+/** Stable public codes for why GitCode sync is not running; missing credentials can appear together. */
+export type SyncDisabledReason = 'off' | 'no_token' | 'no_github_app' | 'no_webhook_secret';
+/** GitHub PR → GitCode MR sync. The handler only stages; the runtime's queue does the work. */
+export interface PullRequestSync {
+  readonly mode: 'active' | 'noop';
+  readonly source: string;
+  /** Non-empty exactly when mode is noop. */
+  readonly disabledReasons: readonly SyncDisabledReason[];
+  handle(event: BotEvent): Promise<Doc>;
+  status(): Doc | Promise<Doc>;
+  snapshot(limit?: number): Promise<Doc>;
+}

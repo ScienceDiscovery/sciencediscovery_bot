@@ -20,7 +20,9 @@
     "SDBOT_GITHUB_APP_ID": "5041384",
     "SDBOT_ADMIN_HOSTNAME": "sciencediscovery-bot-test.llmbots.co",
     "SDBOT_REPOS": "ScienceDiscovery/sciencediscovery",
-    "SDBOT_BOARD_TARGETS": "{\"ScienceDiscovery/sciencediscovery\":\"ScienceDiscovery/github-status-board-test\"}"
+    "SDBOT_BOARD_TARGETS": "{\"ScienceDiscovery/sciencediscovery\":\"ScienceDiscovery/github-status-board-test\"}",
+    // The GitCode target defaults to the production mirror; the test instance must never sync there.
+    "SDBOT_GITCODE_SYNC_TARGET": "off"
   },
   "observability": { "logs": { "enabled": true, "invocation_logs": true } }
 }

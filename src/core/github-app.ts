@@ -52,6 +52,10 @@ export class GitHubApp {
   async tokenForWorkflow(repository: string): Promise<string> {
     return (await this.installationToken(repository, { metadata: 'read', actions: 'write' })).token;
   }
+  /** GitCode sync: read the pull request's objects and write its gate check, nothing else. */
+  async tokenForSync(repository: string): Promise<string> {
+    return (await this.installationToken(repository, { metadata: 'read', contents: 'read', pull_requests: 'read', checks: 'write' })).token;
+  }
   private async installationToken(repository: string, permissions: Doc): Promise<InstallationGrant> {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new TypeError('invalid repository');
     const installation = await this.request('GET', `/repos/${repository}/installation`);

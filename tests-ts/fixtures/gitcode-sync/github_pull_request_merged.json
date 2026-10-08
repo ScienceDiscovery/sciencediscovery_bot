@@ -1,0 +1,52 @@
+{
+  "provider": "github",
+  "event": "pull_request",
+  "delivery": "fixture-github_pull_request_merged",
+  "description": "pull_request closed and merged on head B",
+  "payload": {
+    "action": "closed",
+    "number": 120,
+    "pull_request": {
+      "number": 120,
+      "title": "feat(reader): stream long PDFs",
+      "state": "closed",
+      "html_url": "https://github.com/openJiuwen-ai/sciencediscovery/pull/120",
+      "user": {
+        "login": "contributor"
+      },
+      "labels": [],
+      "draft": false,
+      "head": {
+        "ref": "feat/reader-stream",
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2",
+        "repo": {
+          "full_name": "contributor/sciencediscovery"
+        }
+      },
+      "base": {
+        "ref": "main",
+        "sha": "cccccccccccccccccccccccccccccccccccccccc",
+        "repo": {
+          "full_name": "openJiuwen-ai/sciencediscovery"
+        }
+      },
+      "merged": true,
+      "merged_at": "2026-10-07T05:00:00Z",
+      "merge_commit_sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "commits": 3,
+      "created_at": "2026-10-07T01:00:00Z",
+      "updated_at": "2026-10-07T05:00:00Z"
+    },
+    "repository": {
+      "id": 1001,
+      "full_name": "openJiuwen-ai/sciencediscovery",
+      "html_url": "https://github.com/openJiuwen-ai/sciencediscovery"
+    },
+    "sender": {
+      "login": "contributor"
+    },
+    "installation": {
+      "id": 7
+    }
+  }
+}

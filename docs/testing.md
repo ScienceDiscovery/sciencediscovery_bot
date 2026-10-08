@@ -23,6 +23,8 @@ npm run workers:check
 
 `worker-adapter.test.mjs` 直接打包 `src/worker/index.ts`，使用本地持久 SQLite／R2。它验证并发重复投递、记录筛选与移除重放后的无副作用检查、进程重建后的去重与历史、App 最小权限、双仓持久 Alarm 调度以及远端触发失败后的重试；不会访问真实 GitHub 或执行真实发布。`actions-auth.test.mjs` 验证真实 workerd 中的 OIDC 签名、固定仓库／组织 ID、main 与工作流身份（包括直接任务的 job_workflow_ref）、跨环境拒绝、读写最小权限、持久签发限制和凭据不归档。Actions 配置另在看板仓执行 `python3 -m unittest discover -s tests -v`；远端 runner／Pages 结果仍需上线阶段验收。`worker-storage-cost.test.mjs` 在同一 workerd 环境中统计 SQLite 读写行数，要求已接受投递和令牌兑换的读写行数不随去重窗口或有效兑换记录增长，并核对窗口淘汰与改动前一致。
 
+GitCode 同步由 `npm test` 中的三组测试覆盖：`gitcode-sync.test.ts` 用 fixture 和内存版 GitHub／GitCode 接口验证 PR 五类事件、重复与过期投递、失败重试、脱敏、分叉与 CodeCheck 判定；`git-http.test.ts` 用本机 `git http-backend` 搭建的两个裸仓验证真实 git 协议下 SHA 不变；`worker-gitcode-sync.test.mjs` 在 workerd 中跑生产 Worker 包的完整队列链路和 `/actions/gitcode-sync` 的 OIDC 保护。三者都不访问真实 GitHub、GitCode 或 OpenLibing，也需要本机已安装 git。
+
 新增业务至少验证一次应触发和一次不应触发；新增选择条件、启用模式或路由时核对实际注册清单与执行结果。管理查询不能新建投递或触发业务；开发 fixture 的新 delivery 不能当作平台重复投递。
 
 ## 管理面板浏览器旅程

@@ -65,6 +65,9 @@ docker compose down
 | SDBOT_BOARD_SOURCE_DIR_HOST | ../github_status_board | Compose 只读挂载的宿主路径 |
 | SDBOT_BOARD_DEBOUNCE / REFRESH | 20 / 3600 秒 | 全名 SDBOT_BOARD_DEBOUNCE、SDBOT_BOARD_REFRESH；下限 1 / 60 秒；正式 Worker 的合并窗口为 600 秒 |
 | CLOUDFLARE_TUNNEL_TOKEN | 无 | tunnel profile 的连接凭据 |
+| GITCODE_TOKEN | 无 | GitCode 访问令牌，只在本地环境或 Worker Secret 中提供；设置后启用 GitHub PR → GitCode MR 同步 |
+| SDBOT_GITCODE_SYNC_TARGET | openJiuwen/sciencediscovery | 同步目标；设为 `off` 停用同步。其余 `SDBOT_GITCODE_*` 见 [GitCode 同步](features/gitcode-sync.md) |
+| SDBOT_GITCODE_USERNAME | openJiuwen-bot | git 推送使用的 GitCode 账号 |
 
 Compose 仅传入 compose 文件中显式声明的环境变量；其余参数需要调整 Compose environment 或使用宿主模式。环境变量、`.env`、数据卷和密钥不进入仓库或文档，不要输出完整渲染后的 Compose 配置来排障。管理状态仅返回密钥是否配置，不返回值。
 

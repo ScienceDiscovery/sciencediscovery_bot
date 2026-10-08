@@ -13,8 +13,13 @@ test('actual listeners are discoverable, searchable, and remain private',async({
   for(const listener of inventory.listeners) await expect(page.getByRole('heading',{name:listener.id,exact:true})).toBeVisible();
   await expect(page.locator('#subscription-scope')).toContainText('openjiuwen-ai/sciencediscovery');
   await expect(page.locator('#subscription-scope')).toContainText('sciencediscovery/sciencediscovery');
+  await page.locator('#subscription-business').selectOption('GitCode 同步');
+  await expect(page.locator('.subscription')).toHaveCount(1);
+  await expect(page.locator('.subscription')).toContainText('gitcode_sync.on_pull_request');
+  await expect(page.locator('.subscription')).toContainText('已停用');
+  await expect(page.locator('.subscription')).toContainText('未设置 GITCODE_TOKEN，GitCode 同步已停用。');
   await page.locator('#subscription-business').selectOption('看板更新');
-  await expect(page.locator('.subscription')).toHaveCount(6);
+  await expect(page.locator('.subscription')).toHaveCount(5);
   await expect(page.locator('#subscription-list')).toContainText('未启用静态发布');
   await page.locator('#subscription-search').fill('merged');
   await expect(page.locator('.subscription')).toHaveCount(1);
@@ -30,7 +35,7 @@ test('actual listeners are discoverable, searchable, and remain private',async({
   await expect(page.locator('#events-page')).toBeVisible();
   await expect(page.locator('#subscriptions-page')).toBeHidden();
   await page.getByRole('link',{name:'监听点',exact:true}).click();
-  await expect(page.locator('.subscription')).toHaveCount(6);
+  await expect(page.locator('.subscription')).toHaveCount(5);
   await expect(page.locator('#banner')).toBeHidden();
   expect(page.url()).not.toContain(process.env.SDBOT_E2E_ADMIN_TOKEN);
 });

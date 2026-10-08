@@ -48,6 +48,8 @@ Worker 保留 `SDBOT_GITHUB_APP_ID` 和 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，
 - 源仓令牌仅包含 Metadata、Contents、Issues、Pull requests、Actions、Checks、Commit statuses read；看板令牌仅包含 Metadata read、Contents write。跨组织分别换取 installation 令牌。
 - Durable Object 原子记录仓库／run／attempt／purpose；每次运行尝试每种用途只能兑换一次。记录保留至少一天，过期记录在后续请求中清理；不保存 JWT、安装令牌或私钥。
 
+`POST /actions/gitcode-sync` 使用同一身份校验（不需要请求体，也不受每次运行一次的限制），只返回本看板源仓的 GitCode 同步记录，不签发令牌、不进入 Webhook 档案；同步未启用时返回 `enabled: false`。见 [GitHub PR 同步到 GitCode](gitcode-sync.md)。
+
 成功返回 `token`、`expires_at`、`repository`、`purpose`，响应 `Cache-Control: no-store`。认证失败为 401，身份超出信任范围为 403，重复兑换为 409，配置不完整为 503，上游签发失败为 502。错误只返回短说明，不透传上游响应。该端点及 `/actions/` 保留路径不进入 Webhook 档案；它也不能查询管理信息。
 
 ## 采集器与失败恢复

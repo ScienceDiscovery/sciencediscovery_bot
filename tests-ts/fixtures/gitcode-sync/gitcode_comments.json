@@ -1,0 +1,31 @@
+{
+  "description": "GitCode CI bot comments: CLA, running, result passed / failed",
+  "cla": {
+    "id": 9004,
+    "body": "### CLA 签署成功\ncontributor, 感谢您的代码贡献。",
+    "user": {
+      "login": "openJiuwen-bot"
+    }
+  },
+  "running": {
+    "id": 9001,
+    "body": "The pipeline(pipeline number:12) is running. Please wait a moment... ",
+    "user": {
+      "login": "openJiuwen-bot"
+    }
+  },
+  "passed": {
+    "id": 9002,
+    "body": "&#9989; 流水线 0123456789abcdef0123456789abcdef 执行成功。\n可在 https://gitcode.com/openJiuwen/sciencediscovery/pull/12/check 查看完整构建日志。\n<table><tr><td>CodeCheck（静态检查）</td><td>PASSED</td></tr></table>",
+    "user": {
+      "login": "openJiuwen-bot"
+    }
+  },
+  "failed": {
+    "id": 9003,
+    "body": "&#10060; 流水线 fedcba9876543210fedcba9876543210 执行失败。\n<table><tr><td>CodeCheck（静态检查）</td><td>FAILED</td></tr></table>",
+    "user": {
+      "login": "openJiuwen-bot"
+    }
+  }
+}

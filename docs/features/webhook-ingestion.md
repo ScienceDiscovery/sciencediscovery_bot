@@ -12,7 +12,7 @@ GitHub App 与普通组织／仓库 Webhook 共用 `/webhook/github`，不要求
 
 - GitHub：使用原始请求字节计算 HMAC-SHA256，对比 `X-Hub-Signature-256`；不接受 SHA-1 替代。
 - GitCode：支持 `X-GitCode-Signature-256` 的 hex／base64 摘要或 `X-GitCode-Token` 密码；有签名头时优先验签。
-- 对应平台未配置密钥时保留本地 unsigned 模式，启动会提示，管理状态可查看；公网部署必须配置密钥。
+- 对应平台未配置密钥时保留本地 unsigned 模式，启动会提示，管理状态可查看；公网部署必须配置密钥。Worker 始终要求签名：未配置某平台密钥时，该平台的投递以 401 拒收并归档，但 Worker 不因此拒绝启动，其他平台、看板和管理页照常服务。
 - 先验签，再解析 JSON 对象或 `application/x-www-form-urlencoded` 中的 payload。签名不匹配／缺失返回 401，解析错误返回 400。
 
 默认请求上限 25 MiB。超限返回 413，已接收的上限内前缀仍保存并标记不完整。错误路径、坏请求和错签均进入[投递归档](webhook-history.md)，不执行业务。

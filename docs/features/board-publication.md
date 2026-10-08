@@ -25,6 +25,8 @@ Compose 看板扩展默认使用 `github_actions`。宿主环境变量未指定�
 
 App 安装到源仓及目标仓。Bot 触发时只申请目标仓 Metadata read / Actions write 的短期令牌。Actions 采集时分别申请源仓 Contents / Issues / Pull requests / Actions / Checks / Commit statuses read，和目标仓 Contents write。不同组织分别取安装令牌；不复用个人 gh 凭据。Pages 部署使用 Actions 的 `GITHUB_TOKEN`（contents read / pages write / id-token write）。
 
+缺少 App 凭据（包括只在 vars 中有 App ID、没有私钥 Secret）时，看板发布停用而不是让 Bot 拒绝启动：管理状态的 `board` 为 `enabled: false`、`reason: no_github_app`，不调度采集。看板采集不依赖 Webhook secret；未配置时 GitHub 投递以 401 拒收，看板靠空闲定时刷新和看板仓自己的定时采集更新。
+
 旧单目标 `SDBOT_BOARD_REPO` / `SDBOT_BOARD_TRACK_REPO` 兼容，但不能与多目标混用。来源必须在全局跟踪范围，不能是目标仓。静态 `SDBOT_BOARD_GITHUB_TOKEN` 仅用于 `local` 模式，不能与 App 配置混用。
 
 ## 调度和持久状态

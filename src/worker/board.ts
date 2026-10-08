@@ -1,4 +1,4 @@
-import { targets, type Config } from '../core/config.js';
+import { boardBlocked, targets, type Config } from '../core/config.js';
 import { category, type Board, type BotEvent, type Doc } from '../core/types.js';
 
 interface DispatchState {
@@ -10,12 +10,15 @@ interface DispatchState {
 export class WorkerBoard implements Board {
   readonly mode: 'active' | 'noop';
   readonly repositories: string[];
+  readonly blocked: '' | 'no_github_app';
   private readonly pending = new Set<string>();
   constructor(readonly storage: DurableObjectStorage, readonly cfg: Config, readonly clock = () => Date.now()) {
-    this.repositories = Object.keys(targets(cfg)).map(source => source.toLowerCase());
+    // Without App credentials nothing can be dispatched: report it instead of scheduling doomed work.
+    this.blocked = boardBlocked(cfg, true);
+    this.repositories = this.blocked ? [] : Object.keys(targets(cfg)).map(source => source.toLowerCase());
     this.mode = this.repositories.length ? 'active' : 'noop';
     storage.sql.exec('CREATE TABLE IF NOT EXISTS board_outbox (source TEXT PRIMARY KEY, state TEXT NOT NULL)');
-    for (const [source, repository] of Object.entries(targets(cfg))) {
+    for (const [source, repository] of Object.entries(this.blocked ? {} : targets(cfg))) {
       const old = this.get(source.toLowerCase());
       if (old && old.repository.toLowerCase() !== repository.toLowerCase()) throw new TypeError('persisted board destination differs from configuration');
       if (!old) this.put({ source, repository, requested: 0, dispatched: 0, due: 0, next_refresh: clock() + cfg.board_refresh * 1000, last_attempt: 0, inflight: 0, last_dispatch: null, error: null, retry: 30000 });
@@ -74,7 +77,7 @@ export class WorkerBoard implements Board {
     this.put(state);
   }
   status(): Doc {
-    return { enabled: this.mode === 'active', execution: 'github_actions', targets: this.states().map(s => ({ source: s.source, repository: s.repository,
+    return { enabled: this.mode === 'active', ...(this.blocked ? { reason: this.blocked } : {}), execution: 'github_actions', targets: this.states().map(s => ({ source: s.source, repository: s.repository,
       execution: 'github_actions', requested: s.requested, dispatched: s.dispatched, pending: s.requested > s.dispatched,
       running: !!s.inflight, last_dispatch: s.last_dispatch, error: s.error, last_success: null, commit: null })) };
   }

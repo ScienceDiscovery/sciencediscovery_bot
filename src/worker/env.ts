@@ -1,5 +1,5 @@
 /// <reference types="@cloudflare/workers-types" />
-import { configFromEnv, targets, validateConfig, type Environment } from '../core/config.js';
+import { configFromEnv, validateConfig, type Environment } from '../core/config.js';
 import type { BotObject } from './index.js';
 
 export interface WorkerEnv {
@@ -11,9 +11,9 @@ export const OBJECT_NAME = 'archive-v1';
 export function workerConfig(env: WorkerEnv) {
   const cfg = configFromEnv(Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === 'string')) as Environment);
   cfg.require_signature = true;
+  // Missing credentials degrade features (unsigned deliveries are rejected with 401, the board and GitCode
+  // sync report why they are off); only contradictory or malformed settings stop the Worker.
   const errors = validateConfig(cfg);
-  if (!Object.values(cfg.secrets).some(Boolean)) errors.push('a webhook secret is required');
-  if (Object.keys(targets(cfg)).length && (!cfg.github_app_id || !cfg.github_app_private_key || cfg.board_token)) errors.push('Workers collection requires GitHub App credentials');
   if (errors.length) throw new TypeError('invalid Worker configuration');
   return cfg;
 }

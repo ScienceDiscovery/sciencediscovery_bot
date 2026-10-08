@@ -9,13 +9,15 @@ import { WorkerArchive } from './archive.js';
 import { WorkerBoard } from './board.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
 import { authorizeAdmin } from './access.js';
-import { exchangeActionsToken } from './actions-auth.js';
+import { exchangeActionsToken, readGitCodeSync } from './actions-auth.js';
+import { WorkerGitCodeSync } from './gitcode-sync.js';
 import panel from '../../static/index.html';
 
 export class BotObject extends DurableObject<WorkerEnv> {
   private readonly mutex = new Mutex();
   private readonly app: BotApplication;
   private readonly board: WorkerBoard;
+  private readonly sync: WorkerGitCodeSync;
   constructor(ctx: DurableObjectState, env: WorkerEnv) {
     super(ctx, env);
     const cfg = workerConfig(env);
@@ -23,15 +25,25 @@ export class BotObject extends DurableObject<WorkerEnv> {
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS credential_claims (id TEXT PRIMARY KEY, expires INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS credential_claims_expiry ON credential_claims(expires);`);
     this.board = new WorkerBoard(ctx.storage, cfg);
-    const archive = new WorkerArchive(ctx.storage, env.ARCHIVE, cfg.dedupe_window, () => this.board.commitPending());
+    this.sync = new WorkerGitCodeSync(ctx.storage, cfg);
+    // Staged board refreshes and sync events commit in the same transaction as the archive index.
+    const archive = new WorkerArchive(ctx.storage, env.ARCHIVE, cfg.dedupe_window, () => { this.board.commitPending(); this.sync.commitPending(); });
     const save = archive.save.bind(archive);
-    archive.save = async (...args) => { await this.board.schedule(); await save(...args); };
-    this.app = new BotApplication(new Pipeline(cfg, archive, new Router(this.board)), async () => '');
+    archive.save = async (...args) => { await this.schedule(); await save(...args); };
+    this.app = new BotApplication(new Pipeline(cfg, archive, new Router(this.board, this.sync)), async () => '');
+  }
+  /** One Durable Object alarm serves both queues: the earliest of their due times. */
+  private async schedule(): Promise<void> {
+    await this.board.schedule();
+    const due = await this.sync.next();
+    if (due === null) return;
+    const at = Math.max(Date.now() + 100, due), current = await this.ctx.storage.getAlarm();
+    if (current === null || at < current) await this.ctx.storage.setAlarm(at);
   }
   private async receive(request: Request, admin: boolean): Promise<Response> {
     return this.mutex.run(async () => {
       try { return admin ? await this.app.admin(request) : await this.app.webhook(request); }
-      finally { this.board.clearPending(); }
+      finally { this.board.clearPending(); this.sync.clearPending(); }
     });
   }
   fetch(request: Request): Promise<Response> { return this.receive(request, false); }
@@ -52,17 +64,23 @@ export class BotObject extends DurableObject<WorkerEnv> {
       return true;
     });
   }
-  async wake(): Promise<void> { await this.mutex.run(() => this.board.schedule()); }
+  // Read-only RPC for the OIDC-authenticated dashboard collector.
+  gitcodeSync(): Promise<Record<string, unknown>> { return this.sync.snapshot(); }
+  async wake(): Promise<void> { await this.mutex.run(() => this.schedule()); }
   async alarm(): Promise<void> {
-    const jobs = await this.mutex.run(async () => { const result = this.board.claim(); await this.board.schedule(); return result; });
-    await Promise.all(jobs.map(async job => {
+    const jobs = await this.mutex.run(async () => { const result = this.board.claim(); await this.schedule(); return result; });
+    const dispatches = jobs.map(async job => {
       let error: unknown;
       try {
         const cfg = this.app.pipeline.cfg;
         await dispatchCollection(new GitHubApp(cfg.github_app_id, cfg.github_app_private_key), job.source, job.repository, job.inflight);
       } catch (caught) { error = caught; }
-      await this.mutex.run(async () => { this.board.finish(job, error); await this.board.schedule(); });
-    }));
+      await this.mutex.run(async () => { this.board.finish(job, error); await this.schedule(); });
+    });
+    // Sync work holds the mutex only to claim and to merge results, never across network calls.
+    const sync = this.sync.mode === 'active' ? this.sync.run(fn => this.mutex.run(fn)).catch(() => 0) : Promise.resolve(0);
+    await Promise.all([...dispatches, sync]);
+    await this.mutex.run(() => this.schedule());
   }
 }
 
@@ -71,6 +89,7 @@ export default {
     try {
       const url = new URL(request.url);
       if (url.pathname === '/actions/token') return await exchangeActionsToken(request, env);
+      if (url.pathname === '/actions/gitcode-sync') return await readGitCodeSync(request, env);
       if (url.pathname === '/actions' || url.pathname.startsWith('/actions/')) return jsonResponse({ ok: false, error: 'not found' }, 404);
       if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
         const denied = await authorizeAdmin(request, env);
@@ -82,7 +101,7 @@ export default {
           'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
         } });
         const path = url.pathname.slice('/admin'.length);
-        if (!['/api/status', '/api/listeners', '/api/events'].includes(path) && !path.startsWith('/api/events/')) return jsonResponse({ ok: false, error: 'not found' }, 404);
+        if (!['/api/status', '/api/listeners', '/api/events', '/api/gitcode-sync'].includes(path) && !path.startsWith('/api/events/')) return jsonResponse({ ok: false, error: 'not found' }, 404);
         const response = await env.BOT.getByName(OBJECT_NAME).query(path + url.search);
         if (path !== '/api/status' || !response.ok) return response;
         const status = object(await response.json()), config = object(status.config);

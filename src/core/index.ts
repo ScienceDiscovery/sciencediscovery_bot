@@ -8,3 +8,7 @@ export * from './pipeline.js';
 export * from './http.js';
 export * from './github-app.js';
 export * from './board.js';
+export * from './git-http.js';
+export * from './gitcode-api.js';
+export * from './github-checks.js';
+export * from './gitcode-sync.js';

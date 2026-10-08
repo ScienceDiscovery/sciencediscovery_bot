@@ -1,4 +1,5 @@
-import { category, object, outcome, routeOf, type Board, type BotEvent, type Doc, type Outcome } from './types.js';
+import { category, object, outcome, routeOf, type Board, type BotEvent, type Doc, type Outcome, type PullRequestSync, type SyncDisabledReason } from './types.js';
+import { disabledSync } from './config.js';
 
 export interface Listener {
   id: string; business: string; description: string; routes: readonly string[];
@@ -60,10 +61,30 @@ export class EventBus {
 }
 export class NoopBoard implements Board {
   readonly mode = 'noop' as const; readonly repositories: readonly string[] = [];
+  /** reason is set when targets exist but publishing credentials are missing. */
+  constructor(readonly reason: '' | 'no_github_app' = '') {}
   async handle(method: string, _event: BotEvent): Promise<Doc> { return { hook: 'board', method, status: 'noop' }; }
-  status(): Doc { return { enabled: false }; }
+  status(): Doc { return this.reason ? { enabled: false, reason: this.reason } : { enabled: false }; }
 }
-export function registerBuiltin(bus: EventBus, board: Board): void {
+export class NoopSync implements PullRequestSync {
+  readonly mode = 'noop' as const; readonly source = '';
+  readonly disabledReasons: readonly SyncDisabledReason[];
+  constructor(reasons: readonly SyncDisabledReason[] = ['no_token']) { this.disabledReasons = reasons.length ? [...reasons] : ['no_token']; }
+  async handle(_event: BotEvent): Promise<Doc> { return { hook: 'gitcode_sync', method: 'on_pull_request', status: 'noop' }; }
+  status(): Doc { return disabledSync(this.disabledReasons); }
+  async snapshot(): Promise<Doc> { return { ok: true, ...disabledSync(this.disabledReasons), records: [], pulls: [] }; }
+}
+export const SYNC_DISABLED: Record<SyncDisabledReason, string> = {
+  off: 'SDBOT_GITCODE_SYNC_TARGET=off',
+  no_token: '未设置 GITCODE_TOKEN',
+  no_github_app: '缺少 GitHub App 凭据（SDBOT_GITHUB_APP_ID 与 SDBOT_GITHUB_APP_PRIVATE_KEY）',
+  no_webhook_secret: '缺少 GitHub Webhook secret（SDBOT_GITHUB_WEBHOOK_SECRET）',
+};
+/** Listener text naming every missing item, e.g. both credentials at once. */
+export const syncDisabledText = (reasons: readonly SyncDisabledReason[]): string =>
+  `${(reasons.length ? reasons : ['no_token' as const]).map(r => SYNC_DISABLED[r]).join('；')}，GitCode 同步已停用。`;
+export const SYNC_ROUTES = ['opened', 'synchronize', 'reopened', 'closed', 'merged'].map(a => `pull_request.${a}`);
+export function registerBuiltin(bus: EventBus, board: Board, sync: PullRequestSync = new NoopSync()): void {
   const analyze: [string, string[], string][] = [
     ['on_issue', ['issue.opened', 'issue.edited', 'issue.reopened'], 'Issue 新建、编辑和重新打开的分析入口；当前仅记录调用。'],
     ['on_issue_comment', ['issue_comment', 'issue_comment.*'], 'Issue / PR 评论分析入口；当前仅记录调用。'],
@@ -84,10 +105,16 @@ export function registerBuiltin(bus: EventBus, board: Board): void {
   ];
   for (const [method, routes, exclude] of boards) bus.subscribe({ id: `board.${method}`, business: '看板更新', description: board.mode === 'active' ? '按源仓排队更新对应静态看板。' : '未启用静态发布，当前仅记录调用。',
     routes, exclude, mode: board.mode, providers: board.mode === 'active' ? ['github'] : [], repositories: board.repositories, handler: event => board.handle(method, event) });
+  // Without a token, with target `off`, or with missing GitHub credentials, the listener stays registered
+  // but disabled, so PR routes and hooks are unchanged and the Worker keeps serving everything else.
+  const active = sync.mode === 'active';
+  bus.subscribe({ id: 'gitcode_sync.on_pull_request', business: 'GitCode 同步', routes: SYNC_ROUTES, mode: sync.mode, enabled: active,
+    description: active ? '把 GitHub PR 的创建、更新、重新打开、关闭和合并排入持久队列，同步到 GitCode MR，并回读 CodeCheck 写 GitHub Check。' : syncDisabledText(sync.disabledReasons),
+    providers: active ? ['github'] : [], repositories: active ? [sync.source] : [], handler: event => sync.handle(event) });
 }
 export class Router {
   readonly bus = new EventBus();
-  constructor(readonly board: Board = new NoopBoard()) { registerBuiltin(this.bus, board); }
+  constructor(readonly board: Board = new NoopBoard(), readonly sync: PullRequestSync = new NoopSync()) { registerBuiltin(this.bus, board, sync); }
   async dispatch(input: BotEvent): Promise<Outcome> {
     const event = input.kind === 'pull_request' && input.merged ? { ...input, action: 'merged' } : input;
     if (['ping', 'installation'].includes(event.kind)) return { ...outcome(routeOf(event), event.kind === 'ping' ? 'pong' : 'installation change recorded; no business listeners'), handled: true };
