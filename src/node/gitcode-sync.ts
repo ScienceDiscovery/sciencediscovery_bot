@@ -45,6 +45,7 @@ export class FileSyncStore implements SyncStore {
   }
   async records(limit: number): Promise<SyncRecord[]> { return structuredClone(this.doc.records.slice(-limit).reverse()); }
   async pulls(limit: number): Promise<PullState[]> { return structuredClone(Object.values(this.doc.pulls).sort((a, b) => b.updated - a.updated).slice(0, limit)); }
+  async byMergeRequest(mr: number): Promise<PullState[]> { return structuredClone(Object.values(this.doc.pulls).filter(state => state.mr?.number === mr)); }
 }
 
 export class NodeGitCodeSync extends SyncHub {
@@ -57,6 +58,7 @@ export class NodeGitCodeSync extends SyncHub {
   protected transaction<T>(fn: () => Promise<T>): Promise<T> { return this.mutex.run(fn); }
   protected current(pr: number): Promise<PullState | null> { return this.store.get(pr); }
   protected stage(state: PullState): Promise<void> { return this.store.put(state); }
+  protected byMergeRequest(mr: number): Promise<PullState[]> { return this.store.byMergeRequest(mr); }
   /** Background queue step; overlapping timers are skipped, not queued. */
   async tick(now = Date.now()): Promise<number> {
     if (this.running) return 0;

@@ -57,6 +57,16 @@ for (const repos of ['', ' ', ',,,']) test(`blank repository allowlist remains r
   assert.equal(tracks(cfg, 'OPENJIUWEN-AI/SCIENCEDISCOVERY'), true);
   assert.equal(tracks(cfg, 'other/repo'), false); assert.equal(tracks(cfg, 'ScienceDiscovery/sciencediscovery', 'gitcode'), false);
 });
+test('GitCode deliveries reach the bus only for the GitCode sync target, and only while sync runs', () => {
+  const sync = { SDBOT_GITHUB_WEBHOOK_SECRET: secret, SDBOT_GITHUB_APP_ID: '42', SDBOT_GITHUB_APP_PRIVATE_KEY: 'fixture-key', GITCODE_TOKEN: 'gitcode-fake-token' };
+  const on = configFromEnv(sync);
+  assert.equal(on.gitcode_sync.enabled, true);
+  assert.equal(tracks(on, 'openJiuwen/sciencediscovery', 'gitcode'), true); assert.equal(tracks(on, 'OPENJIUWEN/SCIENCEDISCOVERY', 'gitcode'), true);
+  assert.equal(tracks(on, 'ScienceDiscovery/sciencediscovery', 'gitcode'), false, 'other GitCode repositories stay archive-only');
+  assert.equal(tracks(on, 'openJiuwen/sciencediscovery'), false, 'the GitCode target is not added to the GitHub allowlist');
+  assert.ok(!on.repos.includes('openjiuwen/sciencediscovery'));
+  for (const off of [configFromEnv({ ...sync, SDBOT_GITCODE_SYNC_TARGET: 'off' }), configFromEnv({ ...sync, GITCODE_TOKEN: '' })]) assert.equal(tracks(off, 'openJiuwen/sciencediscovery', 'gitcode'), false);
+});
 test('configuration rejects unsafe listeners and conflicting publisher targets', () => {
   const cfg = configFromEnv(); cfg.webhook_host = '0.0.0.0'; assert.ok(validateConfig(cfg).length);
   cfg.allow_non_loopback = true; cfg.admin_port = cfg.webhook_port; cfg.admin_host = cfg.webhook_host; assert.ok(validateConfig(cfg).length);

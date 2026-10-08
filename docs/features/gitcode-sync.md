@@ -2,13 +2,13 @@
 
 ## 功能
 
-GitHub 源仓的 PR 在创建、推送新提交、重新打开、关闭和合并时，Bot 把它同步成 GitCode 上的一条 MR，让 GitCode 上已有的 CodeArts 流水线（含 OpenLibing CodeCheck）照常运行；随后回读 MR 上的结论，以 GitHub Check 的形式写回该 PR 的 head 提交，作为 GitHub 侧的门禁。同步记录还会发布到看板仓的 GitHub Pages「GitCode 同步」页。
+GitHub 源仓的 PR 在创建、推送新提交、重新打开、关闭和合并时，Bot 把它同步成 GitCode 上的一条 MR，让 GitCode 上已有的 CodeArts 流水线（含 OpenLibing CodeCheck）照常运行；GitCode 通过 Webhook 告知 MR 上有新评论或标签变化时，Bot 读取 MR 上的结论，以 GitHub Check 的形式写回该 PR 的 head 提交，作为 GitHub 侧的门禁。同步记录还会发布到看板仓的 GitHub Pages「GitCode 同步」页。
 
 | GitHub 事件 | GitCode 上的动作 |
 | --- | --- |
-| `pull_request.opened` | 把 PR head 原样推到 `<前缀><PR 号>` 分支（默认 `github-pr/123`），创建 MR，开始回读 |
+| `pull_request.opened` | 把 PR head 原样推到 `<前缀><PR 号>` 分支（默认 `github-pr/123`），创建 MR，开始等待结论 |
 | `pull_request.synchronize` | 推送新 head，更新 MR 标题和正文中的 SHA；旧 head 上仍在等待的 Check 改为 cancelled |
-| `pull_request.reopened` | 重新打开 MR；分支已是同一 SHA 时不再传输，重新开始回读 |
+| `pull_request.reopened` | 重新打开 MR；分支已是同一 SHA 时不再传输，重新开始等待结论 |
 | `pull_request.closed`（未合并） | 只关闭 MR，正文记下「Closed on GitHub」 |
 | `pull_request.merged` | 只关闭 MR，正文记下「Merged on GitHub」和合并提交；**从不调用 GitCode 合并接口** |
 
@@ -21,11 +21,22 @@ GitHub Check（默认名 `CodeCheck (GitCode)`，标题和摘要为英文）的�
 | MR 带 `ci-successful`，且同步之后出现过 CI 结果评论 | completed / success |
 | MR 带 `ci-failed`，且同步之后出现过 CI 结果评论 | completed / failure |
 | 还在跑（`ci-running`）、没有结果，或标签早于本次推送 | in_progress，摘要说明「GitCode has no CodeCheck verdict yet」 |
-| 超过 `SDBOT_GITCODE_VERDICT_TIMEOUT`（默认 6 小时）仍无结论 | completed / timed_out |
+| 同步后超过 `SDBOT_GITCODE_VERDICT_TIMEOUT`（默认 30 分钟）仍无结论 | completed / timed_out，标题「No CodeCheck verdict from GitCode」 |
 | 同步失败且不再重试（如权限不足） | completed / failure，标题「Sync to GitCode failed」 |
 | PR 在出结论前被关闭、合并或推了新 head | completed / cancelled |
 
-标签是结论本身；「同步之后由 CI 账号（默认 `openJiuwen-bot`）发出的结果评论」用来证明标签属于这次 head，而不是同一条 MR 上一轮运行留下的。结果评论识别「流水线 … 执行成功／执行失败」；运行中评论「The pipeline(…) is running」之后若没有新结果，仍算进行中。
+标签是结论本身；「同步之后由 CI 账号（默认 `openJiuwen-bot`）发出的结果评论」用来证明标签属于这次 head，而不是同一条 MR 上一轮运行留下的。结果评论识别「流水线 … 执行成功／执行失败」；运行中评论「The pipeline(…) is running」之后若没有新结果，仍算进行中。缺少结论永远不会写成 success。
+
+### 何时读取结论
+
+Bot 不轮询 GitCode。每次同步成功后只设一个截止时间：推送时间加 `SDBOT_GITCODE_VERDICT_TIMEOUT`（默认 1800 秒，即 30 分钟）。在截止之前，只有下面的 GitCode Webhook 会让 Bot 读取一次该 MR 的标签和评论：
+
+- 同步目标仓上合并请求的评论（Note Hook，新增和修改都按同一种事件处理），且评论作者是 CI 账号。其他作者的评论不读取 GitCode。
+- 同步目标仓上合并请求的更新（Merge Request Hook），且变更字段包含标签。
+
+Webhook 只把对应 PR 的读取时间改成「现在」，由持久队列（Worker 的 Alarm、Node 的 5 秒排空）执行这一次读取；按 MR 编号在全部已保存的 PR 状态中查找分支带同步前缀、当前 head 的 Check 仍在等待的那一条。读到结论就写 GitHub Check；仍无结论就等下一次 Webhook 或截止时间。同一轮流水线的结果评论可能比 `ci-successful`／`ci-failed` 标签早几秒到达：读到结果评论但还没有终态标签时，只再安排一次 30 秒后的读取，之后不再追加。
+
+截止时间到达时再读一次：Webhook 丢失但标签和结果评论其实已经在时，照常写 success／failure；仍无结论才记为 timed_out。读取 GitCode 失败时按 1／5／15 分钟有界退避，用尽后只保留截止时间那一次读取。旧版本按 120 秒轮询时保存的状态，在新版本第一次到期时读取一次：已超过新的截止时间就记为 timed_out，否则把下一次读取改到截止时间。
 
 ## 使用方式
 
@@ -35,6 +46,11 @@ GitHub Check（默认名 `CodeCheck (GitCode)`，标题和摘要为英文）的�
 2. 给 Bot 设置下表变量。令牌只放 Worker Secret 或已忽略的 `.env`，仓库和文档只出现变量名。
 3. GitHub App 增加 **Checks: Read and write**，保留 Contents: Read、Pull requests: Read、Metadata: Read，并订阅 **Pull request** 事件；目标组织需批准新权限。
 4. 看板仓不需要新变量：采集工作流用已有的 OIDC 身份调用同一 Worker 的 `/actions/gitcode-sync` 读取记录。
+5. 在 GitCode 目标仓（默认 `openJiuwen/sciencediscovery`）的 Webhook 设置中由人工添加一条 Webhook，Bot 不会自己创建：
+   - URL：`https://<正式 Worker 域名>/webhook/gitcode`，域名即 `wrangler.jsonc` 中 `routes` 的自定义域名；内容类型 JSON。
+   - 事件：合并请求评论（Note Hook；界面把新增和修改分开时两项都选）、合并请求事件（用于标签变化）。
+   - 签名密钥或密码：Worker 优先使用 Secret `SDBOT_GITCODE_WEBHOOK_SECRET`，未设置时回退到 `SDBOT_WEBHOOK_SECRET`。两者都没有时 GitCode 投递一律 401；需要在 Cloudflare 的 Worker Secrets 中添加同名 Secret，值与 GitCode 中填写的一致。文档和仓库只出现变量名。
+   - 未配置这条 Webhook 时同步照常进行，但每个 head 要等到截止时间那一次读取才有结论。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
@@ -47,8 +63,9 @@ GitHub Check（默认名 `CodeCheck (GitCode)`，标题和摘要为英文）的�
 | SDBOT_GITCODE_SYNC_BASES | `main` | 逗号分隔的同步目标分支 |
 | SDBOT_GITCODE_CI_BOT | `openJiuwen-bot` | 发 CI 结果评论的 GitCode 账号 |
 | SDBOT_GITCODE_CHECK_NAME | `CodeCheck (GitCode)` | GitHub Check 名称；分支保护要求的检查名须与它一致 |
-| SDBOT_GITCODE_POLL_SECONDS | 120 | 回读间隔，下限 30 |
-| SDBOT_GITCODE_VERDICT_TIMEOUT | 21600 | 无结论超时秒数，下限 600 |
+| SDBOT_GITCODE_VERDICT_TIMEOUT | 1800 | 同步后等待结论的秒数（默认 30 分钟），下限 600；到点读一次，仍无结论记为 timed_out |
+| SDBOT_GITCODE_WEBHOOK_SECRET | 无 | GitCode Webhook 的签名密钥／密码；未设置时回退 `SDBOT_WEBHOOK_SECRET`，两者都无则 GitCode 投递返回 401 |
+| SDBOT_GITCODE_POLL_SECONDS | — | 已取消：按间隔回读的轮询已移除，该变量不再读取，保留旧值不会导致启动失败 |
 | SDBOT_GITCODE_MAX_ATTEMPTS | 4 | 临时性失败的同步尝试次数，1–10 |
 | SDBOT_GITCODE_AUTH | `header` | GitCode REST 认证方式；`header` 用 `PRIVATE-TOKEN` 请求头，`query` 用 `access_token` 参数 |
 | SDBOT_GITCODE_API_URL / WEB_URL | `https://api.gitcode.com/api/v5` / `https://gitcode.com` | 只允许无凭据、无查询串的 HTTPS；测试可用 loopback HTTP |
@@ -58,7 +75,8 @@ GitHub Check（默认名 `CodeCheck (GitCode)`，标题和摘要为英文）的�
 
 ## 主要实现
 
-- `src/core/gitcode-sync.ts`：暂存规则、单步工作、结论判定、记录与公开快照。监听器只把每个 PR 的「最新期望状态」写入持久队列并立即返回；同一动作和 head 的重投为 `duplicate`，`updated_at` 更旧的事件为 `stale`，上次失败后的重投会重新排队（手动重试入口）。
+- `src/core/gitcode-sync.ts`：暂存规则、单步工作、结论判定、记录与公开快照。监听器 `gitcode_sync.on_pull_request` 只把每个 PR 的「最新期望状态」写入持久队列并立即返回；同一动作和 head 的重投为 `duplicate`，`updated_at` 更旧的事件为 `stale`，上次失败后的重投会重新排队（手动重试入口）。监听器 `gitcode_sync.on_codecheck_event` 只接收 provider 为 GitCode、仓库为同步目标的 `issue_comment.created` 与 `pull_request.edited`，把匹配 PR 的读取时间改成现在，本身不调用 GitCode。
+- `src/core/config.ts` 的 `tracks()`：同步启用时，同步目标仓的 GitCode 投递进入事件总线；其他 GitCode 仓仍只归档。目标仓不加入 `SDBOT_REPOS`，看板监听仍只收 GitHub。
 - `src/core/git-http.ts`：基于 Fetch 和流的 git smart-HTTP。向 GitHub upload-pack（协议 v2）要 PR head 的自包含 pack，原样流式写入 GitCode receive-pack，不解析、不整包缓存，也不变基，因此 GitCode 上的提交 SHA 与 GitHub 一致。`have` 取 GitCode 现有分支顶端和目标分支近 100 个提交；分支已是该 SHA 时只读一次广告、不传输。
 - `src/core/gitcode-api.ts`：GitCode REST v5（仓库、分支、MR 列表／创建／更新／详情、MR 提交数、评论）。没有实现合并接口。
 - `src/core/github-checks.ts` 与 `GitHubApp.tokenForSync()`：只申请源仓 Metadata／Contents／Pull requests 读和 Checks 写的安装令牌。已完成的 check run 不会改回进行中；再次等待时新建一条。
@@ -67,7 +85,7 @@ GitHub Check（默认名 `CodeCheck (GitCode)`，标题和摘要为英文）的�
 - Worker：`src/worker/gitcode-sync.ts` 在同一个 Durable Object 的 SQLite 中保存每个 PR 一行状态与最近 300 条记录。监听器只在内存暂存，归档事务提交时一并写入（与看板待办相同的 outbox）；Durable Object 的唯一 Alarm 取看板与同步两者最早的到期时间。任务领取时加 10 分钟租约，网络调用期间不持有接收锁，完成后再合并到期间新暂存的状态。
 - 读取：管理端 `GET /api/gitcode-sync`（Node 本机／Worker 经 Access 的 `/admin/api/gitcode-sync`）；看板采集工作流用 OIDC 身份 `POST /actions/gitcode-sync`，校验规则与 `/actions/token` 相同，只返回本看板源仓的记录，不签发令牌、不进入投递归档。
 
-失败处理：推送被拒、权限不足、仓库或目标分支不存在、MR 已在 GitCode 被合并等记为错误并停止重试；网络错误、5xx、429 按 1／5／15／30 分钟退避重试，每次失败都单独记录，用尽次数后同样标记失败。两边历史分叉时（GitCode MR 的提交数多于 GitHub PR）仍推原始 SHA，记录为错误「GitCode diff 可能包含本 PR 以外的提交」，回读照常进行，Check 摘要同样带此警告。
+失败处理：推送被拒、权限不足、仓库或目标分支不存在、MR 已在 GitCode 被合并等记为错误并停止重试；网络错误、5xx、429 按 1／5／15／30 分钟退避重试，每次失败都单独记录，用尽次数后同样标记失败。两边历史分叉时（GitCode MR 的提交数多于 GitHub PR）仍推原始 SHA，记录为错误「GitCode diff 可能包含本 PR 以外的提交」，结论判定照常进行，Check 摘要同样带此警告。
 
 ## 边界
 
@@ -80,8 +98,8 @@ GitHub Check（默认名 `CodeCheck (GitCode)`，标题和摘要为英文）的�
 
 ## 验证入口
 
-- `tests-ts/gitcode-sync.test.ts`：opened／synchronize／reopened／closed／merged、同一投递重放与新投递重复、过期事件、GitCode 临时与永久失败、错误正文脱敏、历史分叉、无结论与超时、范围外目标分支、结论规则与配置校验。fixture 在 `tests-ts/fixtures/gitcode-sync/`。
+- `tests-ts/gitcode-sync.test.ts`：opened／synchronize／reopened／closed／merged、同一投递重放与新投递重复、过期事件、GitCode 临时与永久失败、错误正文脱敏、历史分叉、范围外目标分支、结论规则与配置校验；GitCode Note Hook 与标签变化触发读取、同步后不再定时读取、其他作者／其他 MR／其他仓／未验签的投递不读取 GitCode、30 秒补读只有一次、截止读取补上丢失的 Webhook、默认 30 分钟一次跳到 timed_out、读取失败的有界退避、旧轮询状态的迁移。fixture 在 `tests-ts/fixtures/gitcode-sync/`。
 - `tests-ts/git-http.test.ts`：用本机 `git http-backend` 搭建分叉的「GitHub」「GitCode」裸仓，验证 SHA 不变、对象连通、重复推送不传输、非快进更新、错误凭据与不安全分支名。
-- `tests-ts/worker-gitcode-sync.test.mjs`：生产 Worker 包在 workerd 中跑完整链路（Webhook → outbox → Alarm → 真实 git 传输 → 关闭 MR），以及 `/actions/gitcode-sync` 的 OIDC 保护和无凭据输出。
+- `tests-ts/worker-gitcode-sync.test.mjs`：生产 Worker 包在 workerd 中跑完整链路（Webhook → outbox → Alarm → 真实 git 传输 → GitCode Note Hook 唤醒读取并写 success → 关闭 MR），以及 `/actions/gitcode-sync` 的 OIDC 保护和无凭据输出。
 
 以上测试不访问真实 GitHub、GitCode 或 OpenLibing。

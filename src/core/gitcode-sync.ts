@@ -1,10 +1,14 @@
 /**
- * GitHub pull request → GitCode merge request sync and CodeCheck read-back.
+ * GitHub pull request → GitCode merge request sync and CodeCheck verdicts.
  *
  * The listener only stages the latest desired state per pull request; slow work
  * (git transfer, GitCode REST, GitHub checks) runs later from the runtime's own
  * durable queue. Each unit of work is a pure function of one stored state plus
  * network clients, so Node and Workers share the logic and only differ in storage.
+ *
+ * GitCode is not polled. A CI comment or label change on the merge request (a
+ * GitCode webhook) makes the verdict read due; a single deadline read after the
+ * sync either finds the verdict a lost webhook missed or times the check out.
  */
 import type { Config, GitCodeSyncConfig } from './config.js';
 import { publicSyncConfig } from './config.js';
@@ -13,7 +17,7 @@ import { GitTransferError, basicAuthorization, pushCommit, type PushResult } fro
 import { GitHubApp, GitHubAppAuthError } from './github-app.js';
 import { GitHubCheckError, upsertCheck, type CheckConclusion } from './github-checks.js';
 import { scrub } from './redact.js';
-import { id, number, object, string, type BotEvent, type Doc, type PullRequestSync, type SyncDisabledReason } from './types.js';
+import { array, id, number, object, string, type BotEvent, type Doc, type PullRequestSync, type SyncDisabledReason } from './types.js';
 
 export const SYNC_ACTIONS = ['opened', 'synchronize', 'reopened', 'closed', 'merged'] as const;
 export type SyncAction = typeof SYNC_ACTIONS[number];
@@ -27,7 +31,15 @@ export interface PullState {
   done: number; attempts: number; next_try: number; lease: number;
   branch: string; mr: { number: number; url: string } | null; pushed_sha: string | null; pushed_at: number | null;
   sync_status: SyncStatus; error_code: string | null; error: string | null; diverged: { gitcode: number; github: number } | null;
+  /**
+   * Next GitCode verdict read: a webhook wake-up, the one settle re-read, a retry or the deadline. The name
+   * predates the removal of periodic polling and is kept so stored states stay readable.
+   */
   check: CheckRef | null; poll_due: number | null; poll_errors: number;
+  /** Verdict deadline for the synced head; absent on states stored before the deadline existed. */
+  deadline?: number | null;
+  /** The single follow-up read for a result comment that arrived before its label has been spent. */
+  rechecked?: boolean;
 }
 export interface SyncRecord {
   id: string; time: string; pr: number; pr_url: string; title: string; action: SyncAction | 'codecheck';
@@ -36,10 +48,20 @@ export interface SyncRecord {
 }
 export type Decision = 'queued' | 'duplicate' | 'stale' | 'ignored';
 const SHA = /^[0-9a-f]{40}$/;
-const WORK_FIELDS = ['done', 'attempts', 'next_try', 'branch', 'mr', 'pushed_sha', 'pushed_at', 'sync_status', 'error_code', 'error', 'diverged', 'check', 'poll_due', 'poll_errors'] as const;
+const WORK_FIELDS = ['done', 'attempts', 'next_try', 'branch', 'mr', 'pushed_sha', 'pushed_at', 'sync_status', 'error_code', 'error', 'diverged', 'check', 'poll_due', 'poll_errors', 'deadline', 'rechecked'] as const;
 export const LEASE_MS = 10 * 60 * 1000;
+/** A result comment can precede its ci-successful / ci-failed label by a few seconds. */
+export const SETTLE_MS = 30 * 1000;
+/** Bounded retries for GitCode reads and Check writes; afterwards only the deadline read is left. */
+const READ_BACKOFF = [60, 300, 900];
 const iso = (ms: number): string => new Date(ms).toISOString();
 const short = (sha: string): string => sha.slice(0, 7);
+/** "30 minutes" / "30 分钟"; whole hours read as hours. */
+function span(seconds: number): { en: string; zh: string } {
+  if (seconds % 3600 === 0) { const h = seconds / 3600; return { en: `${h} hour${h === 1 ? '' : 's'}`, zh: `${h} 小时` }; }
+  if (seconds % 60 === 0) { const m = seconds / 60; return { en: `${m} minute${m === 1 ? '' : 's'}`, zh: `${m} 分钟` }; }
+  return { en: `${seconds} seconds`, zh: `${seconds} 秒` };
+}
 
 export { scrub };
 
@@ -73,7 +95,7 @@ export function stagePull(prev: PullState | null, event: BotEvent, cfg: GitCodeS
   const fresh: PullState = { pr: n, url: '', title: '', author: '', base: '', head_sha: sha, head_ref: '', head_repo: '', commits: null, merge_sha: null,
     updated, action, generation: 0, delivery: '', received_at: now, done: 0, attempts: 0, next_try: now, lease: 0,
     branch: cfg.branch_prefix + n, mr: null, pushed_sha: null, pushed_at: null, sync_status: 'pending', error_code: null, error: null, diverged: null,
-    check: null, poll_due: null, poll_errors: 0 };
+    check: null, poll_due: null, poll_errors: 0, deadline: null, rechecked: false };
   const state: PullState = { ...(prev ?? fresh), url: string(pr.html_url) || `https://github.com/${cfg.source}/pull/${n}`, title: string(pr.title).slice(0, 300),
     author: string(object(pr.user).login), base: string(base.ref), head_sha: sha, head_ref: string(head.ref), head_repo: string(object(head.repo).full_name),
     commits: number(pr.commits), merge_sha: SHA.test(string(pr.merge_commit_sha)) ? string(pr.merge_commit_sha) : null, updated, action,
@@ -94,6 +116,8 @@ export function finishWork(latest: PullState, before: PullState, after: PullStat
   const result = merged as unknown as PullState;
   result.lease = 0;
   if (latest.generation !== before.generation) { result.attempts = latest.attempts; result.next_try = latest.next_try; }
+  // A webhook that woke this pull request while the job ran keeps its earlier read time.
+  if (latest.poll_due !== null && latest.poll_due !== before.poll_due && result.poll_due !== null) result.poll_due = Math.min(result.poll_due, latest.poll_due);
   return result;
 }
 
@@ -173,7 +197,7 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
   };
   const mrLink = (): string => state.mr ? `[!${state.mr.number}](${state.mr.url})` : 'the GitCode merge request';
   const divergence = (): string => state.diverged ? `\n\n> **Warning:** the GitCode merge request lists ${state.diverged.gitcode} commits but this pull request has ${state.diverged.github}. GitHub and GitCode histories differ, so the GitCode diff may include commits outside this pull request.` : '';
-  const pendingSummary = (reason: string): string => `GitCode has no CodeCheck verdict yet for this head.\n\n| | |\n| --- | --- |\n| GitHub head | \`${state.head_sha}\` |\n| GitCode merge request | ${mrLink()} |\n| Synced at | ${state.pushed_at ? iso(state.pushed_at) : 'not yet'} |\n| Status | ${reason} |${divergence()}`;
+  const pendingSummary = (reason: string): string => `GitCode has no CodeCheck verdict yet for this head.\n\n| | |\n| --- | --- |\n| GitHub head | \`${state.head_sha}\` |\n| GitCode merge request | ${mrLink()} |\n| Synced at | ${state.pushed_at ? iso(state.pushed_at) : 'not yet'} |${state.deadline ? `\n| Verdict deadline | ${iso(state.deadline)} |` : ''}\n| Status | ${reason} |${divergence()}`;
 
   if (state.generation > state.done && state.next_try <= now) {
     const open = state.action === 'opened' || state.action === 'synchronize' || state.action === 'reopened';
@@ -189,7 +213,7 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
     try {
       if (open) {
         if (!cfg.bases.includes(state.base)) {
-          state.done = state.generation; state.sync_status = 'skipped'; state.poll_due = null; state.error_code = null; state.error = null;
+          state.done = state.generation; state.sync_status = 'skipped'; state.poll_due = null; state.deadline = null; state.error_code = null; state.error = null;
           record(state.action, 'skipped', `目标分支 ${state.base} 不在同步范围（${cfg.bases.join(', ')}）`);
           return { state, records };
         }
@@ -224,7 +248,9 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
           try { const count = await ctx.api.pullCommitCount(cfg.target, pull.number); if (count > state.commits) state.diverged = { gitcode: count, github: state.commits }; }
           catch { /* the count only adds a warning */ }
         }
-        state.done = state.generation; state.attempts = 0; state.poll_errors = 0; state.poll_due = now + cfg.poll_seconds * 1000;
+        // No periodic read: GitCode webhooks wake the verdict read; this deadline read is the only scheduled one.
+        state.done = state.generation; state.attempts = 0; state.poll_errors = 0; state.rechecked = false;
+        state.deadline = (state.pushed_at ?? now) + cfg.verdict_timeout_seconds * 1000; state.poll_due = state.deadline;
         const verb = state.action === 'opened' ? '创建' : state.action === 'reopened' ? '重新打开' : '更新';
         const what = `${pushed.status === 'pushed' ? `已推送原始 head ${short(state.head_sha)}` : `GitCode 分支已是 ${short(state.head_sha)}`}，已${verb} GitCode MR !${pull.number}`;
         if (state.diverged) {
@@ -258,7 +284,7 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
           await check(sha, { state: 'cancelled', status: 'completed', conclusion: 'cancelled', title: merged ? 'Pull request merged on GitHub' : 'Pull request closed on GitHub',
             summary: `The pull request was ${merged ? 'merged' : 'closed'} on GitHub before GitCode produced a CodeCheck verdict for \`${sha}\`. ${mrLink()} was closed without merging.` });
         }
-        state.done = state.generation; state.attempts = 0; state.poll_due = null; state.sync_status = merged ? 'merged' : 'closed'; state.error_code = null; state.error = null;
+        state.done = state.generation; state.attempts = 0; state.poll_due = null; state.deadline = null; state.sync_status = merged ? 'merged' : 'closed'; state.error_code = null; state.error = null;
       }
     } catch (error) {
       const failure = classify(error);
@@ -267,7 +293,7 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
       record(state.action, 'error', `同步失败（第 ${state.attempts} 次${final ? '，已停止重试' : '，稍后重试'}）`, failure);
       state.error_code = failure.code; state.error = scrub(failure.message, secrets);
       if (final) {
-        state.done = state.generation; state.sync_status = 'failed'; state.poll_due = null;
+        state.done = state.generation; state.sync_status = 'failed'; state.poll_due = null; state.deadline = null;
         if (open) await check(state.head_sha, { state: 'failure', status: 'completed', conclusion: 'failure', title: 'Sync to GitCode failed',
           summary: `The head \`${state.head_sha}\` could not be synced to GitCode, so CodeCheck cannot run for it.\n\nError (${failure.code}): ${scrub(failure.message, secrets)}\n\nRedeliver the GitHub webhook or push a new commit to retry.` });
       } else {
@@ -280,33 +306,45 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
   }
 
   if (state.poll_due !== null && state.poll_due <= now) {
-    if (!state.mr || !state.check || state.check.state !== 'pending' || state.check.sha !== state.head_sha || !state.pushed_at) { state.poll_due = null; return { state, records }; }
+    if (!state.mr || !state.check || state.check.state !== 'pending' || state.check.sha !== state.head_sha || !state.pushed_at) { state.poll_due = null; state.deadline = null; return { state, records }; }
+    // States stored while the bot still polled have no deadline; they get the same one, measured from the push.
+    const deadline = state.deadline ?? state.pushed_at + cfg.verdict_timeout_seconds * 1000, overdue = now >= deadline, timeout = span(cfg.verdict_timeout_seconds);
+    state.deadline = deadline;
+    /** Bounded retry; once spent, the deadline read is all that is left (nothing after an overdue one). */
+    const retry = (): number | null => {
+      state.poll_errors += 1;
+      const wait = READ_BACKOFF[state.poll_errors - 1];
+      return wait !== undefined ? Math.min(now + wait * 1000, overdue ? Infinity : deadline) : overdue ? null : deadline;
+    };
     let verdict: CodeCheckVerdict;
     try {
       const pull = await ctx.api.getPull(cfg.target, state.mr.number);
       verdict = evaluateCodeCheck({ labels: pull.labels, comments: await ctx.api.comments(cfg.target, state.mr.number), pushedAt: state.pushed_at,
         mrHeadSha: pull.head_sha, expectedSha: state.head_sha, ciBot: cfg.ci_bot });
-      state.poll_errors = 0;
     } catch (error) {
       const failure = classify(error);
-      state.poll_errors += 1;
-      if (state.poll_errors === 3) record('codecheck', 'error', '连续 3 次读取 GitCode CodeCheck 结果失败，继续重试', failure);
-      verdict = { state: 'pending', reason: `could not read GitCode (${failure.code}); retrying`, comment: null };
+      if (!overdue) {
+        state.poll_due = retry();
+        if (state.poll_errors === READ_BACKOFF.length + 1) record('codecheck', 'error', `连续 ${state.poll_errors} 次读取 GitCode CodeCheck 结果失败，等待 GitCode 通知或截止时间再读`, failure);
+        return { state, records };
+      }
+      verdict = { state: 'pending', reason: `could not read GitCode (${failure.code})`, comment: null };
     }
-    const elapsed = now - state.pushed_at;
-    if (verdict.state === 'pending' && elapsed >= cfg.verdict_timeout_seconds * 1000) {
-      const hours = Math.round(cfg.verdict_timeout_seconds / 360) / 10;
+    if (verdict.state === 'pending' && overdue) {
       const ok = await check(state.head_sha, { state: 'timed_out', status: 'completed', conclusion: 'timed_out', title: 'No CodeCheck verdict from GitCode',
-        summary: `GitCode produced no CodeCheck verdict for \`${state.head_sha}\` within ${hours} hours of the sync (${verdict.reason}). Push a new commit or redeliver the webhook to sync again.\n\nGitCode merge request: ${mrLink()}${divergence()}` });
+        summary: `GitCode produced no CodeCheck verdict for \`${state.head_sha}\` within ${timeout.en} of the sync (${verdict.reason}). Push a new commit or redeliver the webhook to sync again.\n\nGitCode merge request: ${mrLink()}${divergence()}` });
       if (ok) {
-        state.poll_due = null;
-        record('codecheck', 'error', `超过 ${hours} 小时仍没有 CodeCheck 结论，GitHub Check 记为超时`, { code: 'codecheck_timeout', message: verdict.reason });
-      } else state.poll_due = now + cfg.poll_seconds * 1000;
+        state.poll_due = null; state.deadline = null; state.poll_errors = 0;
+        record('codecheck', 'error', `超过 ${timeout.zh}仍没有 CodeCheck 结论，GitHub Check 记为超时`, { code: 'codecheck_timeout', message: verdict.reason });
+      } else state.poll_due = retry();
       return { state, records };
     }
     if (verdict.state === 'pending') {
       await check(state.head_sha, { state: 'pending', status: 'in_progress', title: 'Waiting for CodeCheck on GitCode', summary: pendingSummary(verdict.reason) });
-      state.poll_due = now + cfg.poll_seconds * 1000 * Math.min(1 + state.poll_errors, 5);
+      state.poll_errors = 0;
+      // Wait for the next GitCode webhook or the deadline; a result comment ahead of its label gets one short re-read.
+      if (verdict.comment && !state.rechecked) { state.rechecked = true; state.poll_due = Math.min(now + SETTLE_MS, deadline); }
+      else state.poll_due = deadline;
       return { state, records };
     }
     const passed = verdict.state === 'success';
@@ -315,10 +353,10 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
       title: passed ? 'CodeCheck passed on GitCode' : 'CodeCheck failed on GitCode',
       summary: `${verdict.reason} for head \`${state.head_sha}\`, confirmed by ${evidence} posted after the sync.\n\nGitCode merge request: ${mrLink()}${passed ? '' : '. Open it for the failing checks.'}${divergence()}` });
     if (ok) {
-      state.poll_due = null;
+      state.poll_due = null; state.deadline = null; state.poll_errors = 0;
       record('codecheck', passed ? 'success' : 'error', passed ? `CodeCheck 通过（ci-successful），已写 GitHub Check` : `CodeCheck 未通过（ci-failed），已写 GitHub Check`,
         passed ? undefined : { code: 'codecheck_failed', message: 'GitCode labelled the merge request ci-failed' });
-    } else state.poll_due = now + cfg.poll_seconds * 1000;
+    } else state.poll_due = retry();
     return { state, records };
   }
   return { state, records };
@@ -370,15 +408,19 @@ export async function runDue(store: SyncStore, lock: Lock, context: () => SyncCo
 export abstract class SyncHub implements PullRequestSync {
   readonly mode: 'active' | 'noop';
   readonly source: string;
+  readonly target: string;
   readonly disabledReasons: readonly SyncDisabledReason[];
   constructor(readonly config: Config) {
     this.mode = config.gitcode_sync.enabled ? 'active' : 'noop'; this.source = config.gitcode_sync.source.toLowerCase();
+    this.target = config.gitcode_sync.enabled ? config.gitcode_sync.target.toLowerCase() : '';
     this.disabledReasons = [...config.gitcode_sync.disabled_reasons];
   }
   /** Read and stage in one critical section: finished work must not be overwritten by a stale read. */
   protected abstract transaction<T>(fn: () => Promise<T>): Promise<T>;
   protected abstract current(pr: number): Promise<PullState | null>;
   protected abstract stage(state: PullState): Promise<void>;
+  /** Every stored (or staged) state whose GitCode merge request has this number, not only recent ones. */
+  protected abstract byMergeRequest(mr: number): Promise<PullState[]>;
   async handle(event: BotEvent): Promise<Doc> {
     if (this.mode !== 'active' || event.provider !== 'github' || event.repo.toLowerCase() !== this.source) return { hook: 'gitcode_sync', method: 'on_pull_request', status: this.mode === 'active' ? 'ignored' : 'noop' };
     const pr = number(object(object(event.payload).pull_request).number);
@@ -388,6 +430,29 @@ export abstract class SyncHub implements PullRequestSync {
       return staged.decision;
     });
     return { hook: 'gitcode_sync', method: 'on_pull_request', status: decision };
+  }
+  /**
+   * A CI comment or a label change on a synced merge request: make that pull request's verdict read due now.
+   * Nothing is read here and nothing at all happens for other authors, merge requests or repositories.
+   */
+  async wake(event: BotEvent): Promise<Doc> {
+    const reply = (status: string): Doc => ({ hook: 'gitcode_sync', method: 'on_codecheck_event', status });
+    const cfg = this.config.gitcode_sync, extra = object(event.extra);
+    if (this.mode !== 'active') return reply('noop');
+    if (event.provider !== 'gitcode' || event.repo.toLowerCase() !== this.target || event.number === null) return reply('ignored');
+    if (event.kind === 'issue_comment') {
+      // GitCode reports new and edited notes alike; only the CI account's notes on merge requests matter.
+      if (extra.on !== 'pull_request' || string(extra.comment_author).toLowerCase() !== cfg.ci_bot.toLowerCase()) return reply('ignored');
+    } else if (event.kind !== 'pull_request' || event.action !== 'edited' || !array(extra.changed_fields).includes('labels')) return reply('ignored');
+    const mr = event.number, head = string(extra.head) || string(object(object(event.payload).merge_request).source_branch);
+    return this.transaction(async () => {
+      const waiting = (await this.byMergeRequest(mr)).filter(s => s.mr?.number === mr && s.branch.startsWith(cfg.branch_prefix) && (!head || head === s.branch) &&
+        s.generation === s.done && s.check?.state === 'pending' && s.check.sha === s.head_sha);
+      if (!waiting.length) return reply('no_match');
+      const now = Date.now();
+      for (const state of waiting) { state.poll_due = Math.min(state.poll_due ?? now, now); await this.stage(state); }
+      return reply('woken');
+    });
   }
   abstract status(): Doc | Promise<Doc>;
   abstract snapshot(limit?: number): Promise<Doc>;

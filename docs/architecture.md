@@ -56,7 +56,7 @@ flowchart TD
 
 Webhook 已接受、Actions 已触发、采集提交成功、Pages 部署成功是四个独立状态。Bot 的 `last_dispatch` 只代表触发成功，最终结果分别查看采集与发布工作流。详情见[看板更新](features/board-publication.md)。
 
-配置 GitCode 同步目标后，PR 事件还会进入第二个业务队列：同一个持久 Alarm 用源仓只读、Checks 可写的安装令牌，把 PR head 原样推到 GitCode 同步分支并创建或关闭 MR（从不合并），再回读 MR 上的 CodeCheck 标签与结果评论，写成源仓 head 提交上的 GitHub Check。同步记录由看板采集工作流以同一 OIDC 身份经 `/actions/gitcode-sync` 读取，随 `site/` 一起提交和发布。Webhook 已接受、分支已推送、MR 已更新、CodeCheck 出结论、看板已发布同样是各自独立的状态。详见 [GitHub PR 同步到 GitCode](features/gitcode-sync.md)。
+配置 GitCode 同步目标后，PR 事件还会进入第二个业务队列：同一个持久 Alarm 用源仓只读、Checks 可写的安装令牌，把 PR head 原样推到 GitCode 同步分支并创建或关闭 MR（从不合并），MR 上出现 CI 评论或标签变化时由 GitCode Webhook 触发读取 CodeCheck 标签与结果评论（不轮询，同步后的截止时间再读一次），写成源仓 head 提交上的 GitHub Check。同步记录由看板采集工作流以同一 OIDC 身份经 `/actions/gitcode-sync` 读取，随 `site/` 一起提交和发布。Webhook 已接受、分支已推送、MR 已更新、CodeCheck 出结论、看板已发布同样是各自独立的状态。详见 [GitHub PR 同步到 GitCode](features/gitcode-sync.md)。
 
 ## Bot 代码与存储边界
 

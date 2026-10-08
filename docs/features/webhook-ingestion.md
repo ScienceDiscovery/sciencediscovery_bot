@@ -19,7 +19,7 @@ GitHub App 与普通组织／仓库 Webhook 共用 `/webhook/github`，不要求
 
 ## 范围与统一事件
 
-默认只处理两个 GitHub 仓库：`openJiuwen-ai/sciencediscovery` 和 `ScienceDiscovery/sciencediscovery`。`SDBOT_REPOS` 未设置、空白或只有逗号时仍采用这两个仓。其他仓、同名 GitCode 仓以及无仓库的非 ping 事件只记录并回 200，不触发业务。仓库匹配不区分大小写。
+默认只处理两个 GitHub 仓库：`openJiuwen-ai/sciencediscovery` 和 `ScienceDiscovery/sciencediscovery`。`SDBOT_REPOS` 未设置、空白或只有逗号时仍采用这两个仓。其他仓以及无仓库的非 ping 事件只记录并回 200，不触发业务。GitCode 仓不在 `SDBOT_REPOS` 中：[GitCode 同步](gitcode-sync.md)启用时，只有配置的同步目标仓（`SDBOT_GITCODE_SYNC_TARGET`，默认 `openJiuwen/sciencediscovery`）的投递进入事件总线，供同步监听读取 CodeCheck 结论；其他 GitCode 仓仍只归档。仓库匹配不区分大小写。
 
 适配器把平台 payload 转成统一 Event：provider、delivery_id、kind、action、repo、number、title、url、sender、merged、labels、ref、extra 与原始 payload。GitHub closed + merged=true 和 GitCode merge 均表示 `pull_request.merged`。未知事件使用 `unknown.<原始事件名>`，无监听点时照常 2xx 记录；新增业务可订阅，见[事件总线](event-bus.md)。
 
@@ -27,6 +27,6 @@ GitHub App 与普通组织／仓库 Webhook 共用 `/webhook/github`，不要求
 
 在组织／仓库的 Webhook 设置中填写 `https://<公开域名>/webhook/github`、JSON 或表单格式、与本地一致的 Secret，并选择需要的 Issue、PR、评论、push、构建和版本等事件。App 也使用同一入口，但需要安装到目标源仓，并配置对应读取权限及事件订阅。保存后用 ping／Recent Deliveries 验证，再从管理面板查看请求和响应。添加权限与订阅是来源平台的操作，bot 不代建 App。
 
-GitCode Webhook 可选签名或密码模式，配置同样对应本地密钥；当前默认业务范围仅覆盖上述两个 GitHub 仓，GitCode 投递仍可验签和归档。
+GitCode Webhook 可选签名或密码模式，配置同样对应本地密钥（`SDBOT_GITCODE_WEBHOOK_SECRET`，回退 `SDBOT_WEBHOOK_SECRET`）。同步启用时，只有同步目标仓的投递进入同步监听，其他 GitCode 仓的投递只验签和归档。
 
 实现：`src/core/signature.ts`、`events.ts`、`pipeline.ts`、`http.ts` 和 `src/node/server.ts`。验证：`tests-ts/core.test.ts`、`archive-http.test.ts`、`workers.test.ts`。Node 接收器拒绝 Transfer-Encoding，HTTP 解析器拒绝的非法 Content-Length 会记录坏请求；已开始读取的中断正文尽量保存收到的前缀。

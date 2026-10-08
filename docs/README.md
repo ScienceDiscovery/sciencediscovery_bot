@@ -7,7 +7,7 @@
 | [投递记录与查看](features/webhook-history.md) | 全量留存、请求与响应详情、历史分页、去重、只读查询 |
 | [事件总线与业务扩展](features/event-bus.md) | 订阅注册、匹配规则、异常隔离、新业务示例与监听点清单 |
 | [正式与测试看板更新](features/board-publication.md) | 双站点映射、后台队列、持久状态、App 安装凭据与 Actions 发布 |
-| [GitHub PR 同步到 GitCode](features/gitcode-sync.md) | PR 事件同步成 GitCode MR、保持 head SHA、只关闭不合并、CodeCheck 回读写 GitHub Check、同步记录发布 |
+| [GitHub PR 同步到 GitCode](features/gitcode-sync.md) | PR 事件同步成 GitCode MR、保持 head SHA、只关闭不合并、GitCode Webhook 触发 CodeCheck 判定并写 GitHub Check、同步记录发布 |
 | [管理面板](features/admin-panel.md) | 事件页、监听点页、管理 API、浏览器时区与访问保护 |
 | [TypeScript 与运行环境](features/typescript-runtime.md) | Web 标准核心、Node 适配、Workers 验证与持久化边界 |
 | [Workers 与 Actions 采集](features/workers.md) | R2／SQLite 归档、持久调度、本地模拟器、采集工作流与上线准备 |

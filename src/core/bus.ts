@@ -67,10 +67,11 @@ export class NoopBoard implements Board {
   status(): Doc { return this.reason ? { enabled: false, reason: this.reason } : { enabled: false }; }
 }
 export class NoopSync implements PullRequestSync {
-  readonly mode = 'noop' as const; readonly source = '';
+  readonly mode = 'noop' as const; readonly source = ''; readonly target = '';
   readonly disabledReasons: readonly SyncDisabledReason[];
   constructor(reasons: readonly SyncDisabledReason[] = ['no_token']) { this.disabledReasons = reasons.length ? [...reasons] : ['no_token']; }
   async handle(_event: BotEvent): Promise<Doc> { return { hook: 'gitcode_sync', method: 'on_pull_request', status: 'noop' }; }
+  async wake(_event: BotEvent): Promise<Doc> { return { hook: 'gitcode_sync', method: 'on_codecheck_event', status: 'noop' }; }
   status(): Doc { return disabledSync(this.disabledReasons); }
   async snapshot(): Promise<Doc> { return { ok: true, ...disabledSync(this.disabledReasons), records: [], pulls: [] }; }
 }
@@ -84,6 +85,8 @@ export const SYNC_DISABLED: Record<SyncDisabledReason, string> = {
 export const syncDisabledText = (reasons: readonly SyncDisabledReason[]): string =>
   `${(reasons.length ? reasons : ['no_token' as const]).map(r => SYNC_DISABLED[r]).join('；')}，GitCode 同步已停用。`;
 export const SYNC_ROUTES = ['opened', 'synchronize', 'reopened', 'closed', 'merged'].map(a => `pull_request.${a}`);
+/** GitCode merge request comments (new or edited both arrive as created) and merge request updates such as label changes. */
+export const CODECHECK_ROUTES = ['issue_comment.created', 'pull_request.edited'];
 export function registerBuiltin(bus: EventBus, board: Board, sync: PullRequestSync = new NoopSync()): void {
   const analyze: [string, string[], string][] = [
     ['on_issue', ['issue.opened', 'issue.edited', 'issue.reopened'], 'Issue 新建、编辑和重新打开的分析入口；当前仅记录调用。'],
@@ -109,8 +112,12 @@ export function registerBuiltin(bus: EventBus, board: Board, sync: PullRequestSy
   // but disabled, so PR routes and hooks are unchanged and the Worker keeps serving everything else.
   const active = sync.mode === 'active';
   bus.subscribe({ id: 'gitcode_sync.on_pull_request', business: 'GitCode 同步', routes: SYNC_ROUTES, mode: sync.mode, enabled: active,
-    description: active ? '把 GitHub PR 的创建、更新、重新打开、关闭和合并排入持久队列，同步到 GitCode MR，并回读 CodeCheck 写 GitHub Check。' : syncDisabledText(sync.disabledReasons),
+    description: active ? '把 GitHub PR 的创建、更新、重新打开、关闭和合并排入持久队列，同步到 GitCode MR，并以 GitHub Check 等待 CodeCheck 结论。' : syncDisabledText(sync.disabledReasons),
     providers: active ? ['github'] : [], repositories: active ? [sync.source] : [], handler: event => sync.handle(event) });
+  // The verdict is read when GitCode reports activity on the merge request, not on a timer; a deadline read remains.
+  bus.subscribe({ id: 'gitcode_sync.on_codecheck_event', business: 'GitCode 同步', routes: CODECHECK_ROUTES, mode: sync.mode, enabled: active,
+    description: active ? 'CI 账号在同步 MR 上发评论或 MR 标签变化时，立即读取一次该 MR 的 CodeCheck 结论并写 GitHub Check；不轮询。' : syncDisabledText(sync.disabledReasons),
+    providers: active ? ['gitcode'] : [], repositories: active ? [sync.target] : [], handler: event => sync.wake(event) });
 }
 export class Router {
   readonly bus = new EventBus();

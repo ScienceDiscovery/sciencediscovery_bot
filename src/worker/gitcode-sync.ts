@@ -52,6 +52,10 @@ export class WorkerSyncStore implements SyncStore {
   async pulls(limit: number): Promise<PullState[]> {
     return this.sql.exec<{ state: string }>('SELECT state FROM gitcode_sync_pulls ORDER BY updated DESC LIMIT ?', limit).toArray().map(row => JSON.parse(row.state) as PullState);
   }
+  /** Searches every row, not the recent window the dashboard reads. */
+  byMergeRequestSync(mr: number): PullState[] {
+    return this.sql.exec<{ state: string }>("SELECT state FROM gitcode_sync_pulls WHERE json_extract(state, '$.mr.number') = ?", mr).toArray().map(row => JSON.parse(row.state) as PullState);
+  }
 }
 
 /**
@@ -71,6 +75,10 @@ export class WorkerGitCodeSync extends SyncHub {
     return staged ? structuredClone(staged) : this.store.getSync(pr);
   }
   protected async stage(state: PullState): Promise<void> { this.pending.set(state.pr, structuredClone(state)); }
+  protected async byMergeRequest(mr: number): Promise<PullState[]> {
+    const staged = [...this.pending.values()].filter(state => state.mr?.number === mr).map(state => structuredClone(state));
+    return [...staged, ...this.store.byMergeRequestSync(mr).filter(state => !this.pending.has(state.pr))];
+  }
   commitPending(): void { for (const state of this.pending.values()) this.store.putSync(state); this.pending.clear(); }
   clearPending(): void { this.pending.clear(); }
   async next(): Promise<number | null> {

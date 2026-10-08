@@ -3,7 +3,7 @@ const auth=()=>({Authorization:'Bearer '+process.env.SDBOT_E2E_ADMIN_TOKEN});
 
 test('actual listeners are discoverable, searchable, and remain private',async({page,request},testInfo)=>{
   const inventory=await (await request.get('/api/listeners',{headers:auth()})).json();
-  expect(inventory.listeners).toHaveLength(11);
+  expect(inventory.listeners).toHaveLength(12);
   expect((await request.get('/api/listeners')).status()).toBe(401);
   expect((await request.get('/api/listeners',{headers:{...auth(),'Cf-Ray':'test'}})).status()).toBe(403);
   expect((await request.get('http://127.0.0.1:18891/api/listeners')).status()).toBe(404);
@@ -14,10 +14,12 @@ test('actual listeners are discoverable, searchable, and remain private',async({
   await expect(page.locator('#subscription-scope')).toContainText('openjiuwen-ai/sciencediscovery');
   await expect(page.locator('#subscription-scope')).toContainText('sciencediscovery/sciencediscovery');
   await page.locator('#subscription-business').selectOption('GitCode 同步');
-  await expect(page.locator('.subscription')).toHaveCount(1);
-  await expect(page.locator('.subscription')).toContainText('gitcode_sync.on_pull_request');
-  await expect(page.locator('.subscription')).toContainText('已停用');
-  await expect(page.locator('.subscription')).toContainText('未设置 GITCODE_TOKEN，GitCode 同步已停用。');
+  await expect(page.locator('.subscription')).toHaveCount(2);
+  for(const id of ['gitcode_sync.on_pull_request','gitcode_sync.on_codecheck_event']) {
+    const row=page.locator('.subscription').filter({has:page.getByRole('heading',{name:id,exact:true})});
+    await expect(row).toContainText('已停用');
+    await expect(row).toContainText('未设置 GITCODE_TOKEN，GitCode 同步已停用。');
+  }
   await page.locator('#subscription-business').selectOption('看板更新');
   await expect(page.locator('.subscription')).toHaveCount(5);
   await expect(page.locator('#subscription-list')).toContainText('未启用静态发布');

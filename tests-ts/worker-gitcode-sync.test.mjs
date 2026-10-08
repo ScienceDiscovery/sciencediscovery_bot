@@ -24,13 +24,13 @@ async function until(check, timeout = 20000) {
   assert.fail('observable condition did not become true');
 }
 
-test('Worker: PR events sync through the durable queue with the original SHA; records are OIDC-guarded and secret-free', { timeout: 90000 }, async t => {
+test('Worker: PR events sync through the durable queue with the original SHA; a GitCode note reads the verdict; records are OIDC-guarded and secret-free', { timeout: 90000 }, async t => {
   const w = await gitWorld(t);
   await mkdir('.tmp/tests-ts', { recursive: true });
   const directory = await mkdtemp(resolve('.tmp/tests-ts/worker-sync-'));
   const oidc = await generateKeyPair('RS256'), app = await generateKeyPair('RS256', { extractable: true });
   const jwk = { ...await exportJWK(oidc.publicKey), kid: 'actions-key', alg: 'RS256', use: 'sig' };
-  const pulls = new Map(), checks = new Map(), outbound = [];
+  const pulls = new Map(), checks = new Map(), notes = new Map(), outbound = [];
   let webhookPhase = false;
   const json = (value, status = 200) => Response.json(value, { status });
   const pullDoc = p => ({ ...p, html_url: `https://gitcode.test/${TARGET}/merge_requests/${p.number}`, head: { ref: p.head_ref, sha: w.git(w.gitcode, 'rev-parse', 'refs/heads/' + p.head_ref), repo: { full_name: TARGET } }, base: { ref: 'main' }, labels: p.labels.map(name => ({ name })) });
@@ -71,7 +71,7 @@ test('Worker: PR events sync through the durable queue with the original SHA; re
       }
       const item = /^\/repos\/[^/]+\/[^/]+\/pulls\/(\d+)(\/commits|\/comments)?$/.exec(path), pull = item && pulls.get(Number(item[1]));
       if (pull && item[2] === '/commits') return json([{}, {}]);
-      if (pull && item[2] === '/comments') return json([]);
+      if (pull && item[2] === '/comments') return json(notes.get(pull.number) || []);
       if (pull) { if (request.method === 'PATCH') Object.assign(pull, await request.json()); return json(pullDoc(pull)); }
     }
     throw new Error('unexpected outbound request ' + request.url);
@@ -80,7 +80,7 @@ test('Worker: PR events sync through the durable queue with the original SHA; re
     SDBOT_REPOS: SOURCE, SDBOT_BOARD_TARGETS: JSON.stringify({ [SOURCE]: BOARD }), SDBOT_BOARD_REFRESH: '3600',
     SDBOT_ADMIN_HOSTNAME: 'localhost', SDBOT_ACTIONS_REPOSITORY_ID: '200', SDBOT_ACTIONS_OWNER_ID: '100', SDBOT_ACTIONS_AUDIENCE: 'sdbot:actions:test',
     // No SDBOT_GITCODE_SYNC_TARGET: the default target openJiuwen/sciencediscovery applies once the token is present.
-    GITCODE_TOKEN: GIT_FIXTURE.gitcodeToken, SDBOT_GITCODE_USERNAME: GIT_FIXTURE.gitcodeUser,
+    GITCODE_TOKEN: GIT_FIXTURE.gitcodeToken, SDBOT_GITCODE_USERNAME: GIT_FIXTURE.gitcodeUser, SDBOT_GITCODE_WEBHOOK_SECRET: secret,
     SDBOT_GITCODE_API_URL: 'https://gitcode.test/api/v5', SDBOT_GITCODE_WEB_URL: `${w.base}/gitcode`, SDBOT_GITHUB_WEB_URL: `${w.base}/github` };
   const mf = await workerRuntime({ directory, bindings, outboundService });
   t.after(async () => { await mf.dispose(); await rm(directory, { recursive: true, force: true }); });
@@ -108,6 +108,22 @@ test('Worker: PR events sync through the durable queue with the original SHA; re
   assert.equal(doc.pulls[0].check, 'pending');
   assert.equal([...checks.values()][0].status, 'in_progress');
   assert.equal(pulls.get(21).title, `[GitHub #120] feat(reader): stream long PDFs (${w.ids.head.slice(0, 7)})`);
+  assert.equal(outbound.filter(line => line.endsWith('/pulls/21/comments')).length, 0, 'nothing polls GitCode after the sync');
+
+  // The CI account's result comment arrives as a GitCode Note Hook; the alarm reads the verdict right away.
+  pulls.get(21).labels = ['ci-successful'];
+  notes.set(21, [{ id: 1, body: '&#9989; 流水线 0123456789abcdef 执行成功。', user: { login: 'openJiuwen-bot' }, created_at: new Date(Date.now() + 1000).toISOString(), html_url: `https://gitcode.test/${TARGET}/merge_requests/21#note_1` }]);
+  const note = JSON.stringify({ object_kind: 'note', uuid: randomUUID(), user: { username: 'openJiuwen-bot' }, project: { path_with_namespace: TARGET },
+    object_attributes: { id: 1, noteable_type: 'MergeRequest' }, merge_request: { iid: 21, source_branch: 'github-pr/120' } });
+  webhookPhase = true;
+  try {
+    const response = await mf.dispatchFetch('http://localhost/webhook/gitcode', { method: 'POST', body: note, headers: { 'content-type': 'application/json', 'x-gitcode-event': 'Note Hook',
+      'x-gitcode-delivery': randomUUID(), 'x-gitcode-signature-256': 'sha256=' + createHmac('sha256', secret).update(note).digest('hex') } });
+    assert.equal(response.status, 200);
+  } finally { webhookPhase = false; }
+  await until(async () => [...checks.values()][0].conclusion === 'success');
+  doc = await snapshot();
+  assert.equal(doc.records[0].action, 'codecheck'); assert.equal(doc.records[0].status, 'success'); assert.equal(doc.pulls[0].check, 'success');
 
   const merged = await fixture('github_pull_request_merged.json');
   merged.pull_request.head.sha = w.ids.head;
@@ -116,7 +132,7 @@ test('Worker: PR events sync through the durable queue with the original SHA; re
   doc = await snapshot();
   assert.equal(pulls.get(21).state, 'closed'); assert.match(pulls.get(21).body, /Merged on GitHub/);
   assert.equal(doc.records[0].summary, '已在 GitHub 合并；已关闭 GitCode MR !21（未调用合并接口）');
-  assert.equal([...checks.values()][0].conclusion, 'cancelled');
+  assert.equal(checks.size, 1); assert.equal([...checks.values()][0].conclusion, 'success', 'a written verdict is not cancelled by the merge');
 
   // The dashboard reads records with its collect.yml OIDC identity only.
   const now = Math.floor(Date.now() / 1000);
@@ -128,7 +144,7 @@ test('Worker: PR events sync through the durable queue with the original SHA; re
   const records = await mf.dispatchFetch('http://localhost/actions/gitcode-sync', { method: 'POST', headers: { authorization: 'Bearer ' + jwt } });
   assert.equal(records.status, 200); assert.equal(records.headers.get('cache-control'), 'no-store');
   const published = await records.text(), body = JSON.parse(published);
-  assert.equal(body.enabled, true); assert.equal(body.source, SOURCE); assert.equal(body.records.length, 2);
+  assert.equal(body.enabled, true); assert.equal(body.source, SOURCE); assert.equal(body.records.length, 3);
   for (const leaked of [GIT_FIXTURE.gitcodeToken, GIT_FIXTURE.githubToken, GIT_FIXTURE.gitcodeUser, 'Authorization']) assert.ok(!published.includes(leaked), leaked);
   // Credentials stay out of the delivery archive as well.
   const events = await (await admin.fetch('http://localhost/api/events', { headers })).json();

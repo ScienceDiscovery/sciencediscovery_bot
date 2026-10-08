@@ -59,7 +59,7 @@ router.bus.subscribe({
 - 内容分析：Issue opened／edited／reopened，Issue 评论，PR opened／synchronize／reopened／edited／ready_for_review、评审和合并；当前仅记录调用，不调用 LLM 或发评论。
 - 看板更新：只在稳定状态变化时刷新。Issue 新建、关闭、重新打开；PR 新建、关闭、重新打开、转为可评审、评审提交；PR 合并；`workflow_run.completed`（PR 门禁、main、Daily、Release 等运行结束）；`release.published`。运行中的 job／check、push、分支与标签创建删除、评论和编辑不触发，由空闲定时刷新与看板仓的定时采集补上。
 - 未配置发布时，看板监听处于占位状态；启用发布后显示 active，并列出实际来源范围。详见[看板更新](board-publication.md)。
-- GitCode 同步：PR opened／synchronize／reopened／closed／merged。监听器只把每个 PR 的最新期望状态写入持久队列，推送、MR 操作和 CodeCheck 回读由队列在 Webhook 之外完成。没有 `GITCODE_TOKEN`、`SDBOT_GITCODE_SYNC_TARGET=off`、缺少 GitHub App 凭据或缺少 GitHub Webhook secret 时，以 `enabled: false` 注册，监听点页显示「已停用」并列出全部原因，不改变 PR 投递的 hooks，也不让 Worker 停止服务。详见 [GitHub PR 同步到 GitCode](gitcode-sync.md)。
+- GitCode 同步：PR opened／synchronize／reopened／closed／merged。监听器只把每个 PR 的最新期望状态写入持久队列，推送、MR 操作和 CodeCheck 读取由队列在 Webhook 之外完成。另一监听点只收同步目标仓的 GitCode MR 评论与标签变化，把对应 PR 的结论读取提前到现在；不轮询。没有 `GITCODE_TOKEN`、`SDBOT_GITCODE_SYNC_TARGET=off`、缺少 GitHub App 凭据或缺少 GitHub Webhook secret 时，以 `enabled: false` 注册，监听点页显示「已停用」并列出全部原因，不改变 PR 投递的 hooks，也不让 Worker 停止服务。详见 [GitHub PR 同步到 GitCode](gitcode-sync.md)。
 
 ## 可观测性与验证
 

@@ -42,7 +42,7 @@ export class Pipeline {
     const event = normalize(provider, headers, payload);
     const ignored = event.kind !== 'ping' && !tracks(this.cfg, event.repo, event.provider);
     let result;
-    if (ignored) result = outcome(routeOf(event), `repo ${event.repo} not in SDBOT_REPOS`);
+    if (ignored) result = outcome(routeOf(event), event.provider === 'gitcode' ? `repo ${event.repo} is not the active GitCode sync target` : `repo ${event.repo} not in SDBOT_REPOS`);
     else if (await this.store.seen(provider, event.delivery_id)) result = { ...outcome(routeOf(event), 'redelivery of an already processed delivery id'), duplicate: true };
     else result = await this.router.dispatch(event);
     return { status: 200, body: { ok: true, delivery_id: event.delivery_id, ...(event.kind === 'ping' ? { pong: true } : {}) }, record: {

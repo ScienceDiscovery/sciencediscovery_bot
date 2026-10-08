@@ -62,9 +62,13 @@ export type SyncDisabledReason = 'off' | 'no_token' | 'no_github_app' | 'no_webh
 export interface PullRequestSync {
   readonly mode: 'active' | 'noop';
   readonly source: string;
+  /** GitCode repository whose merge request events may wake a pending verdict; empty when off. */
+  readonly target: string;
   /** Non-empty exactly when mode is noop. */
   readonly disabledReasons: readonly SyncDisabledReason[];
   handle(event: BotEvent): Promise<Doc>;
+  /** A GitCode comment or label change on a synced merge request makes its verdict read due now. */
+  wake(event: BotEvent): Promise<Doc>;
   status(): Doc | Promise<Doc>;
   snapshot(limit?: number): Promise<Doc>;
 }

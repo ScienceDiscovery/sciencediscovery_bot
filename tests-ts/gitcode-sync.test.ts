@@ -8,7 +8,7 @@ import { NoopBoard, NoopSync, Router } from '../src/core/bus.js';
 import { Pipeline } from '../src/core/pipeline.js';
 import { BotApplication } from '../src/core/http.js';
 import { basicAuthorization, GitTransferError, type PushResult } from '../src/core/git-http.js';
-import { evaluateCodeCheck, scrub, syncContext, type SyncRecord } from '../src/core/gitcode-sync.js';
+import { evaluateCodeCheck, finishWork, scrub, syncContext, type PullState, type SyncRecord } from '../src/core/gitcode-sync.js';
 import { FileArchive } from '../src/node/archive.js';
 import { NodeGitCodeSync } from '../src/node/gitcode-sync.js';
 import { normalize } from '../src/core/events.js';
@@ -23,7 +23,7 @@ const A = 'a'.repeat(39) + '1', B = 'b'.repeat(39) + '2';
 const PEM = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
 const fixture = async (name: string): Promise<Doc> => JSON.parse(await readFile(resolve('tests-ts/fixtures/gitcode-sync', name), 'utf8')) as Doc;
 const comments = await fixture('gitcode_comments.json');
-const env = (extra: Environment = {}): Environment => ({ SDBOT_REPOS: SOURCE, SDBOT_GITHUB_WEBHOOK_SECRET: secret, SDBOT_GITHUB_APP_ID: '42', SDBOT_GITHUB_APP_PRIVATE_KEY: PEM,
+const env = (extra: Environment = {}): Environment => ({ SDBOT_REPOS: SOURCE, SDBOT_GITHUB_WEBHOOK_SECRET: secret, SDBOT_GITCODE_WEBHOOK_SECRET: secret, SDBOT_GITHUB_APP_ID: '42', SDBOT_GITHUB_APP_PRIVATE_KEY: PEM,
   SDBOT_GITCODE_SYNC_TARGET: TARGET, GITCODE_TOKEN, SDBOT_GITCODE_USERNAME: 'sync-bot', SDBOT_GITCODE_API_URL: 'https://gitcode.test/api/v5',
   SDBOT_GITCODE_WEB_URL: 'https://gitcode.test', SDBOT_GITHUB_WEB_URL: 'https://github.test', ...extra });
 
@@ -116,6 +116,8 @@ class World {
     return { status: old === options.sha ? 'unchanged' : 'pushed', old, new: options.sha, ref: options.ref };
   };
   checksFor(sha: string): Check[] { return [...this.checks.values()].filter(c => c.head_sha === sha); }
+  /** How often the merge request comments were read: the observable cost of a verdict read. */
+  reads(): number { return this.calls.filter(call => call.endsWith('/comments')).length; }
   comment(pr: number, kind: 'cla' | 'running' | 'passed' | 'failed', at: number): void {
     const list = this.comments.get(pr) || [];
     list.push({ ...object(comments[kind]), id: list.length + 1, created_at: new Date(at).toISOString(), html_url: `https://gitcode.test/${TARGET}/merge_requests/${pr}#note_${list.length + 1}` });
@@ -139,13 +141,32 @@ async function setup(extra: Environment = {}) {
     assert.equal(response.status, 200);
     return (await archive.recent(1))[0];
   };
-  const listener = (record: Doc): string => String(object((record.listeners as Doc[] || []).find(l => object(l).id === 'gitcode_sync.on_pull_request')).status ?? '');
+  const listener = (record: Doc, id = 'gitcode_sync.on_pull_request'): string => String(object((record.listeners as Doc[] || []).find(l => object(l).id === id)).status ?? '');
+  /** A GitCode webhook delivery (signed unless asked otherwise); returns the HTTP status and the archived record. */
+  const gitcode = async (event: 'Note Hook' | 'Merge Request Hook', payload: Doc, options: { unsigned?: boolean } = {}): Promise<{ status: number; record: Doc; woken: string }> => {
+    const d = await delivery(event, payload, { provider: 'gitcode', path: '/webhook/gitcode' });
+    if (options.unsigned) d.headers.delete('x-gitcode-signature-256');
+    const response = await app.webhook(d.request());
+    const record = (await archive.recent(1))[0];
+    return { status: response.status, record, woken: listener(record, 'gitcode_sync.on_codecheck_event') };
+  };
   /** Advance the queue clock and drain everything due at that time. */
   const tick = async (ms = 0): Promise<void> => { clock = Math.max(clock, Date.now()) + ms; while (await sync.tick(clock)) { /* drain */ } };
   const records = async (): Promise<SyncRecord[]> => (await sync.snapshot()).records as SyncRecord[];
-  return { cfg, world, sync, app, send, listener, tick, records, now: () => clock, cleanup: () => rm(directory, { recursive: true, force: true }) };
+  return { cfg, world, sync, app, send, gitcode, listener, tick, records, now: () => clock, cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
-const POLL = 121000;
+/** GitCode Note Hook for a comment on merge request `mr` (new and edited notes look the same). */
+const note = (mr: number, author = 'openJiuwen-bot', extra: { repo?: string; noteable?: string; branch?: string } = {}): Doc => ({
+  object_kind: 'note', event_type: 'note', uuid: randomUUID(), user: { username: author, name: author }, project: { path_with_namespace: extra.repo ?? TARGET },
+  object_attributes: { id: 1, note: 'comment', noteable_type: extra.noteable ?? 'MergeRequest', system: false },
+  merge_request: { iid: mr, source_branch: extra.branch ?? 'github-pr/120', target_branch: 'main', state: 'opened', title: 'mirror' } });
+/** GitCode Merge Request Hook for an update; `changed` lists the fields in `changes`. */
+const mrUpdate = (mr: number, changed: string[] = ['labels']): Doc => ({
+  object_kind: 'merge_request', event_type: 'merge_request', uuid: randomUUID(), user: { username: 'openJiuwen-bot', name: 'openJiuwen-bot' }, project: { path_with_namespace: TARGET },
+  object_attributes: { iid: mr, action: 'update', state: 'opened', source_branch: 'github-pr/120', target_branch: 'main', title: 'mirror' },
+  changes: Object.fromEntries(changed.map(field => [field, { previous: [], current: [] }])) });
+/** Longer than the old 120 s polling interval. */
+const MINUTES_2 = 121000;
 
 test('opened: the webhook only queues; the queue pushes the original head and opens a GitCode MR with an in-progress Check', async t => {
   const h = await setup(); t.after(h.cleanup);
@@ -169,38 +190,99 @@ test('opened: the webhook only queues; the queue pushes the original head and op
   assert.equal(first.mr_url, `https://gitcode.test/${TARGET}/merge_requests/11`); assert.match(first.summary, /已推送原始 head aaaaaaa/);
 });
 
-test('CodeCheck read-back: no result and stale labels stay in progress; ci-successful passes; ci-failed fails a newer head', async t => {
+test('CodeCheck verdicts are read when GitCode reports activity: no polling, stale labels stay in progress, ci-successful passes, ci-failed fails a newer head', async t => {
   const h = await setup(); t.after(h.cleanup);
   await h.send('github_pull_request_opened.json'); await h.tick();
+  await h.tick(MINUTES_2);
+  assert.equal(h.world.reads(), 0, 'nothing reads GitCode on a timer after the sync');
   const pull = h.world.pulls.get(11)!;
   // A label left by an earlier run on the same MR is not evidence for this head.
   pull.labels = ['ci-successful'];
   h.world.comment(11, 'passed', h.now() - 3600000);
-  await h.tick(POLL);
+  assert.equal((await h.gitcode('Note Hook', note(11))).woken, 'woken');
+  await h.tick();
   let [check] = h.world.checksFor(A);
+  assert.equal(h.world.reads(), 1);
   assert.equal(check.status, 'in_progress'); assert.match(check.summary, /GitCode has no CodeCheck verdict yet/); assert.match(check.summary, /predates this head/);
+  await h.tick(5000);
+  assert.equal(h.world.reads(), 1, 'a few seconds later nothing reads the comments again');
   pull.labels = ['ci-running']; h.world.comment(11, 'cla', h.now()); h.world.comment(11, 'running', h.now());
-  await h.tick(POLL);
+  await h.gitcode('Note Hook', note(11)); await h.tick();
   [check] = h.world.checksFor(A);
   assert.equal(check.status, 'in_progress'); assert.match(check.summary, /running on GitCode/);
   pull.labels = ['ci-successful']; h.world.comment(11, 'passed', h.now() + 1000);
-  await h.tick(POLL);
+  await h.gitcode('Note Hook', note(11)); await h.tick();
   [check] = h.world.checksFor(A);
   assert.equal(check.status, 'completed'); assert.equal(check.conclusion, 'success'); assert.equal(check.title, 'CodeCheck passed on GitCode');
   assert.equal((await h.records())[0].action, 'codecheck'); assert.equal((await h.records())[0].status, 'success');
+  assert.equal(h.world.reads(), 3, 'one read per GitCode notification');
   // New head: the MR still carries the old success, which must not leak onto B.
   await h.send('github_pull_request_synchronize.json'); await h.tick();
   assert.deepEqual(h.world.pushes.at(-1), { sha: B, ref: 'refs/heads/github-pr/120' });
   assert.match(pull.title, /\(bbbbbbb\)$/); assert.ok(pull.body.includes(B));
-  await h.tick(POLL);
+  await h.tick(MINUTES_2);
   let [checkB] = h.world.checksFor(B);
-  assert.equal(checkB.status, 'in_progress'); assert.equal(h.world.checksFor(A)[0].conclusion, 'success');
+  assert.equal(checkB.status, 'in_progress'); assert.equal(h.world.checksFor(A)[0].conclusion, 'success'); assert.equal(h.world.reads(), 3);
+  // The label change itself (Merge Request Hook) is enough to read the verdict.
   pull.labels = ['ci-failed']; h.world.comment(11, 'running', h.now()); h.world.comment(11, 'failed', h.now() + 2000);
-  await h.tick(POLL);
+  assert.equal((await h.gitcode('Merge Request Hook', mrUpdate(11))).woken, 'woken');
+  await h.tick();
   [checkB] = h.world.checksFor(B);
   assert.equal(checkB.status, 'completed'); assert.equal(checkB.conclusion, 'failure'); assert.equal(checkB.title, 'CodeCheck failed on GitCode');
   const latest = (await h.records())[0];
   assert.equal(latest.status, 'error'); assert.equal(latest.error_code, 'codecheck_failed');
+});
+
+test('only the CI account\'s note on the synced MR of the target repository, delivered signed, reads the verdict', async t => {
+  const h = await setup(); t.after(h.cleanup);
+  await h.send('github_pull_request_opened.json'); await h.tick();
+  const pull = h.world.pulls.get(11)!;
+  pull.labels = ['ci-successful']; h.world.comment(11, 'passed', h.now() + 1000);
+  assert.equal((await h.gitcode('Note Hook', note(11, 'alice'))).woken, 'ignored', 'another author');
+  assert.equal((await h.gitcode('Note Hook', note(99))).woken, 'no_match', 'another merge request');
+  assert.equal((await h.gitcode('Note Hook', note(11, 'openJiuwen-bot', { branch: 'feature/x' }))).woken, 'no_match', 'a merge request from another branch');
+  assert.equal((await h.gitcode('Note Hook', note(11, 'openJiuwen-bot', { noteable: 'Issue' }))).woken, 'ignored', 'not a merge request comment');
+  assert.equal((await h.gitcode('Merge Request Hook', mrUpdate(11, ['title', 'description']))).woken, 'ignored', 'an edit that leaves the labels alone');
+  const other = await h.gitcode('Note Hook', note(11, 'openJiuwen-bot', { repo: 'someone/sciencediscovery' }));
+  assert.equal(other.record.status, 'ignored'); assert.match(String(other.record.note), /not the active GitCode sync target/); assert.equal(other.woken, '');
+  const unsigned = await h.gitcode('Note Hook', note(11), { unsigned: true });
+  assert.equal(unsigned.status, 401); assert.equal(unsigned.woken, '');
+  await h.tick();
+  assert.equal(h.world.reads(), 0, 'none of these touched the GitCode API');
+  assert.equal(h.world.checksFor(A)[0].status, 'in_progress');
+  // The real one completes the Check right away, without waiting out any interval.
+  const started = h.now();
+  assert.equal((await h.gitcode('Note Hook', note(11))).woken, 'woken');
+  await h.tick();
+  const [check] = h.world.checksFor(A);
+  assert.equal(check.conclusion, 'success'); assert.ok(h.now() - started < 1000); assert.equal(h.world.reads(), 1);
+  // Once the verdict is written, further notes find nothing waiting.
+  assert.equal((await h.gitcode('Note Hook', note(11))).woken, 'no_match');
+});
+
+test('a result comment ahead of its label gets one 30-second re-read, then waits for GitCode or the deadline', async t => {
+  const h = await setup({ SDBOT_GITCODE_VERDICT_TIMEOUT: '600' }); t.after(h.cleanup);
+  await h.send('github_pull_request_opened.json'); await h.tick();
+  const pull = h.world.pulls.get(11)!;
+  h.world.comment(11, 'passed', h.now() + 1000);
+  await h.gitcode('Note Hook', note(11)); await h.tick();
+  assert.equal(h.world.reads(), 1); assert.match(h.world.checksFor(A)[0].summary, /neither `ci-successful` nor `ci-failed` is set/);
+  pull.labels = ['ci-successful'];
+  await h.tick(31000);
+  assert.equal(h.world.reads(), 2); assert.equal(h.world.checksFor(A)[0].conclusion, 'success', 'the label arrived in time for the re-read');
+  // Next head: this time the label does not come within the re-read.
+  pull.labels = [];
+  await h.send('github_pull_request_synchronize.json'); await h.tick();
+  h.world.comment(11, 'passed', h.now() + 1000);
+  await h.gitcode('Note Hook', note(11)); await h.tick();
+  await h.tick(31000);
+  assert.equal(h.world.reads(), 4, 'one re-read');
+  await h.tick(31000); await h.tick(MINUTES_2);
+  assert.equal(h.world.reads(), 4, 'and no more');
+  assert.equal(h.world.checksFor(B)[0].status, 'in_progress');
+  await h.tick(600000);
+  const [check] = h.world.checksFor(B);
+  assert.equal(check.conclusion, 'timed_out', 'a result comment without a label is still no verdict'); assert.equal(h.world.reads(), 5);
 });
 
 test('closed and merged only close the GitCode MR; reopen reopens it; the merge endpoint is never called', async t => {
@@ -237,7 +319,7 @@ test('duplicate and stale deliveries are idempotent; nothing is pushed or create
   assert.equal(again.duplicate, true, 'a platform redelivery of the same delivery id reaches no listener');
   await h.tick();
   assert.equal(h.listener(await h.send('github_pull_request_opened.json')), 'duplicate', 'same action and head under a new delivery id');
-  await h.tick(POLL);
+  await h.tick(MINUTES_2);
   assert.equal(h.world.pushes.length, 1); assert.equal(h.world.pulls.size, 1);
   assert.equal(h.world.calls.filter(c => c === `POST https://gitcode.test/api/v5/repos/${TARGET}/pulls`).length, 1);
   await h.send('github_pull_request_synchronize.json');
@@ -311,15 +393,80 @@ test('diverged history still pushes the original SHA and records that the GitCod
   assert.equal(pulls[0].sync_status, 'diverged');
 });
 
-test('no verdict within the timeout completes the Check as timed_out, never success', async t => {
-  const h = await setup({ SDBOT_GITCODE_VERDICT_TIMEOUT: '600' }); t.after(h.cleanup);
+test('the default 30-minute deadline is one read: no verdict times the Check out, never success', async t => {
+  const h = await setup(); t.after(h.cleanup);
+  assert.equal(h.cfg.gitcode_sync.verdict_timeout_seconds, 1800);
   await h.send('github_pull_request_opened.json'); await h.tick();
   h.world.pulls.get(11)!.labels = ['ci-successful'];
-  for (let i = 0; i < 5; i++) await h.tick(POLL);
+  assert.match(h.world.checksFor(A)[0].summary, /Verdict deadline/);
+  await h.tick(1800000 - 5000);
+  assert.equal(h.world.reads(), 0, 'nothing is read before the deadline without a GitCode notification');
+  await h.tick(6000);
   const [check] = h.world.checksFor(A);
+  assert.equal(h.world.reads(), 1);
   assert.equal(check.status, 'completed'); assert.equal(check.conclusion, 'timed_out'); assert.equal(check.title, 'No CodeCheck verdict from GitCode');
+  assert.match(check.summary, /within 30 minutes of the sync/);
   const [record] = await h.records();
-  assert.equal(record.error_code, 'codecheck_timeout');
+  assert.equal(record.error_code, 'codecheck_timeout'); assert.equal(record.summary, '超过 30 分钟仍没有 CodeCheck 结论，GitHub Check 记为超时');
+  await h.tick(3600000);
+  assert.equal(h.world.reads(), 1, 'a timed-out head is not read again');
+});
+
+test('the deadline read still finds a verdict whose GitCode notification was lost', async t => {
+  const h = await setup({ SDBOT_GITCODE_VERDICT_TIMEOUT: '600' }); t.after(h.cleanup);
+  await h.send('github_pull_request_opened.json'); await h.tick();
+  h.world.pulls.get(11)!.labels = ['ci-successful']; h.world.comment(11, 'passed', h.now() + 1000);
+  await h.tick(601000);
+  const [check] = h.world.checksFor(A);
+  assert.equal(check.conclusion, 'success'); assert.equal(h.world.reads(), 1);
+});
+
+test('GitCode read failures back off a bounded number of times, then leave only the deadline read', async t => {
+  const h = await setup(); t.after(h.cleanup);
+  await h.send('github_pull_request_opened.json'); await h.tick();
+  h.world.failApi = { method: 'GET', path: /\/pulls\/11$/, status: 503 };
+  await h.gitcode('Note Hook', note(11)); await h.tick();
+  const lookups = () => h.world.calls.filter(call => call.endsWith('/pulls/11')).length;
+  const first = lookups();
+  for (const wait of [61000, 301000, 901000]) await h.tick(wait);
+  assert.equal(lookups(), first + 3, 'three retries');
+  assert.match((await h.records())[0].summary, /连续 4 次读取 GitCode CodeCheck 结果失败/);
+  await h.tick(MINUTES_2);
+  assert.equal(lookups(), first + 3, 'then it stops instead of spinning');
+  h.world.failApi = null;
+  await h.tick(1800000);
+  assert.equal(h.world.checksFor(A)[0].conclusion, 'timed_out');
+});
+
+test('states stored while the bot polled are read once and then wait for the new deadline', async t => {
+  const h = await setup(); t.after(h.cleanup);
+  await h.send('github_pull_request_opened.json'); await h.tick();
+  const legacy = async (pushedAgo: number): Promise<PullState> => {
+    const state = (await h.sync.store.get(120))!;
+    delete state.deadline; delete state.rechecked;
+    state.pushed_at = h.now() - pushedAgo; state.poll_due = h.now() - 1000;
+    await h.sync.store.put(state); return state;
+  };
+  // Still inside the 30 minutes: one read, then the next due time is the deadline, not 120 s.
+  const inside = await legacy(5 * 60000);
+  await h.tick();
+  let state = (await h.sync.store.get(120))!;
+  assert.equal(h.world.reads(), 1); assert.equal(state.deadline, inside.pushed_at! + 1800000); assert.equal(state.poll_due, state.deadline);
+  await h.tick(MINUTES_2);
+  assert.equal(h.world.reads(), 1);
+  // Past the 30 minutes (like GitHub #241 / GitCode !173): the first wake-up times it out.
+  await legacy(40 * 60000);
+  await h.tick();
+  state = (await h.sync.store.get(120))!;
+  assert.equal(h.world.checksFor(A)[0].conclusion, 'timed_out'); assert.equal(state.poll_due, null); assert.equal(h.world.reads(), 2);
+});
+
+test('a GitCode notification that arrives while a read is running is kept, not overwritten by the read', () => {
+  const base = { poll_due: 1000, lease: 0, generation: 1, done: 1, attempts: 0, next_try: 0 } as unknown as PullState;
+  const latest = { ...base, poll_due: 1500, lease: 9999 } as PullState, after = { ...base, poll_due: 1800000 } as PullState;
+  assert.equal(finishWork(latest, base, after).poll_due, 1500);
+  assert.equal(finishWork({ ...base, lease: 9999 } as PullState, base, after).poll_due, 1800000, 'no notification: the job decides');
+  assert.equal(finishWork(latest, base, { ...base, poll_due: null } as PullState).poll_due, null, 'a written verdict ends the wait');
 });
 
 test('pull requests to bases outside the sync scope are skipped and visible', async t => {
@@ -361,6 +508,12 @@ test('defaults: with a token and neither target nor username set, sync is enable
   assert.equal(cfg.gitcode_sync.target, 'openJiuwen/sciencediscovery'); assert.equal(cfg.gitcode_sync.push_repo, 'openJiuwen/sciencediscovery');
   assert.equal(cfg.gitcode_sync.username, 'openJiuwen-bot'); assert.equal(cfg.gitcode_sync.source, SOURCE);
   assert.deepEqual(validateConfig(cfg), [], 'a default username is a valid configuration');
+  assert.equal(cfg.gitcode_sync.verdict_timeout_seconds, 1800);
+  assert.equal(object(publicConfig(cfg).gitcode_sync).poll_seconds, undefined, 'there is no polling interval to publish');
+  // An old polling interval left in the environment is ignored instead of failing startup; the timeout floor stays.
+  assert.deepEqual(validateConfig(configFromEnv({ ...appEnv, GITCODE_TOKEN, SDBOT_GITCODE_POLL_SECONDS: '5' })), []);
+  assert.match(validateConfig(configFromEnv({ ...appEnv, GITCODE_TOKEN, SDBOT_GITCODE_VERDICT_TIMEOUT: '599' })).join(), /verdict timeout must be >=600s/);
+  assert.deepEqual(validateConfig(configFromEnv({ ...appEnv, GITCODE_TOKEN, SDBOT_GITCODE_VERDICT_TIMEOUT: '600' })), []);
   // A blank variable means "not set", not "off".
   assert.equal(configFromEnv({ ...appEnv, GITCODE_TOKEN, SDBOT_GITCODE_SYNC_TARGET: ' ', SDBOT_GITCODE_USERNAME: '' }).gitcode_sync.target, 'openJiuwen/sciencediscovery');
   // The defaults drive a whole sync: the push authenticates as openJiuwen-bot and the MR opens on the default target.
@@ -377,6 +530,9 @@ test('defaults: with a token and neither target nor username set, sync is enable
   };
   const sync = await NodeGitCodeSync.open(hubCfg, () => ({ ...syncContext(hubCfg, world.fetcher), push: push as never }));
   assert.equal(syncListener(new Router(undefined, sync)).mode, 'active');
+  const verdicts = new Router(undefined, sync).bus.inventory().find(l => l.id === 'gitcode_sync.on_codecheck_event')!;
+  assert.equal(verdicts.mode, 'active'); assert.deepEqual(verdicts.providers, ['gitcode']); assert.deepEqual(verdicts.repositories, ['openjiuwen/sciencediscovery']);
+  assert.deepEqual(verdicts.routes, ['issue_comment.created', 'pull_request.edited']);
   const { payload } = await fixture('github_pull_request_opened.json');
   const event = normalize('github', new Headers({ 'x-github-event': 'pull_request', 'x-github-delivery': 'defaults' }), object(payload));
   assert.equal((await sync.handle(event)).status, 'queued');
@@ -400,6 +556,8 @@ test('no GITCODE_TOKEN: sync stays disabled, startup validation passes, the list
   assert.deepEqual(validateConfig(configFromEnv({})), []);
   const listener = syncListener(new Router(undefined, new NoopSync(['no_token'])));
   assert.equal(listener.mode, 'disabled'); assert.equal(listener.description, '未设置 GITCODE_TOKEN，GitCode 同步已停用。');
+  const verdicts = new Router(undefined, new NoopSync(['no_token'])).bus.inventory().find(l => l.id === 'gitcode_sync.on_codecheck_event')!;
+  assert.equal(verdicts.mode, 'disabled'); assert.equal(verdicts.description, '未设置 GITCODE_TOKEN，GitCode 同步已停用。');
   assert.deepEqual(listener.routes, ['opened', 'synchronize', 'reopened', 'closed', 'merged'].map(a => `pull_request.${a}`));
   assert.equal(syncListener(new Router()).mode, 'disabled', 'the default router has sync off');
 });
