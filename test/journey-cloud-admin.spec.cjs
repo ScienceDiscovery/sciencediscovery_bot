@@ -55,8 +55,13 @@ test('the admin page reads once on load and again only when someone asks', async
   await reads({ status: 1, events: 1, listeners: 0, usage: 1 });
   await expect(page.locator('#reload')).toBeVisible();
   await expect(page.locator('#events-page')).not.toContainText('自动刷新');
-  // Nothing polls: idle time and the tab becoming visible again read nothing.
-  await page.clock.runFor(30 * 60_000);
+  // Nothing polls: 30 seconds, then 15 more minutes, and the tab becoming visible again read nothing.
+  await page.clock.runFor(30_000);
+  await page.waitForTimeout(500);
+  expect(counts).toEqual({ status: 1, events: 1, listeners: 0, usage: 1 });
+  await page.clock.runFor(15 * 60_000);
+  await page.waitForTimeout(500);
+  expect(counts).toEqual({ status: 1, events: 1, listeners: 0, usage: 1 });
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await page.waitForTimeout(500);
   expect(counts).toEqual({ status: 1, events: 1, listeners: 0, usage: 1 });
@@ -87,9 +92,13 @@ test('the admin page reads once on load and again only when someone asks', async
   await page.getByRole('button', { name: '刷新用量' }).click();
   await expect(page.locator('#usage-state')).toContainText('点击「刷新用量」重试');
   await reads({ status: 6, events: 4, listeners: 1, usage: 3 });
-  await page.clock.runFor(30 * 60_000);
+  // A failed usage read is not retried: 30 seconds and then 15 minutes later the counts stand.
+  await page.clock.runFor(30_000);
   await page.waitForTimeout(500);
-  expect(counts.usage).toBe(3);
+  expect(counts).toEqual({ status: 6, events: 4, listeners: 1, usage: 3 });
+  await page.clock.runFor(15 * 60_000);
+  await page.waitForTimeout(500);
+  expect(counts).toEqual({ status: 6, events: 4, listeners: 1, usage: 3 });
   fail = false;
   await page.getByRole('button', { name: '刷新用量' }).click();
   await expect(page.locator('#usage-state')).toContainText('读取于');
