@@ -175,16 +175,16 @@
     <form id="caller-form" class="config-form" hidden novalidate>
       <label>名称 <input type="text" name="name" maxlength="80" autocomplete="off"></label>
       <label>公钥证书（PEM，只含 CERTIFICATE；含私钥会被拒绝） <textarea name="certificate" rows="8" placeholder="-----BEGIN CERTIFICATE-----" spellcheck="false"></textarea></label>
-      <fieldset><legend>允许的操作</legend><label><input type="checkbox" name="operations" value="comment"> comment</label><label><input type="checkbox" name="operations" value="labels"> labels</label><label><input type="checkbox" name="operations" value="state"> state</label></fieldset>
-      <label>允许的仓库（每行一个 owner/name；留空表示 bot 已配置的全部仓库） <textarea name="repos" rows="3" spellcheck="false"></textarea></label>
+      <label>允许的仓库（每行一个 owner/name；留空表示 SDBOT_REPOS 中的全部仓库） <textarea name="repos" rows="3" spellcheck="false"></textarea></label>
       <div class="form-actions"><button type="submit">保存客户端</button><button type="button" id="cancel-caller">取消</button></div>
       <p class="form-error" role="alert"></p>
     </form>
     <div id="caller-list" class="subscription-grid"></div>
-    <h3>最近调用</h3>
+    <h3>已发出的安装令牌</h3>
+    <p id="grant-note" class="muted"></p>
     <div class="table-scroll"><table class="usage-table">
-      <thead><tr><th>时间</th><th>客户端</th><th>操作</th><th>平台</th><th>仓库</th><th>编号</th><th>上游状态</th><th>结果</th></tr></thead>
-      <tbody id="caller-audit"></tbody>
+      <thead><tr><th>发出时间</th><th>有效期</th><th>来源</th><th>身份</th><th>仓库</th><th>用途／权限</th></tr></thead>
+      <tbody id="token-grants"></tbody>
     </table></div>
   </section>
   <section id="usage-page" aria-label="资源用量" hidden>
@@ -547,9 +547,10 @@ $("#forward-list").addEventListener("click", async ev => {
 
 function renderCallers(doc) {
   callers = doc.clients;
-  $("#caller-help").innerHTML = `调用方保管私钥，这里只保存公钥证书。调用 <code>POST /caller/v1/comments</code>、<code>/caller/v1/labels</code>、<code>/caller/v1/state</code>，`
+  $("#caller-help").innerHTML = `调用方保管私钥，这里只保存公钥证书。调用方向 <code>POST ${esc(doc.endpoint)}</code> 发送 <code>{"repo": "owner/name"}</code>，`
     + `在 <code>Authorization: Bearer</code> 放一个 JWT：<code>iss</code> 与 <code>sub</code> 为客户端 ID，<code>aud</code> 为 <code>${esc(doc.audience)}</code>，带 <code>exp</code>、<code>iat</code>、<code>jti</code>，`
-    + `有效期不超过 ${esc(doc.max_token_seconds)} 秒，算法与证书一致（RS256 或 ES256）。每个客户端每分钟最多 ${esc(doc.rate_per_minute)} 次。此路径不经过 Cloudflare Access。`;
+    + `有效期不超过 ${esc(doc.max_token_seconds)} 秒，算法与证书一致（RS256 或 ES256）。成功时得到该仓库的 GitHub 安装令牌（<code>${esc(doc.permissions)}</code>），由调用方自己访问 api.github.com。`
+    + `每个客户端每分钟最多 ${esc(doc.rate_per_minute)} 次。此路径不经过 Cloudflare Access。`;
   $("#caller-count").textContent = `${callers.length} / ${doc.limit} 个客户端`;
   $("#new-caller").disabled = callers.length >= doc.limit;
   const now = Date.now();
@@ -559,25 +560,33 @@ function renderCallers(doc) {
       <header><h3>${esc(c.name)}</h3><span class="${valid ? "ok" : "bad"}">${valid ? "证书有效" : "证书不在有效期"}</span></header>
       <p>客户端 ID（iss / sub）：<code>${esc(c.id)}</code></p>
       <p class="scope">${esc(c.alg)} · ${esc(c.subject || "无 CN")} · ${esc(eventTime(c.not_before))} 至 ${esc(eventTime(c.not_after))}<br>SHA-256 <code>${esc(c.fingerprint)}</code></p>
-      <div class="routes">${c.operations.map(v => `<code>${esc(v)}</code>`).join("")}</div>
-      <p class="scope">仓库：${esc(c.repos.length ? c.repos.join("、") : "bot 已配置的全部仓库")}</p>
+      <p class="scope">仓库：${esc(c.repos.length ? c.repos.join("、") : "SDBOT_REPOS 中的全部仓库")}</p>
       <div class="card-actions"><button type="button" data-edit-caller="${esc(c.id)}">编辑</button><button type="button" data-delete-caller="${esc(c.id)}">删除</button></div>
     </article>`;
   }).join("") || '<p class="muted">还没有外部调用客户端</p>';
-  $("#caller-audit").innerHTML = doc.audit.map(a => `<tr>${td("时间", esc(eventTime(a.at)))}${td("客户端", `<code>${esc(a.client.slice(0, 8))}</code>`)}${td("操作", esc(a.operation))}${td("平台", esc(a.provider))}`
-    + `${td("仓库", esc(a.repo))}${td("编号", esc(a.number))}${td("上游状态", esc(a.upstream_status ?? "—"))}${td("结果", esc({ ok: "成功", failed: "上游失败", forbidden: "未授权" }[a.result] || a.result), a.result === "ok" ? "ok" : "bad")}</tr>`).join("")
-    || '<tr><td colspan="8" class="muted">还没有调用记录</td></tr>';
+}
+// Certificate and Actions exchanges in one list; the tokens themselves are never stored or shown.
+function renderGrants(doc) {
+  const now = Date.now(), name = id => callers.find(c => c.id === id)?.name;
+  $("#grant-note").textContent = `证书兑换（caller）与看板 Actions 兑换（actions）放在一起，不含令牌本身。保留 ${doc.retention_days} 天、至多 ${doc.limit} 条，这里显示最近 ${doc.shown} 条。`;
+  $("#token-grants").innerHTML = doc.grants.map(g => {
+    const live = Date.parse(g.expires_at) > now;
+    const who = g.source === "caller" ? `${name(g.identity) ? esc(name(g.identity)) + " · " : ""}<code>${esc(g.identity)}</code>` : `运行 <code>${esc(g.identity)}</code>`;
+    return `<tr>${td("发出时间", esc(eventTime(g.issued_at)))}${td("有效期", `至 ${esc(eventTime(g.expires_at))} · ${live ? "有效" : "已过期"}`, live ? "ok" : "muted")}`
+      + `${td("来源", esc(g.source))}${td("身份", who)}${td("仓库", esc(g.repository))}${td("用途／权限", `${g.purpose ? esc(g.purpose) + " · " : ""}<code>${esc(g.permissions)}</code>`)}</tr>`;
+  }).join("") || '<tr><td colspan="6" class="muted">还没有发出过令牌</td></tr>';
 }
 async function loadCallers() {
-  if (!cloudAdmin) { $("#caller-help").textContent = ""; return cloudOnly($("#caller-list")); }
-  renderCallers(await api("/api/callers"));
+  if (!cloudAdmin) { $("#caller-help").textContent = ""; $("#grant-note").textContent = ""; return cloudOnly($("#caller-list")); }
+  const [clients, grants] = await Promise.all([api("/api/callers"), api("/api/token-grants")]);
+  renderCallers(clients);
+  renderGrants(grants);
 }
 function openCaller(client) {
   const form = $("#caller-form");
   editingCaller = client ? client.id : null;
   form.hidden = false;
   field(form, "name").value = client?.name || ""; field(form, "certificate").value = client?.certificate || ""; field(form, "repos").value = (client?.repos || []).join("\n");
-  check(form, "operations", client?.operations || ["comment"]);
   form.querySelector(".form-error").textContent = "";
   field(form, "name").focus();
 }
@@ -585,7 +594,7 @@ $("#new-caller").addEventListener("click", () => openCaller(null));
 $("#cancel-caller").addEventListener("click", () => { $("#caller-form").hidden = true; editingCaller = null; });
 $("#caller-form").addEventListener("submit", async ev => {
   ev.preventDefault();
-  const form = ev.target, body = { name: field(form, "name").value, certificate: field(form, "certificate").value, operations: checked(form, "operations"),
+  const form = ev.target, body = { name: field(form, "name").value, certificate: field(form, "certificate").value,
     repos: field(form, "repos").value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean) };
   try {
     await send(editingCaller ? "/api/callers/" + editingCaller : "/api/callers", editingCaller ? "PUT" : "POST", body);

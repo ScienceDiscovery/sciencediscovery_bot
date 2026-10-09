@@ -1,9 +1,10 @@
 import { createRemoteJWKSet, customFetch, jwtVerify } from 'jose';
 import { disabledSync, targets } from '../core/config.js';
 import { captureBody, jsonResponse } from '../core/http.js';
-import { GitHubApp } from '../core/github-app.js';
+import { GitHubApp, collectionPermissions } from '../core/github-app.js';
 import { object } from '../core/types.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
+import { describePermissions } from './token-grants.js';
 
 const issuer = 'https://token.actions.githubusercontent.com';
 const keys = createRemoteJWKSet(new URL(issuer + '/.well-known/jwks'), {
@@ -61,11 +62,16 @@ export async function exchangeActionsToken(request: Request, env: WorkerEnv): Pr
   } catch { return fail('bad request', 400); }
   // A run attempt can mint each scope once. Only nonsecret IDs enter durable storage.
   if (!await env.BOT.getByName(OBJECT_NAME).claimCredential(runKey + ':' + purpose, expires)) return fail('already exchanged', 409);
+  const repository = purpose === 'source' ? source : destination;
+  let grant;
+  try { grant = await new GitHubApp(cfg.github_app_id, cfg.github_app_private_key).grantForCollection(repository, purpose === 'target'); }
+  catch { return fail('token unavailable', 502); }
+  // The admin page lists issued tokens without the token itself; a failed record never withholds the grant.
   try {
-    const repository = purpose === 'source' ? source : destination;
-    const grant = await new GitHubApp(cfg.github_app_id, cfg.github_app_private_key).grantForCollection(repository, purpose === 'target');
-    return jsonResponse({ ...grant, repository, purpose });
-  } catch { return fail('token unavailable', 502); }
+    await env.BOT.getByName(OBJECT_NAME).recordTokenGrant({ issued_at: new Date().toISOString(), expires_at: grant.expires_at, source: 'actions', identity: runKey,
+      repository, purpose, permissions: describePermissions(collectionPermissions(purpose === 'target')) });
+  } catch { /* informational only */ }
+  return jsonResponse({ ...grant, repository, purpose });
 }
 
 /**

@@ -61,6 +61,8 @@ test('OIDC exchange binds identity and scope, persists issuance guards and never
   const response = results.find(r => r.status === 200);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   const grant = await response.json(); assert.equal(grant.repository, source); assert.ok(grant.expires_at); assert.equal(grant.purpose, 'source');
+  // The response keeps its shape; the record that is also written appears below.
+  assert.deepEqual(Object.keys(grant).sort(), ['expires_at', 'purpose', 'repository', 'token']);
   assert.deepEqual(calls[1].body, { repositories: ['source-test'], permissions: { metadata: 'read', contents: 'read', issues: 'read', pull_requests: 'read', actions: 'read', checks: 'read', statuses: 'read' } });
   const target = await exchange(jwt, 'target'); assert.equal(target.status, 200); assert.equal((await target.json()).repository, destination);
   assert.deepEqual(calls[3].body, { repositories: ['board-test'], permissions: { metadata: 'read', contents: 'write' } });
@@ -75,4 +77,12 @@ test('OIDC exchange binds identity and scope, persists issuance guards and never
   const events = await mf.getDurableObjectNamespace('BOT', 'bot');
   const status = await (await events.get(events.idFromName('archive-v1')).query('/api/events')).json();
   assert.equal(status.count, 0);
+  // Each issued token is listed with its GitHub expiry, run identity, purpose and repository; never the token, and not the 409 or 502.
+  const issued = (await events.get(events.idFromName('archive-v1')).tokenGrants()).grants;
+  assert.deepEqual(issued.map(g => [g.source, g.identity, g.purpose, g.repository]), [
+    ['actions', '200:300:2', 'source', source], ['actions', '200:300:1', 'target', destination], ['actions', '200:300:1', 'source', source]]);
+  assert.ok(issued.every(g => Date.parse(g.expires_at) > Date.now() + 3000000), 'the installation token expiry, not the five-minute OIDC exp');
+  assert.deepEqual(issued.map(g => g.permissions), ['metadata:read, contents:read, issues:read, pull_requests:read, actions:read, checks:read, statuses:read',
+    'metadata:read, contents:write', 'metadata:read, contents:read, issues:read, pull_requests:read, actions:read, checks:read, statuses:read']);
+  assert.doesNotMatch(JSON.stringify(issued), /scoped-secret/);
 });

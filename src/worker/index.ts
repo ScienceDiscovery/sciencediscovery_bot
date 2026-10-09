@@ -14,7 +14,8 @@ import { WorkerGitCodeSync } from './gitcode-sync.js';
 import { AnalyticsCache } from './usage.js';
 import { WorkerForwards, type AdminReply } from './forward.js';
 import { WorkerCallers, handleCaller } from './caller.js';
-import type { CallerAudit, CallerClient } from '../core/caller.js';
+import type { CallerClient } from '../core/caller.js';
+import { GRANT_LIMIT, GRANT_PAGE, GRANT_RETENTION_DAYS, WorkerTokenGrants, type TokenGrant } from './token-grants.js';
 import { usageDocument } from '../core/usage.js';
 import panel from '../../static/index.html';
 
@@ -27,6 +28,7 @@ export class BotObject extends DurableObject<WorkerEnv> {
   private analytics?: AnalyticsCache;
   private readonly forwards: WorkerForwards;
   private readonly callers: WorkerCallers;
+  private readonly grants: WorkerTokenGrants;
   constructor(ctx: DurableObjectState, env: WorkerEnv) {
     super(ctx, env);
     const cfg = workerConfig(env);
@@ -39,6 +41,7 @@ export class BotObject extends DurableObject<WorkerEnv> {
     const archive = this.archive = new WorkerArchive(ctx.storage, env.ARCHIVE, cfg.dedupe_window, () => { this.board.commitPending(); this.sync.commitPending(); }, cfg.archive_retention_days);
     this.forwards = new WorkerForwards(ctx.storage);
     this.callers = new WorkerCallers(ctx.storage);
+    this.grants = new WorkerTokenGrants(ctx.storage);
     const save = archive.save.bind(archive);
     archive.save = async (reply, headers, body, request) => {
       await this.schedule(); await save(reply, headers, body, request);
@@ -100,7 +103,10 @@ export class BotObject extends DurableObject<WorkerEnv> {
   // Certificate-caller RPCs used by /caller/v1 after the outer Worker has parsed the token.
   callerClient(id: string): CallerClient | null { return this.callers.client(id); }
   callerClaim(id: string, jti: string, expires: number): 'ok' | 'replay' | 'rate' { return this.callers.claim(id, jti, expires); }
-  callerAudit(entry: CallerAudit): void { this.callers.audit(entry); }
+  /** Issued installation tokens, without the tokens: written by both exchanges, pruned by the cron, listed by the admin page. */
+  recordTokenGrant(grant: TokenGrant): void { this.grants.record(grant); }
+  pruneTokenGrants(now?: number): void { this.grants.prune(now); }
+  tokenGrants(): Doc { return { ok: true, retention_days: GRANT_RETENTION_DAYS, limit: GRANT_LIMIT, shown: GRANT_PAGE, grants: this.grants.list() }; }
   // Read-only RPC for the OIDC-authenticated dashboard collector.
   gitcodeSync(): Promise<Record<string, unknown>> { return this.sync.snapshot(); }
   async wake(): Promise<void> { await this.mutex.run(() => this.schedule()); }
@@ -172,6 +178,7 @@ export default {
         const path = url.pathname.slice('/admin'.length);
         // Usage has its own RPC: it is requested by the usage section only, never by the 10-second refresh.
         if (path === '/api/usage') return jsonResponse({ ...object(await env.BOT.getByName(OBJECT_NAME).usage()), environment: env.SDBOT_ENVIRONMENT || 'unconfigured' });
+        if (path === '/api/token-grants') return jsonResponse(object(await env.BOT.getByName(OBJECT_NAME).tokenGrants()));
         if (!['/api/status', '/api/listeners', '/api/events', '/api/gitcode-sync'].includes(path) && !path.startsWith('/api/events/')) return jsonResponse({ ok: false, error: 'not found' }, 404);
         const response = await env.BOT.getByName(OBJECT_NAME).query(path + url.search);
         if (path !== '/api/status' || !response.ok) return response;
@@ -189,5 +196,7 @@ export default {
     await bot.wake();
     // A failed retention step is retried by the next cron; it never blocks queue scheduling.
     try { await bot.pruneArchive(controller.scheduledTime); } catch { console.error('archive retention step failed; retrying on the next cron'); }
+    // Old token records disappear even when no new token is issued.
+    try { await bot.pruneTokenGrants(controller.scheduledTime); } catch { console.error('token grant pruning failed; retrying on the next cron'); }
   },
 };

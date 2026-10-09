@@ -180,7 +180,7 @@ test('the admin page reads once on load and again only when someone asks', async
   await page.screenshot({ path: testInfo.outputPath('usage-unconfigured-mobile.png'), fullPage: true });
 });
 
-test('forwarding and certificate callers can be configured on a 390 px screen without polling', async ({ page, context }, testInfo) => {
+test('forwarding and certificate callers can be configured on a 390 px screen without polling', async ({ page, context, request }, testInfo) => {
   const { makeCertificate } = await import('../tests-ts/support/certificates.mjs');
   await context.addCookies([{ name: 'test_access', value: 'allowed', url: 'http://127.0.0.1:18893', httpOnly: true }]);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -233,7 +233,8 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await callerForm.getByRole('button', { name: '保存客户端' }).click();
   await expect(callerForm.locator('.form-error')).toContainText('private key');
   await callerForm.getByLabel(/公钥证书/).fill(pair.certificate);
-  await callerForm.getByLabel('labels').check();
+  // There is no operation list any more: a client exchanges tokens for its repositories.
+  await expect(callerForm.locator('input[type=checkbox]')).toHaveCount(0);
   await callerForm.getByLabel(/允许的仓库/).fill('ScienceDiscovery/sciencediscovery');
   expect(await overflow()).toBe(true);
   await callerForm.getByRole('button', { name: '保存客户端' }).click();
@@ -243,7 +244,22 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await expect(client).toContainText('证书有效');
   await expect(client).toContainText('sciencediscovery/sciencediscovery');
   await expect(client.locator('code').first()).toHaveText(/^[0-9a-f-]{36}$/);
-  await expect(page.locator('#caller-audit')).toContainText('还没有调用记录');
+  await expect(page.locator('#token-grants')).toContainText('还没有发出过令牌');
+  // The client exchanges a JWT for a token; refreshing the page lists it without the token itself.
+  const { SignJWT } = await import('jose');
+  const id = await client.locator('code').first().textContent();
+  const assertion = await new SignJWT({ jti: crypto.randomUUID() }).setProtectedHeader({ alg: 'ES256' }).setIssuer(id).setSubject(id)
+    .setAudience('sdbot:caller').setIssuedAt().setExpirationTime('2m').sign(pair.privateKey);
+  const exchanged = await request.post('/caller/v1/token', { data: { repo: 'ScienceDiscovery/sciencediscovery' }, headers: { authorization: 'Bearer ' + assertion } });
+  expect(exchanged.status()).toBe(200);
+  expect((await exchanged.json()).token).toBe('ghs_browser-journey');
+  await page.getByRole('button', { name: '刷新外部调用' }).click();
+  const issued = page.locator('#token-grants tr', { hasText: 'ScienceDiscovery/sciencediscovery' });
+  await expect(issued).toContainText('caller');
+  await expect(issued).toContainText('评论机器人');
+  await expect(issued).toContainText('有效');
+  await expect(issued).toContainText('issues:write, pull_requests:write');
+  await expect(page.locator('#token-grants')).not.toContainText('ghs_');
   expect(await overflow()).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('callers-mobile.png'), fullPage: true });
 
