@@ -42,6 +42,12 @@
   .config-form fieldset label { display: inline-flex; gap: 4px; align-items: center; }
   .form-actions, .card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .card-actions { margin-top: 8px; }
+  .test-result { margin: 8px 0 0; font-size: 12px; }
+  .test-result pre { max-height: 160px; overflow: auto; margin: 4px 0 0; padding: 6px; background: var(--bg); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .subscription summary { margin-top: 8px; color: var(--muted); font-size: 12px; cursor: pointer; }
+  .forward-history { margin: 4px 0 0; padding: 0; list-style: none; font-size: 12px; }
+  .forward-history li { display: flex; flex-wrap: wrap; gap: 2px 8px; padding: 4px 0; border-top: 1px solid var(--line); }
+  .tag { padding: 0 4px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); }
   .form-error { color: var(--bad); margin: 0; }
   .config-form > label.inline-check, .config-form label.inline-check { display: flex; gap: 6px; align-items: center; }
   /* Header rows: name and remove button on one line, the value below, so 390 px needs no sideways scroll. */
@@ -155,7 +161,7 @@
   </section>
   <section id="forwards-page" aria-label="转发" hidden>
     <h2>Webhook 转发</h2>
-    <p class="muted">只转发已经验签并归档成功的投递，同一 delivery 的重复投递不再转发。目标只接受 https，不能是回环、私网、链路本地或云元数据地址；每次 5 秒超时、不跟随重定向。目标失败不影响 Webhook 的确认。正文不另存，只记录每条订阅最近一次结果。</p>
+    <p class="muted">只转发已经验签并归档成功的投递，同一 delivery 的重复投递不再转发。目标只接受 https，不能是回环、私网、链路本地或云元数据地址；每次 5 秒超时、不跟随重定向。目标失败不影响 Webhook 的确认。正文不另存，每条订阅保留最近 20 次调用的时间、状态和耗时。「测试」立即向目标发送一条带 <code>X-Sdbot-Test: 1</code> 的测试请求（不受来源、事件类型和仓库筛选限制），显示状态码、耗时和脱敏后的返回内容开头，并计入最近调用。</p>
     <div class="filters"><button id="reload-forwards">刷新转发</button><button id="new-forward">新增订阅</button><span id="forward-count" class="muted" role="status"></span></div>
     <form id="forward-form" class="config-form" hidden novalidate>
       <label>名称 <input type="text" name="name" maxlength="80" autocomplete="off"></label>
@@ -506,20 +512,39 @@ document.addEventListener("click", (ev) => {
 
 // ---- Forwarding and certificate callers: Worker-only configuration, read on page load, view switch or refresh.
 const FORWARD_TYPES = ["issue", "issue_comment", "pull_request", "pull_request_review", "push", "ping", "other"];
-let forwards = [], callers = [], editingForward = null, editingCaller = null;
+let forwards = [], forwardDoc = null, callers = [], editingForward = null, editingCaller = null;
+// Test outcomes and opened history lists survive the card re-render that follows each change.
+const testResults = new Map(), openHistory = new Set();
 const send = (path, method, body) => api(path, { method, headers: { "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
 // HTMLFormElement.name is the form's own attribute, so fields are always looked up by name.
 const field = (form, name) => form.elements.namedItem(name);
 const checked = (form, name) => [...form.querySelectorAll(`input[name="${name}"]:checked`)].map(input => input.value);
 const check = (form, name, values) => form.querySelectorAll(`input[name="${name}"]`).forEach(input => { input.checked = values.includes(input.value); });
 const cloudOnly = (box) => { box.innerHTML = '<p class="muted">本机运行不提供此功能；它只在 Cloudflare 上的正式 Worker 中可用。</p>'; };
+const outcome = (r) => r.error ? `<span class="bad">${esc(r.error)}</span>` : `<span class="ok">HTTP ${esc(r.status)}</span>`;
+// Results saved before durations were recorded have no duration, event or repository.
+const took = (r) => r.duration_ms == null ? "" : ` · ${esc(r.duration_ms)} ms`;
+const testTag = (r) => r.test ? ' <span class="tag">测试</span>' : "";
 function lastResult(last) {
   if (!last) return '<span class="muted">尚未转发</span>';
-  const outcome = last.error ? `<span class="bad">${esc(last.error)}</span>` : `<span class="ok">HTTP ${esc(last.status)}</span>`;
-  return `${esc(eventTime(last.at))} · <code>${esc(String(last.delivery_id).slice(0, 18))}</code> · ${outcome}`;
+  return `${esc(eventTime(last.at))} · <code>${esc(String(last.delivery_id).slice(0, 18))}</code> · ${outcome(last)}${took(last)}${testTag(last)}`;
 }
-function renderForwards(doc) {
-  forwards = doc.subscriptions;
+function testResult(f) {
+  const t = testResults.get(f.id);
+  if (!t) return "";
+  if (t.pending) return '<p class="test-result muted" role="status">测试中…</p>';
+  if (t.failed) return `<p class="test-result" role="status">测试未发出：<span class="bad">${esc(t.failed)}</span></p>`;
+  const excerpt = t.excerpt ? `<pre>${esc(t.excerpt)}</pre>` : t.result.status != null ? '<span class="muted"> · 返回内容为空</span>' : "";
+  return `<div class="test-result" role="status">测试结果：${outcome(t.result)}${took(t.result)} · ${esc(eventTime(t.result.at))}${excerpt}</div>`;
+}
+function callHistory(f) {
+  if (!f.recent.length) return "";
+  const rows = f.recent.map(r => `<li><span title="${esc(r.at)}">${esc(eventTime(r.at))}</span>${outcome(r)}${r.duration_ms == null ? "" : `<span>${esc(r.duration_ms)} ms</span>`}`
+    + `${r.event ? `<code>${esc(r.event)}</code>` : ""}${r.repo ? `<span>${esc(r.repo)}</span>` : ""}<code title="${esc(r.delivery_id)}">${esc(String(r.delivery_id).slice(0, 18))}</code>${testTag(r)}</li>`).join("");
+  return `<details data-history="${esc(f.id)}"${openHistory.has(f.id) ? " open" : ""}><summary>最近 ${f.recent.length} 次调用（最多保留 ${esc(forwardDoc.history)} 次）</summary><ol class="forward-history">${rows}</ol></details>`;
+}
+function renderForwards(doc = forwardDoc) {
+  forwardDoc = doc; forwards = doc.subscriptions;
   $("#forward-count").textContent = `${forwards.length} / ${doc.limit} 条订阅`;
   $("#new-forward").disabled = forwards.length >= doc.limit;
   $("#forward-list").innerHTML = forwards.map(f => `<article class="subscription" data-forward="${esc(f.id)}">
@@ -528,7 +553,8 @@ function renderForwards(doc) {
     <div class="routes">${f.providers.map(v => `<code>${esc(v)}</code>`).join("")}${f.types.map(v => `<code>${esc(v)}</code>`).join("")}</div>
     <p class="scope">仓库：${esc(f.repos.length ? f.repos.join("、") : "所有仓库")}${f.headers.length ? ` · 附加标头：${esc(f.headers.map(h => h.name).join("、"))}` : ""}</p>
     <p class="scope">${f.has_secret ? "已设置签名密钥" : "不签名"} · 最近一次：${lastResult(f.last)}</p>
-    <div class="card-actions"><button type="button" data-edit-forward="${esc(f.id)}">编辑</button><button type="button" data-delete-forward="${esc(f.id)}">删除</button></div>
+    <div class="card-actions"><button type="button" data-test-forward="${esc(f.id)}"${testResults.get(f.id)?.pending ? " disabled" : ""}>测试</button><button type="button" data-edit-forward="${esc(f.id)}">编辑</button><button type="button" data-delete-forward="${esc(f.id)}">删除</button></div>
+    ${testResult(f)}${callHistory(f)}
   </article>`).join("") || '<p class="muted">还没有转发订阅</p>';
 }
 async function loadForwards() {
@@ -577,8 +603,22 @@ $("#forward-form").addEventListener("submit", async ev => {
     await loadForwards();
   } catch (err) { form.querySelector(".form-error").textContent = "保存失败：" + err.message; }
 });
+// "toggle" does not bubble, so the list listens in the capture phase.
+$("#forward-list").addEventListener("toggle", ev => { const id = ev.target.dataset?.history; if (id) ev.target.open ? openHistory.add(id) : openHistory.delete(id); }, true);
 $("#forward-list").addEventListener("click", async ev => {
-  const edit = ev.target.closest("[data-edit-forward]"), remove = ev.target.closest("[data-delete-forward]");
+  const edit = ev.target.closest("[data-edit-forward]"), remove = ev.target.closest("[data-delete-forward]"), test = ev.target.closest("[data-test-forward]");
+  if (test) {
+    const id = test.dataset.testForward;
+    testResults.set(id, { pending: true }); renderForwards();
+    try {
+      const doc = await send(`/api/forwards/${id}/test`, "POST", {});
+      testResults.set(id, { result: doc.result, excerpt: doc.response_excerpt });
+      // The server has already recorded the test; mirror it here instead of reloading every subscription.
+      const f = forwards.find(item => item.id === id);
+      if (f) { f.last = doc.result; f.recent = [doc.result, ...f.recent].slice(0, forwardDoc.history); }
+    } catch (err) { testResults.set(id, { failed: err.message }); }
+    renderForwards();
+  }
   if (edit) openForward(forwards.find(f => f.id === edit.dataset.editForward));
   if (remove && confirm("删除这条转发订阅？")) {
     try { await send("/api/forwards/" + remove.dataset.deleteForward, "DELETE"); await loadForwards(); }

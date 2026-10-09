@@ -6,7 +6,7 @@
 
 - 默认仅处理 `openJiuwen-ai/sciencediscovery` 与 `ScienceDiscovery/sciencediscovery`；其他 Webhook 仍归档。
 - App 安装范围可以重叠或覆盖其他仓库，不要求收窄安装范围；业务范围由正式 Worker 的 `SDBOT_REPOS`、看板目标映射和 OIDC 信任配置限定。范围外投递继续归档，安装范围扩大不应扩大业务处理或临时令牌权限。
-- Webhook 路径只提供协议与最小健康响应。Worker 的 `/admin` 及子路径必须先验证 Cloudflare Access 身份，再提供只读管理；唯一的写接口是转发订阅与外部调用客户端的配置（`/admin/api/forwards`、`/admin/api/callers`），其他管理写方法返回 405。`/caller/v1/token` 用调用方证书签名的 JWT 兑换只含 Issues／Pull requests 写权限的 GitHub 安装令牌，故意不在 Access 后面，也不是 Webhook；只保存公钥证书，Bot 不代为执行写操作。Node 管理端仍仅本机访问，隧道不得指向管理端口。管理重放按钮与 API 已移除。
+- Webhook 路径只提供协议与最小健康响应。Worker 的 `/admin` 及子路径必须先验证 Cloudflare Access 身份，再提供只读管理；唯一的写接口是转发订阅与外部调用客户端的配置（`/admin/api/forwards`、`/admin/api/callers`）及转发订阅的测试发送（`/admin/api/forwards/<id>/test`），其他管理写方法返回 405。`/caller/v1/token` 用调用方证书签名的 JWT 兑换只含 Issues／Pull requests 写权限的 GitHub 安装令牌，故意不在 Access 后面，也不是 Webhook；只保存公钥证书，Bot 不代为执行写操作。Node 管理端仍仅本机访问，隧道不得指向管理端口。管理重放按钮与 API 已移除。
 - 云端只有正式 Worker `sciencediscovery-bot`，配置 `wrangler.jsonc`，由 `main` 分支经 Workers Builds 发布；原测试 Worker 已删除，不再保留测试配置或部署测试版本，合入前用本地 `npm test`、workerd 测试和浏览器旅程验证。
 - 看板采集由 Bot 触发目标仓 Actions：正式 Worker 只处理正式源仓，使用自己的 App ID、私钥和 Webhook secret，看板仓 Actions 使用 OIDC 向 Worker 兑换临时安装令牌，不保存 App 私钥。Bot 只保留调度状态，进度、历史与指标缓存保存在各看板仓；完整 Webhook 归档不变。Actions 使用 App 安装令牌读源仓、将进度与 site 原子提交；不同组织分别取令牌。Pages 独立部署，dispatch、提交和部署成功必须区分。
 - 分析业务默认占位；看板发布可选启用。新增业务通过订阅注册接入，不在 HTTP handler 或 Pipeline 中堆叠业务分支。

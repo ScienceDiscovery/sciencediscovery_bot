@@ -99,6 +99,7 @@ export class BotObject extends DurableObject<WorkerEnv> {
   }
   /** Access-authenticated configuration of forward subscriptions and certificate callers. */
   forwardsAdmin(method: string, id: string | null, input: unknown): AdminReply { return this.forwards.admin(method, id, input); }
+  forwardTest(id: string): Promise<AdminReply> { return this.forwards.test(id); }
   callersAdmin(method: string, id: string | null, input: unknown): Promise<AdminReply> { return this.callers.admin(method, id, input); }
   // Certificate-caller RPCs used by /caller/v1 after the outer Worker has parsed the token.
   callerClient(id: string): CallerClient | null { return this.callers.client(id); }
@@ -131,11 +132,11 @@ export class BotObject extends DurableObject<WorkerEnv> {
 
 const notAllowed = (allow: string) => jsonResponse({ ok: false, error: 'method not allowed' }, 405, new Headers({ Allow: allow, 'Cache-Control': 'no-store', 'Content-Type': 'application/json' }));
 /**
- * Collections take GET and POST, items PUT and DELETE. Writes must be same-origin JSON, which a
+ * Collections take GET and POST, items PUT and DELETE, a forward's test action POST. Writes must be same-origin JSON, which a
  * cross-site form cannot send, on top of the Access identity already verified.
  */
-async function adminConfig(request: Request, env: WorkerEnv, kind: 'forwards' | 'callers', id: string | null): Promise<Response> {
-  const allow = id ? 'PUT, DELETE' : 'GET, POST';
+async function adminConfig(request: Request, env: WorkerEnv, kind: 'forwards' | 'callers', id: string | null, action: string | null = null): Promise<Response> {
+  const allow = action ? 'POST' : id ? 'PUT, DELETE' : 'GET, POST';
   if (!allow.split(', ').includes(request.method)) return notAllowed(allow);
   let input: unknown = null;
   if (request.method !== 'GET') {
@@ -150,7 +151,7 @@ async function adminConfig(request: Request, env: WorkerEnv, kind: 'forwards' | 
     }
   }
   const bot = env.BOT.getByName(OBJECT_NAME);
-  const reply = (kind === 'forwards' ? await bot.forwardsAdmin(request.method, id, input) : await bot.callersAdmin(request.method, id, input)) as unknown as AdminReply;
+  const reply = (action === 'test' ? await bot.forwardTest(id!) : kind === 'forwards' ? await bot.forwardsAdmin(request.method, id, input) : await bot.callersAdmin(request.method, id, input)) as unknown as AdminReply;
   return jsonResponse(object(reply.body) as Doc, reply.status);
 }
 
@@ -167,8 +168,9 @@ export default {
         const denied = await authorizeAdmin(request, env);
         if (denied) return denied;
         // The only management writes: forward subscriptions and certificate callers.
-        const writable = /^\/admin\/api\/(forwards|callers)(?:\/([0-9a-f-]{36}))?$/.exec(url.pathname);
-        if (writable) return await adminConfig(request, env, writable[1] as 'forwards' | 'callers', writable[2] || null);
+        // `/admin/api/forwards/<id>/test` sends a test request to that subscription's target.
+        const writable = /^\/admin\/api\/(?:(forwards)\/([0-9a-f-]{36})\/(test)|(forwards|callers)(?:\/([0-9a-f-]{36}))?)$/.exec(url.pathname);
+        if (writable) return await adminConfig(request, env, (writable[1] || writable[4]) as 'forwards' | 'callers', writable[2] || writable[5] || null, writable[3] || null);
         if (request.method !== 'GET') return jsonResponse({ ok: false, error: 'method not allowed' }, 405, new Headers({ Allow: 'GET', 'Cache-Control': 'no-store', 'Content-Type': 'application/json' }));
         if (['/admin', '/admin/'].includes(url.pathname)) return new Response(panel, { headers: {
           'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
