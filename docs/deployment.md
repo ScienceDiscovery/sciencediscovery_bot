@@ -69,6 +69,8 @@ docker compose down
 | GITCODE_TOKEN | 无 | GitCode 访问令牌，只在本地环境或 Worker Secret 中提供；设置后启用 GitHub PR → GitCode MR 同步 |
 | SDBOT_GITCODE_SYNC_TARGET | openJiuwen/sciencediscovery | 同步目标；设为 `off` 停用同步。其余 `SDBOT_GITCODE_*` 见 [GitCode 同步](features/gitcode-sync.md) |
 | SDBOT_GITCODE_USERNAME | openJiuwen-bot | git 推送使用的 GitCode 账号 |
+| SDBOT_ANALYTICS_TOKEN | 无 | 仅 Worker Secret，Account Analytics 只读；供管理页资源用量查询云端计量，见 [Workers 存储读取成本](features/workers.md#管理页资源用量) |
+| SDBOT_CLOUDFLARE_ACCOUNT_ID / SDBOT_ARCHIVE_BUCKET | 无 | Worker 非密钥 vars：资源用量查询的账号与本实例 R2 桶名，桶名须与 `r2_buckets` 一致 |
 
 Compose 仅传入 compose 文件中显式声明的环境变量；其余参数需要调整 Compose environment 或使用宿主模式。环境变量、`.env`、数据卷和密钥不进入仓库或文档，不要输出完整渲染后的 Compose 配置来排障。管理状态仅返回密钥是否配置，不返回值。
 

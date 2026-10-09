@@ -59,3 +59,41 @@ test('hot paths read a bounded number of SQLite rows', { timeout: 60000 }, async
     assert.equal(await (await mf.dispatchFetch(`http://localhost/_test/claim?key=run-new&expires=${expires}`)).json(), false);
   });
 });
+
+// The admin usage section reads the database size, maintained counters and one
+// cached analytics row. Its cost must not grow with deliveries or the dedupe window.
+test('reading resource usage costs a constant number of rows', { timeout: 60000 }, async t => {
+  const { ANALYTICS, analyticsService } = await import('./support/cloudflare-graphql.mjs');
+  await mkdir('.tmp/tests-ts', { recursive: true });
+  const directory = await mkdtemp(resolve('.tmp/tests-ts/worker-usage-cost-'));
+  const service = analyticsService();
+  const mf = await workerRuntime({ directory, entry: 'tests-ts/support/worker-rows.mjs', outboundService: service.handler, bindings: {
+    SDBOT_GITHUB_WEBHOOK_SECRET: secret, SDBOT_DEDUPE_WINDOW: '1000', SDBOT_ANALYTICS_TOKEN: ANALYTICS.token,
+    SDBOT_CLOUDFLARE_ACCOUNT_ID: ANALYTICS.account, SDBOT_ARCHIVE_BUCKET: ANALYTICS.bucket } });
+  t.after(async () => { await mf.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const rows = async () => (await mf.dispatchFetch('http://localhost/_test/rows')).json();
+  const usage = async () => (await mf.dispatchFetch('http://localhost/_test/usage')).json();
+  const deliver = async id => assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', signed(id))).status, 200);
+  const measure = async () => { await rows(); const doc = await usage(); return { doc, cost: await rows() }; };
+
+  for (let i = 0; i < 5; i++) await deliver(`usage-${i}`);
+  const first = await measure();
+  assert.equal(service.calls.length, 4, 'one query per aggregate dataset on the first read');
+  assert.ok(first.cost.written > 0, 'the first read creates the cache table and stores the analytics');
+  const small = await measure();
+  for (let i = 5; i < 125; i++) await deliver(`usage-${i}`);
+  const large = await measure();
+  assert.equal(large.doc.archive.counts.accepted, 125);
+  assert.equal(large.doc.archive.remembered_deliveries, 125);
+  // 5 → 125 deliveries and seen rows: the same rows are read, nothing is written, nothing is fetched.
+  assert.deepEqual(large.cost, small.cost);
+  assert.equal(small.cost.written, 0);
+  assert.ok(small.cost.read <= 6, `rows read per usage read: ${small.cost.read}`);
+  assert.equal(service.calls.length, 4);
+  // Six hours later the next read queries again and replaces the one cached row.
+  await mf.dispatchFetch('http://localhost/_test/age-usage?ms=' + 6 * 3600_000);
+  const later = await measure();
+  assert.equal(service.calls.length, 8);
+  assert.equal(later.cost.written, 1);
+  console.log(`usage read cost: ${JSON.stringify(small.cost)} at 5 deliveries, ${JSON.stringify(large.cost)} at 125`);
+});

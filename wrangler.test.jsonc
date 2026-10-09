@@ -13,6 +13,9 @@
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "sciencediscovery-bot-test-archive" }],
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
+    // Account analytics for the admin usage section; the read-only token is the SDBOT_ANALYTICS_TOKEN secret.
+    "SDBOT_CLOUDFLARE_ACCOUNT_ID": "bca0917f4ae3bc29439e2e5007abd5a9",
+    "SDBOT_ARCHIVE_BUCKET": "sciencediscovery-bot-test-archive",
     "SDBOT_ENVIRONMENT": "test",
     "SDBOT_ACTIONS_AUDIENCE": "sdbot:actions:test",
     "SDBOT_ACTIONS_REPOSITORY_ID": "1380779676",

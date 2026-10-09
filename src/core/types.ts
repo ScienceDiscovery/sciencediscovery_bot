@@ -49,6 +49,8 @@ export interface Archive {
   payload(record: Doc): Promise<Uint8Array | null>;
   detail(identifier: string): Promise<Doc | null>;
   status(): Doc | Promise<Doc>;
+  /** Storage size and maintained counters only; never scans stored deliveries. */
+  usage?(): Doc | Promise<Doc>;
 }
 export interface Board {
   readonly mode: 'active' | 'noop';

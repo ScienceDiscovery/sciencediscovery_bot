@@ -1,8 +1,9 @@
 import { publicConfig } from './config.js';
+import { usageDocument } from './usage.js';
 import { responseHeaders } from './archive.js';
 import { Pipeline, rejected } from './pipeline.js';
 import { detectProvider, equalSecret } from './signature.js';
-import { jsonBytes, type Doc, type Reply } from './types.js';
+import { jsonBytes, object, type Doc, type Reply } from './types.js';
 
 export const VERSION = '0.4.0';
 export interface Capture { body: Uint8Array; complete: boolean; declared: number | null; note: string; error?: { status: number; message: string }; }
@@ -71,6 +72,8 @@ export class BotApplication {
         if (path === '/healthz') return jsonResponse({ ok: true, uptime_s: Math.round((Date.now() - this.started) / 100) / 10 });
         if (path === '/api/status') return jsonResponse({ ok: true, version: VERSION, started_at: this.started / 1000, board: this.pipeline.router.board.status(),
           gitcode_sync: await this.pipeline.router.sync.status(), config: publicConfig(cfg), ...await store.status() });
+        if (path === '/api/usage') return jsonResponse(usageDocument('local', object(store.usage ? await store.usage() : await store.status()),
+          { status: 'unavailable', message: '本机运行没有 Cloudflare 云端计量' }));
         if (path === '/api/listeners') return jsonResponse({ ok: true, listeners: this.pipeline.router.bus.inventory(), repositories: cfg.repos });
         if (path === '/api/gitcode-sync') return jsonResponse(await this.pipeline.router.sync.snapshot());
         if (path === '/api/events') {

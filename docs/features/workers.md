@@ -71,6 +71,16 @@ Durable Objects 的 SQLite 按读取与写入的行数计量，免费额度按�
 
 优化前后两项的读取分别约为 8000 行和 2000 行，随窗口或当日兑换次数增长。`tests-ts/worker-storage-cost.test.mjs` 限定这两条路径的读写上界。按免费额度，写入量（每天 10 万行）会先于读取量成为上限，约相当于每天 9000～14000 次投递。[计价与额度](https://developers.cloudflare.com/durable-objects/platform/pricing/)
 
+### 管理页资源用量
+
+管理页的「资源用量」页通过 Access 保护的 `GET /admin/api/usage` 读取：打开或重新加载管理页时随状态和列表读取一次，之后只在点击「刷新」「刷新监听点」或「刷新用量」时再读取；页面没有定时器，读取失败也不自动重试。Webhook、Alarm、Cron、`/healthz` 和 `/actions/token` 都不调用它。
+
+- 本机数据：`SqlStorage.databaseSize`（数据库当前字节数），以及 `totals`、`routes` 和 `counters` 中的 `seen`。这些都是写入时已维护的小表，不对 `deliveries`、`seen` 或 GitCode 同步历史做 `COUNT(*)`／`SELECT *`，也不列举、`head` 或 `get` R2 对象，热路径不为统计增加写入。一次读取实测 4 行（无论 5 条还是 125 条投递），不写入，由 `tests-ts/worker-storage-cost.test.mjs` 限定。
+- 云端计量：R2 存储量与 Class A／B 次数来自 GraphQL Analytics 的 `r2StorageAdaptiveGroups`、`r2OperationsAdaptiveGroups`，按 `SDBOT_ARCHIVE_BUCKET` 过滤。Durable Object 的请求数来自 `durableObjectsInvocationsAdaptiveGroups`；行读、行写和活跃时长来自 `durableObjectsPeriodicGroups`（时长按 128 MB 折算 GB-s），两者都按本实例对象 ID 过滤，命名空间里只有 `archive-v1` 这一个对象。结果写入一行 SQLite 缓存 `usage_cache`，6 小时内不重复查询；没有人打开该页时不查询。
+- 配置：Worker Secret `SDBOT_ANALYTICS_TOKEN`（Account Analytics 只读），以及 vars `SDBOT_CLOUDFLARE_ACCOUNT_ID`、`SDBOT_ARCHIVE_BUCKET`。令牌只用于请求头，不进入响应、缓存或日志；缓存以账号、桶、对象和令牌的摘要为键，更换令牌后下一次读取重新查询。
+- 没有令牌时：页面只显示 `databaseSize` 和上述计数，费用行显示「未配置 Analytics token，不能估算操作量」，不填 0。Node 和本地模拟器没有云端计量，说明“本机运行没有 Cloudflare 云端计量”；Node 也没有 `databaseSize`。
+- 费用估算：标明是估算，不是发票。单价取自 Durable Objects pricing（2026-09-30）与 R2 pricing（2026-10-01，Standard），只计算超出 Paid 计划每月含量的部分，不含套餐月费。操作量按本自然月（UTC）至今累计，存储按当前大小持续一个月估算。页面不查询账号套餐，因此同时列出 Free 计划的每日上限（500 万行读、10 万行写，用尽后存储调用失败，00:00 UTC 重置）和当天用量。实现：`src/core/usage.ts`、`src/worker/usage.ts`；验证：`tests-ts/worker-usage.test.mjs`。
+
 ## Actions 配置
 
 两个看板仓都需要 `collect.yml`、`collection_context.py`、`collect_with_oidc.py` 和已有采集器代码。每个看板仓的 `board-config.json` 只保存本站映射，相同工作流按运行仓选择唯一源仓，拒绝另一个环境的目标或源仓；正式与测试快照不能互相覆盖。

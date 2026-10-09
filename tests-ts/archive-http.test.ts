@@ -92,10 +92,10 @@ test('management cannot replay stored form bodies or change the archive', async 
 });
 test('management guard, exact public routes, pagination and listener inventory', async t => {
   const h = await harness({ admin_token: 'local-token' }); t.after(h.cleanup);
-  for (const path of ['/', '/api/status', '/api/events', '/api/listeners']) assert.equal((await h.app.webhook(new Request('http://localhost' + path))).status, 404);
+  for (const path of ['/', '/api/status', '/api/events', '/api/listeners', '/api/usage']) assert.equal((await h.app.webhook(new Request('http://localhost' + path))).status, 404);
   assert.deepEqual(await (await h.app.webhook(new Request('http://localhost/healthz'))).json(), { ok: true });
   assert.equal((await h.app.admin(new Request('http://localhost/'))).status, 200);
-  for (const path of ['/', '/healthz', '/api/status', '/api/events', '/api/listeners']) {
+  for (const path of ['/', '/healthz', '/api/status', '/api/events', '/api/listeners', '/api/usage']) {
     assert.equal((await h.app.admin(new Request('http://localhost' + path, { headers: { 'CF-Fake': '1', authorization: 'Bearer local-token' } }))).status, 403);
     if (path !== '/') assert.equal((await h.app.admin(new Request('http://localhost' + path))).status, 401);
   }
@@ -103,6 +103,10 @@ test('management guard, exact public routes, pagination and listener inventory',
   const inventory = await (await h.app.admin(new Request('http://localhost/api/listeners', { headers }))).json() as { listeners: unknown[] }; assert.equal(inventory.listeners.length, 12);
   for (let i = 0; i < 3; i++) { const d = await delivery(); await h.app.webhook(d.request()); }
   const page = object(await (await h.app.admin(new Request('http://localhost/api/events?limit=2', { headers }))).json()); assert.equal(page.count, 2); assert.equal(page.has_more, true);
+  // Node has no Cloudflare metering: the usage section says so instead of showing zero.
+  const usage = object(await (await h.app.admin(new Request('http://localhost/api/usage', { headers }))).json());
+  assert.deepEqual([object(usage.database).bytes, object(usage.analytics).status, usage.estimate], [null, 'unavailable', null]);
+  assert.equal(object(object(usage.archive).counts).accepted, 3);
   assert.equal((await h.app.admin(new Request('http://localhost/api/events?limit=wrong', { headers }))).status, 400);
   assert.equal((await h.app.admin(new Request('http://localhost/api/replay/missing', { method: 'POST', headers }))).status, 404);
   assert.equal((await h.app.admin(new Request('http://localhost/api/replay/missing', { method: 'POST', headers: { ...headers, 'x-requested-with': 'sciencediscovery-bot', origin: 'http://evil.example' } }))).status, 404);
