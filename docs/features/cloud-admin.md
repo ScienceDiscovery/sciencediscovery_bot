@@ -2,13 +2,13 @@
 
 ## 功能与入口
 
-接收与管理共用一个 Worker。`/admin`、`/admin/` 是管理页面，`/admin/api/status`、`/admin/api/listeners`、`/admin/api/events`、`/admin/api/events/<record_id>` 及 `/admin/api/usage` 是只读接口。页面复用事件详情、筛选、分页、浏览器时区和实际监听点列表；顶栏标明运行环境与云端记录。
+接收与管理共用一个 Worker。`/admin`、`/admin/` 是管理页面，`/admin/api/status`、`/admin/api/listeners`、`/admin/api/events`、`/admin/api/events/<record_id>` 及 `/admin/api/usage` 是只读接口。唯一的管理写接口是 `/admin/api/forwards` 与 `/admin/api/callers`（及其 `/<id>`），用于配置 [Webhook 转发](webhook-forwarding.md) 和 [外部调用](caller-api.md)；它们同样先经过 Access 校验，并只接受同源 JSON 写入。页面复用事件详情、筛选、分页、浏览器时区和实际监听点列表；顶栏标明运行环境与云端记录。
 
 所有管理页面与 API 均要求 Cloudflare Access 身份。根路径 `/api/status` 等不提供别名，Webhook 与健康路径不要求交互登录。Node 的本机管理端继续使用原有 Bearer／loopback／Cf-* 拒绝规则，本地管理桥不进入云端部署产物。
 
 正式 Worker 已部署这套页面并配置 Access 应用与 issuer／AUD，指定成员登录后查询本实例已保存的云端投递。原测试 Worker 已删除，不再有测试管理页。
 
-管理重放按钮及 `POST /api/replay/<record_id>` 已移除。云端管理写方法返回 405，Node 已删除端点返回 404；查询不会执行监听器、增加投递或调度刷新。需要重新采集时使用看板仓 Actions。开发 fixture CLI 不属于管理重放，仍可用于隔离测试。
+管理重放按钮及 `POST /api/replay/<record_id>` 已移除。除上述转发与外部调用配置接口外，云端管理写方法返回 405，Node 已删除端点返回 404；查询不会执行监听器、增加投递或调度刷新。需要重新采集时使用看板仓 Actions。开发 fixture CLI 不属于管理重放，仍可用于隔离测试。
 
 ## Access 配置
 

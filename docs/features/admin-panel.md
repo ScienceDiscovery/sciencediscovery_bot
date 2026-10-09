@@ -2,7 +2,7 @@
 
 ## 两个页面
 
-本机管理端默认 `http://127.0.0.1:8792/`，顶栏切换“事件记录”“监听点”和“资源用量”。资源用量的取数方式见 [Workers 管理页资源用量](workers.md#管理页资源用量)。直接访问 `/#subscriptions` 可打开监听页；回到事件页保留当前筛选和翻页状态。
+本机管理端默认 `http://127.0.0.1:8792/`，顶栏切换“事件记录”“监听点”“资源用量”“转发”和“外部调用”。后两页只在云端 Worker 可用，见 [Webhook 转发](webhook-forwarding.md) 与 [外部调用](caller-api.md)，本机运行显示不可用说明。资源用量的取数方式见 [Workers 管理页资源用量](workers.md#管理页资源用量)。直接访问 `/#subscriptions` 可打开监听页；回到事件页保留当前筛选和翻页状态。
 
 事件页显示验签配置、投递计数、跟踪仓、静态看板各目标状态和投递列表。可按事件种类、状态、route、number 过滤，浏览全部历史，查看请求／响应。页面不自动刷新：打开或重新加载页面时读取一次（状态、当前列表和资源用量）；之后只有点击「刷新」、修改筛选或翻页才再请求，切换事件页与监听点页时读取该页列表，标签页重新可见也不会请求。两套静态看板分别显示待更新／发布中／最近成功状态。
 
@@ -28,6 +28,8 @@ Workers 本地模拟器使用同一面板，默认管理地址为 `http://127.0.
 | GET /api/status | 无密钥的配置视图、计数、最近记录、board.targets 发布状态 |
 | GET /api/listeners | listeners 实际注册清单、repositories 全局处理范围；不包含回调对象和密钥 |
 | GET /api/usage | 数据库大小、已维护的计数；Worker 另含 Cloudflare 计量与费用估算，Node 标明云端计量不可用 |
+| GET／POST /api/forwards，PUT／DELETE /api/forwards/<id> | 仅 Worker（`/admin` 前缀）：转发订阅 |
+| GET／POST /api/callers，PUT／DELETE /api/callers/<id> | 仅 Worker（`/admin` 前缀）：外部调用客户端与最近审计 |
 | GET /api/events | 投递摘要、offset、has_more；limit 默认 50、上限 500 |
 | GET /api/events/<record_id> | 指定投递的请求／实际响应、完整性与历史兼容信息 |
 

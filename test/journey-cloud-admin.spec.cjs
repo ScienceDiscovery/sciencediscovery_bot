@@ -10,7 +10,7 @@ test('authenticated cloud management shows exchanges and listeners without write
     'x-hub-signature-256': 'sha256=' + createHmac('sha256', process.env.SDBOT_E2E_SECRET).update(body).digest('hex') } })).status()).toBe(200);
   await context.addCookies([{ name: 'test_access', value: 'allowed', url: 'http://127.0.0.1:18893', httpOnly: true }]);
   await page.goto('/admin/');
-  await expect(page.locator('#listeners')).toContainText('test · 云端记录 · 只读');
+  await expect(page.locator('#listeners')).toContainText('test · 云端记录 · 投递只读');
   await expect(page.locator('#rows')).toContainText('云端管理验收');
   await expect(page.getByRole('button', { name: '重放', exact: true })).toHaveCount(0);
   await expect(page.locator('#banner')).toBeHidden();
@@ -178,4 +178,84 @@ test('the admin page reads once on load and again only when someone asks', async
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('usage-unconfigured-mobile.png'), fullPage: true });
+});
+
+test('forwarding and certificate callers can be configured on a 390 px screen without polling', async ({ page, context }, testInfo) => {
+  const { makeCertificate } = await import('../tests-ts/support/certificates.mjs');
+  await context.addCookies([{ name: 'test_access', value: 'allowed', url: 'http://127.0.0.1:18893', httpOnly: true }]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const reads = [];
+  page.on('request', r => { const path = new URL(r.url()).pathname; if (path.startsWith('/admin/api/')) reads.push(`${r.method()} ${path}`); });
+  page.on('dialog', dialog => dialog.accept());
+  await page.clock.install();
+  await page.goto('/admin/#forwards');
+  await expect(page.locator('#forward-count')).toContainText('/ 20 条订阅');
+  const overflow = () => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
+
+  // A private address is refused with the reason; a public HTTPS target is saved.
+  await page.getByRole('button', { name: '新增订阅' }).click();
+  const form = page.locator('#forward-form');
+  await form.getByLabel('名称').fill('内网目标');
+  await form.getByLabel('目标 URL').fill('https://10.0.0.8/hook');
+  await form.getByLabel('issue', { exact: true }).check();
+  await form.getByRole('button', { name: '保存订阅' }).click();
+  await expect(form.locator('.form-error')).toContainText('loopback, private, link-local or reserved address');
+  await form.getByLabel('名称').fill('Issue 转发');
+  await form.getByLabel('目标 URL').fill('https://hooks.example/issues');
+  await form.getByLabel('gitcode').check();
+  await form.getByLabel('pull_request', { exact: true }).check();
+  await form.getByLabel(/签名密钥/).fill('journey-secret');
+  expect(await overflow()).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('forward-form-mobile.png'), fullPage: true });
+  await form.getByRole('button', { name: '保存订阅' }).click();
+  await expect(form).toBeHidden();
+  const card = page.locator('#forward-list article', { hasText: 'Issue 转发' });
+  await expect(card).toContainText('https://hooks.example/issues');
+  await expect(card).toContainText('已设置签名密钥');
+  await expect(card).toContainText('尚未转发');
+  // Edit keeps the stored secret readable to the admin, then changes the types.
+  await card.getByRole('button', { name: '编辑' }).click();
+  await expect(form.getByLabel(/签名密钥/)).toHaveValue('journey-secret');
+  await form.getByLabel('push', { exact: true }).check();
+  await form.getByRole('button', { name: '保存订阅' }).click();
+  await expect(card.locator('.routes')).toContainText('push');
+  expect(await overflow()).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('forward-list-mobile.png'), fullPage: true });
+
+  // A certificate client: the private key is refused, the certificate alone is stored.
+  const pair = makeCertificate({ type: 'ec', cn: 'journey caller' });
+  await page.getByRole('link', { name: '外部调用', exact: true }).click();
+  await expect(page.locator('#caller-help')).toContainText('sdbot:caller');
+  await page.getByRole('button', { name: '新增客户端' }).click();
+  const callerForm = page.locator('#caller-form');
+  await callerForm.getByLabel('名称').fill('评论机器人');
+  await callerForm.getByLabel(/公钥证书/).fill(pair.certificate + pair.privateKeyPem);
+  await callerForm.getByRole('button', { name: '保存客户端' }).click();
+  await expect(callerForm.locator('.form-error')).toContainText('private key');
+  await callerForm.getByLabel(/公钥证书/).fill(pair.certificate);
+  await callerForm.getByLabel('labels').check();
+  await callerForm.getByLabel(/允许的仓库/).fill('ScienceDiscovery/sciencediscovery');
+  expect(await overflow()).toBe(true);
+  await callerForm.getByRole('button', { name: '保存客户端' }).click();
+  await expect(callerForm).toBeHidden();
+  const client = page.locator('#caller-list article', { hasText: '评论机器人' });
+  await expect(client).toContainText('ES256');
+  await expect(client).toContainText('证书有效');
+  await expect(client).toContainText('sciencediscovery/sciencediscovery');
+  await expect(client.locator('code').first()).toHaveText(/^[0-9a-f-]{36}$/);
+  await expect(page.locator('#caller-audit')).toContainText('还没有调用记录');
+  expect(await overflow()).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('callers-mobile.png'), fullPage: true });
+
+  // Nothing is read on a timer once the page has loaded.
+  const before = reads.length;
+  await page.clock.runFor(20 * 60_000);
+  await page.waitForTimeout(500);
+  expect(reads.slice(before)).toEqual([]);
+
+  await client.getByRole('button', { name: '删除' }).click();
+  await expect(page.locator('#caller-list')).toContainText('还没有外部调用客户端');
+  await page.getByRole('link', { name: '转发', exact: true }).click();
+  await card.getByRole('button', { name: '删除' }).click();
+  await expect(page.locator('#forward-list')).toContainText('还没有转发订阅');
 });

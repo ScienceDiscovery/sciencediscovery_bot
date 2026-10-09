@@ -14,6 +14,8 @@
 | [Worker 自动部署](features/worker-delivery.md) | Workers Builds／GitHub Actions 接入方案、分支映射、构建命令与部署授权 |
 | [Actions OIDC 临时凭据](features/actions-oidc.md) | Worker 集中管理 App 私钥、工作流身份校验、最小权限令牌与环境隔离 |
 | [云端只读管理](features/cloud-admin.md) | 同 Worker 鉴权端点、Access 配置、部署实例与旧档案边界 |
+| [Webhook 转发](features/webhook-forwarding.md) | 管理页配置的转发订阅、来源与类型筛选、目标地址限制、签名与最近结果 |
+| [外部调用](features/caller-api.md) | `/caller/v1` 证书客户端：只存公钥、JWT 校验、评论／标签／开关状态、GitHub App 写权限要求 |
 | [部署与配置](deployment.md) | 宿主机、Compose、cloudflared、配置变量与数据位置 |
 | [验证指南](testing.md) | TypeScript／HTTP／workerd 和浏览器测试、隔离资源与验收重点 |
 

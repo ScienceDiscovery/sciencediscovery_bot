@@ -4,7 +4,7 @@ import { Pipeline } from '../core/pipeline.js';
 import { Router } from '../core/bus.js';
 import { GitHubApp } from '../core/github-app.js';
 import { dispatchCollection } from '../core/actions.js';
-import { Mutex, object } from '../core/types.js';
+import { Mutex, object, type Doc } from '../core/types.js';
 import { WorkerArchive, type PruneResult } from './archive.js';
 import { WorkerBoard } from './board.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
@@ -12,6 +12,9 @@ import { authorizeAdmin } from './access.js';
 import { exchangeActionsToken, readGitCodeSync } from './actions-auth.js';
 import { WorkerGitCodeSync } from './gitcode-sync.js';
 import { AnalyticsCache } from './usage.js';
+import { WorkerForwards, type AdminReply } from './forward.js';
+import { WorkerCallers, handleCaller } from './caller.js';
+import type { CallerAudit, CallerClient } from '../core/caller.js';
 import { usageDocument } from '../core/usage.js';
 import panel from '../../static/index.html';
 
@@ -22,6 +25,8 @@ export class BotObject extends DurableObject<WorkerEnv> {
   private readonly sync: WorkerGitCodeSync;
   private readonly archive: WorkerArchive;
   private analytics?: AnalyticsCache;
+  private readonly forwards: WorkerForwards;
+  private readonly callers: WorkerCallers;
   constructor(ctx: DurableObjectState, env: WorkerEnv) {
     super(ctx, env);
     const cfg = workerConfig(env);
@@ -32,8 +37,14 @@ export class BotObject extends DurableObject<WorkerEnv> {
     this.sync = new WorkerGitCodeSync(ctx.storage, cfg);
     // Staged board refreshes and sync events commit in the same transaction as the archive index.
     const archive = this.archive = new WorkerArchive(ctx.storage, env.ARCHIVE, cfg.dedupe_window, () => { this.board.commitPending(); this.sync.commitPending(); }, cfg.archive_retention_days);
+    this.forwards = new WorkerForwards(ctx.storage);
+    this.callers = new WorkerCallers(ctx.storage);
     const save = archive.save.bind(archive);
-    archive.save = async (...args) => { await this.schedule(); await save(...args); };
+    archive.save = async (reply, headers, body, request) => {
+      await this.schedule(); await save(reply, headers, body, request);
+      // Only after the archive commit: forwarding runs in the background and never changes the reply.
+      this.forwards.dispatch(reply.record, headers, body, promise => this.ctx.waitUntil(promise));
+    };
     this.app = new BotApplication(new Pipeline(cfg, archive, new Router(this.board, this.sync)), async () => '');
   }
   /** One Durable Object alarm serves both queues: the earliest of their due times. */
@@ -83,6 +94,13 @@ export class BotObject extends DurableObject<WorkerEnv> {
     else analytics = await (this.analytics ||= new AnalyticsCache(this.ctx.storage.sql)).read({ token, account, bucket, objectId: this.ctx.id.toString() });
     return usageDocument('cloudflare', local, analytics);
   }
+  /** Access-authenticated configuration of forward subscriptions and certificate callers. */
+  forwardsAdmin(method: string, id: string | null, input: unknown): AdminReply { return this.forwards.admin(method, id, input); }
+  callersAdmin(method: string, id: string | null, input: unknown): Promise<AdminReply> { return this.callers.admin(method, id, input); }
+  // Certificate-caller RPCs used by /caller/v1 after the outer Worker has parsed the token.
+  callerClient(id: string): CallerClient | null { return this.callers.client(id); }
+  callerClaim(id: string, jti: string, expires: number): 'ok' | 'replay' | 'rate' { return this.callers.claim(id, jti, expires); }
+  callerAudit(entry: CallerAudit): void { this.callers.audit(entry); }
   // Read-only RPC for the OIDC-authenticated dashboard collector.
   gitcodeSync(): Promise<Record<string, unknown>> { return this.sync.snapshot(); }
   async wake(): Promise<void> { await this.mutex.run(() => this.schedule()); }
@@ -105,6 +123,31 @@ export class BotObject extends DurableObject<WorkerEnv> {
   }
 }
 
+const notAllowed = (allow: string) => jsonResponse({ ok: false, error: 'method not allowed' }, 405, new Headers({ Allow: allow, 'Cache-Control': 'no-store', 'Content-Type': 'application/json' }));
+/**
+ * Collections take GET and POST, items PUT and DELETE. Writes must be same-origin JSON, which a
+ * cross-site form cannot send, on top of the Access identity already verified.
+ */
+async function adminConfig(request: Request, env: WorkerEnv, kind: 'forwards' | 'callers', id: string | null): Promise<Response> {
+  const allow = id ? 'PUT, DELETE' : 'GET, POST';
+  if (!allow.split(', ').includes(request.method)) return notAllowed(allow);
+  let input: unknown = null;
+  if (request.method !== 'GET') {
+    const origin = request.headers.get('origin'), site = request.headers.get('sec-fetch-site');
+    if ((origin && origin !== new URL(request.url).origin) || (site && !['same-origin', 'none'].includes(site))) return jsonResponse({ ok: false, error: 'cross-origin write refused' }, 403);
+    if (request.method !== 'DELETE') {
+      if (!(request.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) return jsonResponse({ ok: false, error: 'expected application/json' }, 415);
+      if (Number(request.headers.get('content-length') || 0) > 65536) return jsonResponse({ ok: false, error: 'request body is too large' }, 413);
+      const text = await request.text();
+      if (text.length > 65536) return jsonResponse({ ok: false, error: 'request body is too large' }, 413);
+      try { input = JSON.parse(text); } catch { return jsonResponse({ ok: false, error: 'body must be JSON' }, 422); }
+    }
+  }
+  const bot = env.BOT.getByName(OBJECT_NAME);
+  const reply = (kind === 'forwards' ? await bot.forwardsAdmin(request.method, id, input) : await bot.callersAdmin(request.method, id, input)) as unknown as AdminReply;
+  return jsonResponse(object(reply.body) as Doc, reply.status);
+}
+
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     try {
@@ -112,9 +155,14 @@ export default {
       if (url.pathname === '/actions/token') return await exchangeActionsToken(request, env);
       if (url.pathname === '/actions/gitcode-sync') return await readGitCodeSync(request, env);
       if (url.pathname === '/actions' || url.pathname.startsWith('/actions/')) return jsonResponse({ ok: false, error: 'not found' }, 404);
+      // Certificate callers authenticate with their own JWT; this path is never behind Access and never a webhook.
+      if (url.pathname === '/caller' || url.pathname.startsWith('/caller/')) return await handleCaller(request, env);
       if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
         const denied = await authorizeAdmin(request, env);
         if (denied) return denied;
+        // The only management writes: forward subscriptions and certificate callers.
+        const writable = /^\/admin\/api\/(forwards|callers)(?:\/([0-9a-f-]{36}))?$/.exec(url.pathname);
+        if (writable) return await adminConfig(request, env, writable[1] as 'forwards' | 'callers', writable[2] || null);
         if (request.method !== 'GET') return jsonResponse({ ok: false, error: 'method not allowed' }, 405, new Headers({ Allow: 'GET', 'Cache-Control': 'no-store', 'Content-Type': 'application/json' }));
         if (['/admin', '/admin/'].includes(url.pathname)) return new Response(panel, { headers: {
           'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
