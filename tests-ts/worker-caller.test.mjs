@@ -137,6 +137,9 @@ test('certificate callers exchange a JWT for a narrowly scoped GitHub installati
   await t.test('sixty calls a minute per client, then 429', async () => {
     const pair = makeCertificate(), client = await register(admin, { name: 'Busy', certificate: pair.certificate });
     const statuses = [];
+    // The limit counts per calendar minute, so the 61 calls must not straddle a minute boundary.
+    const left = 60000 - Date.now() % 60000;
+    if (left < 10000) await new Promise(r => setTimeout(r, left + 100));
     for (let i = 0; i < 61; i++) statuses.push((await exchange(mf, await jwt(client, pair.privateKey, 'RS256'), { repo: REPO })).status);
     assert.deepEqual([statuses.slice(0, 60).every(s => s === 200), statuses[60]], [true, 429]);
   });
