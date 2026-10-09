@@ -69,13 +69,27 @@ export async function fetchAnalytics(settings: AnalyticsSettings, now: number, f
       object_count: storage.length ? number(max.objectCount) : 0, sampled_at: string(object(latest.dimensions).datetime) || null });
   }
   if (operations) Object.assign(r2, r2Classes(operations.map(row => ({ action: string(object(row.dimensions).actionType), requests: number(object(row.sum).requests) }))));
-  const durable: Doc = {};
+  // One entry per UTC day either dataset reported. A metric whose dataset failed stays null:
+  // unknown, never zero. A day missing from a dataset that answered had none of it.
+  const days = new Map<string, { date: string; requests: number | null; active: number | null; rows_read: number | null; rows_written: number | null }>();
+  const entry = (date: string) => {
+    if (!days.has(date)) days.set(date, { date, requests: invocations ? 0 : null, active: periodic ? 0 : null, rows_read: periodic ? 0 : null, rows_written: periodic ? 0 : null });
+    return days.get(date)!;
+  };
+  for (const row of periodic || []) {
+    const value = entry(string(object(row.dimensions).date)), sum = object(row.sum);
+    value.rows_read! += number(sum.rowsRead); value.rows_written! += number(sum.rowsWritten); value.active! += number(sum.activeTime);
+  }
+  for (const row of invocations || []) entry(string(object(row.dimensions).date)).requests! += number(object(row.sum).requests);
+  // activeTime is in microseconds; duration bills 128 MB per active object.
+  const gbs = (active: number | null) => active === null ? null : Math.round(active / 1e6 * 0.128 * 100) / 100;
+  const daily = [...days.values()].filter(day => /^\d{4}-\d{2}-\d{2}$/.test(day.date)).sort((a, b) => b.date.localeCompare(a.date))
+    .map(({ active, ...day }) => ({ date: day.date, requests: day.requests, duration_gb_s: gbs(active), rows_read: day.rows_read, rows_written: day.rows_written }));
+  const durable: Doc = { days: daily, today: daily.find(day => day.date === today) ?? { date: today, requests: invocations ? 0 : null,
+    duration_gb_s: periodic ? 0 : null, rows_read: periodic ? 0 : null, rows_written: periodic ? 0 : null } };
   if (periodic) {
-    const sum = (key: string, rows = periodic) => rows.reduce((total, row) => total + number(object(row.sum)[key]), 0);
-    const todayRows = periodic.filter(row => object(row.dimensions).date === today);
-    // activeTime is in microseconds; duration bills 128 MB per active object.
-    Object.assign(durable, { rows_read: sum('rowsRead'), rows_written: sum('rowsWritten'), duration_gb_s: Math.round(sum('activeTime') / 1e6 * 0.128 * 100) / 100,
-      today: { date: today, rows_read: sum('rowsRead', todayRows), rows_written: sum('rowsWritten', todayRows) },
+    const sum = (key: string) => periodic.reduce((total, row) => total + number(object(row.sum)[key]), 0);
+    Object.assign(durable, { rows_read: sum('rowsRead'), rows_written: sum('rowsWritten'), duration_gb_s: gbs(sum('activeTime')),
       namespace_ids: [...new Set(periodic.map(row => string(object(row.dimensions).namespaceId)).filter(Boolean))] });
   }
   if (invocations) durable.requests = invocations.reduce((total, row) => total + number(object(row.sum).requests), 0);
@@ -86,7 +100,7 @@ export async function fetchAnalytics(settings: AnalyticsSettings, now: number, f
 
 /**
  * One SQLite row caches the last fetch. The row is keyed by a fingerprint of the
- * account, bucket and token, so changing the token takes effect on the next read
+ * cache format, account, bucket and token, so changing the token takes effect on the next read
  * while the token itself is never stored.
  */
 export class AnalyticsCache {
@@ -122,7 +136,9 @@ export class AnalyticsCache {
 const present = (analytics: unknown, fetched: number): Doc => ({ ...object(analytics), fetched_at: new Date(fetched).toISOString(),
   next_fetch_at: new Date(fetched + ANALYTICS_TTL_MS).toISOString() });
 
+/** Bumped when the cached analytics document changes shape; an older row is then fetched again once. */
+const CACHE_FORMAT = 'daily-v2';
 async function fingerprint(settings: AnalyticsSettings): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode([settings.account, settings.bucket, settings.objectId, settings.token].join('\n')));
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode([CACHE_FORMAT, settings.account, settings.bucket, settings.objectId, settings.token].join('\n')));
   return [...new Uint8Array(digest).slice(0, 8)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }

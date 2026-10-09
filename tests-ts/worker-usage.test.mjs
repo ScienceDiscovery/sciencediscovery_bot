@@ -4,7 +4,16 @@ import { createHmac } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { workerRuntime } from '../tools/worker-runtime.mjs';
-import { ANALYTICS, analyticsService } from './support/cloudflare-graphql.mjs';
+import { ANALYTICS, analyticsService, fixtureDays } from './support/cloudflare-graphql.mjs';
+
+const LIMITS = { requests: 100_000, duration_gb_s: 13_000, rows_read: 5_000_000, rows_written: 100_000 };
+// The UTC days the fixture reports this month, newest first, as the Worker should assemble them.
+const expectedDays = () => {
+  const today = new Date().toISOString().slice(0, 10);
+  return fixtureDays(today.slice(0, 8) + '01', today).reverse().map(day => ({ date: day.date, requests: day.requests,
+    duration_gb_s: Math.round(day.activeTime / 1e6 * 0.128 * 100) / 100, rows_read: day.rowsRead, rows_written: day.rowsWritten }));
+};
+const overOf = day => Object.keys(LIMITS).filter(key => day[key] > LIMITS[key]);
 
 const secret = 'usage-secret';
 const signed = delivery => {
@@ -49,7 +58,14 @@ test('usage estimates month-to-date charges from aggregate analytics of this ins
   // Overage at list prices: 0.5M requests, 112k GB-s, 10M rows written, 2 GB R2, 0.5M Class A.
   assert.deepEqual(cost, { '请求': 0.08, '时长（GB-s）': 1.4, 'SQLite 行读': 0, 'SQLite 行写': 10, 'SQLite 存储': 0, 'R2 存储': 0.03, 'R2 Class A': 2.25, 'R2 Class B': 0 });
   assert.equal(doc.estimate.total, 13.76);
-  assert.deepEqual(doc.pricing.durable_objects.free_daily, { rows_read: 5_000_000, rows_written: 100_000 });
+  assert.deepEqual(doc.pricing.durable_objects.free_daily, LIMITS);
+  // Every UTC day of the month with all four metrics; today carries requests and duration too.
+  assert.deepEqual(d.days, expectedDays());
+  assert.deepEqual(d.today, expectedDays()[0]);
+  assert.deepEqual(doc.free_plan.days.map(day => [day.date, day.status, day.over]),
+    expectedDays().map(day => [day.date, overOf(day).length ? 'over' : 'within', overOf(day)]));
+  assert.deepEqual(doc.free_plan.days[0].over, ['requests', 'duration_gb_s', 'rows_written']);
+  assert.equal(doc.free_plan.storage.over, false);
   assert.deepEqual([doc.pricing.durable_objects.as_of, doc.pricing.r2.as_of], ['2026-09-30', '2026-10-01']);
   // The token reaches only the Authorization header: not the response, not the stored cache.
   assert.doesNotMatch(JSON.stringify(doc), new RegExp(ANALYTICS.token));
@@ -75,6 +91,10 @@ test('a failing dataset leaves the others and never invents zero', async t => {
   assert.equal(doc.analytics.r2.class_a, 1_500_000);
   assert.equal(doc.analytics.r2.storage_bytes, undefined);
   assert.equal(doc.analytics.durable_objects.rows_read, undefined);
+  // Requests still come per day; the failed periodic metrics stay null and are not judged within.
+  assert.deepEqual(doc.analytics.durable_objects.days, expectedDays().map(day => ({ ...day, duration_gb_s: null, rows_read: null, rows_written: null })));
+  assert.deepEqual(doc.free_plan.days.map(day => [day.status, day.unknown]),
+    expectedDays().map(day => [day.requests > LIMITS.requests ? 'over' : 'unknown', ['duration_gb_s', 'rows_read', 'rows_written']]));
   const rows = doc.estimate.lines.find(line => line.item === 'SQLite 行读');
   assert.deepEqual([rows.used, rows.cost], [null, null]);
   assert.equal(doc.estimate.total, null);

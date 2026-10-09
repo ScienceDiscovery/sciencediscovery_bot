@@ -126,6 +126,13 @@
       <tbody id="usage-estimate"></tbody>
     </table></div>
     <ul class="usage-notes" id="usage-notes"></ul>
+    <h3>Free 计划每日上限（假设，不是账单）</h3>
+    <p id="free-limits" class="muted"></p>
+    <div class="table-scroll"><table>
+      <thead><tr><th>日期（UTC）</th><th class="num">请求</th><th class="num">时长（GB-s）</th><th class="num">行读</th><th class="num">行写</th><th>是否超出</th></tr></thead>
+      <tbody id="free-days"></tbody>
+    </table></div>
+    <p id="free-scope" class="muted"></p>
   </section>
 </main>
 <dialog id="delivery-detail" aria-labelledby="detail-title">
@@ -238,6 +245,24 @@ const bytes = (n) => n == null ? "—" : n < 1000 ? n + " B" : n < 1e6 ? (n / 1e
 const count = (n) => n == null ? "—" : Number(n).toLocaleString("zh-CN");
 // Storage lines are GB-month; show them as sizes so small databases do not read as zero.
 const amount = (line, n) => line.per === "GB-month" ? bytes(Math.round(n * 1e9)) : count(Math.round(n * 1000) / 1000);
+const known = (n) => n == null ? "读取失败" : count(n);
+const FREE_NAME = { requests: "请求", duration_gb_s: "时长", rows_read: "行读", rows_written: "行写" };
+// The Free plan read against this object's days: over names the metrics above a limit; a failed metric is unknown, never zero.
+function renderFreePlan(plan, pricing) {
+  const limits = plan.limits, storage = plan.storage;
+  $("#free-limits").textContent = `按 Durable Objects pricing（${pricing.durable_objects.as_of}）的 Workers Free 一列：每天请求 ${count(limits.requests)} 次、时长 ${count(limits.duration_gb_s)} GB-s、行读 ${count(limits.rows_read)} 行、行写 ${count(limits.rows_written)} 行，每天 00:00 UTC 重置。超出时不是加价，而是当天这类调用失败；本表不计算金额。`;
+  const cell = (day, key) => day[key] == null ? `<td class="num warn">读取失败</td>`
+    : `<td class="num${day.over.includes(key) ? " bad" : ""}">${esc(count(day[key]))}${day.over.includes(key) ? "（超出）" : ""}</td>`;
+  const failed = (day) => day.unknown.length ? `${day.unknown.map(key => FREE_NAME[key]).join("、")}读取失败` : "";
+  const verdict = (day) => day.status === "over" ? `<td class="bad">超出：${esc(day.over.map(key => FREE_NAME[key]).join("、"))}${day.unknown.length ? "；" + esc(failed(day)) : ""}</td>`
+    : day.status === "unknown" ? `<td class="warn">无法判断：${esc(failed(day))}</td>` : `<td class="ok">未超出</td>`;
+  const days = plan.days == null ? `<tr><td colspan="6" class="warn">${esc(plan.reason)}</td></tr>`
+    : plan.days.length ? plan.days.map(day => `<tr><td>${esc(day.date)}</td>${["requests", "duration_gb_s", "rows_read", "rows_written"].map(key => cell(day, key)).join("")}${verdict(day)}</tr>`).join("")
+    : `<tr><td colspan="6" class="muted">本月还没有本对象的用量记录</td></tr>`;
+  const stored = storage.over == null ? `<td class="warn">无法判断：本机运行没有 databaseSize</td>` : storage.over ? `<td class="bad">超出：存储</td>` : `<td class="ok">未超出</td>`;
+  $("#free-days").innerHTML = days + `<tr><td>SQLite 存储（总量，不按天重置）</td><td colspan="4" class="num${storage.over ? " bad" : ""}">${esc(bytes(storage.bytes))} / ${esc(bytes(storage.limit_bytes))}</td>${stored}</tr>`;
+  $("#free-scope").textContent = "数字只含本实例的 archive-v1。Free 额度按整个账号合计，其他 Worker 没算进来；本对象单独超出就能确定账号超出，没超出不能说明账号安全。R2 的免费额度按月计算（每月 10 GB、100 万次 Class A、1000 万次 Class B），不在本表，见上方费用表。";
+}
 const usd = (n) => n == null ? "—" : "$" + Number(n).toFixed(2);
 function renderUsage(doc) {
   const a = doc.analytics || {}, r2 = a.r2 || {}, d = a.durable_objects || {}, p = doc.pricing, c = doc.archive.counts || {};
@@ -250,7 +275,7 @@ function renderUsage(doc) {
     + (measured ? card("R2 存储", bytes(r2.storage_bytes), r2.object_count == null ? "读取失败" : `${count(r2.object_count)} 个对象 · 采样 ${eventTime(r2.sampled_at)}`, "")
       + card("R2 操作（本月）", `A ${count(r2.class_a)} / B ${count(r2.class_b)}`, `免费操作 ${count(r2.free)}${Object.keys(r2.unclassified || {}).length ? " · 未归类 " + Object.entries(r2.unclassified).map(([k, v]) => k + " " + v).join("、") : ""}`, "")
       + card("Durable Object 行读 / 行写（本月）", `${count(d.rows_read)} / ${count(d.rows_written)}`, `请求 ${count(d.requests)} · 时长 ${count(d.duration_gb_s)} GB-s`, "")
-      + card("今日（UTC）行读 / 行写", today ? `${count(today.rows_read)} / ${count(today.rows_written)}` : "—",
+      + card("今日（UTC）行读 / 行写", today ? `${known(today.rows_read)} / ${known(today.rows_written)}` : "—",
         today ? `Free 计划每日上限 ${count(free.rows_read)} / ${count(free.rows_written)}：读${share(today.rows_read, free.rows_read)} 写${share(today.rows_written, free.rows_written)}` : "读取失败",
         today && (today.rows_read > free.rows_read * .8 || today.rows_written > free.rows_written * .8) ? "warn" : "")
       : card("云端计量", a.status === "unavailable" ? "不可用" : "未读取", a.message || "", "warn"));
@@ -262,6 +287,7 @@ function renderUsage(doc) {
     ? doc.estimate.lines.map(l => `<tr><td>${esc(l.item)}</td><td class="num">${esc(l.used == null ? "读取失败" : amount(l, l.used))}</td><td class="num">${esc(amount(l, l.included))}</td><td class="num">${esc("$" + l.unit_price + " / " + l.per)}</td><td class="num">${esc(usd(l.cost))}</td></tr>`).join("")
       + `<tr><td><strong>合计（Paid 计划超出部分）</strong></td><td></td><td></td><td></td><td class="num"><strong>${esc(doc.estimate.total == null ? "部分未知" : usd(doc.estimate.total))}</strong></td></tr>`
     : `<tr><td colspan="5" class="warn">${esc(a.message || "云端计量不可用，不能估算操作量")}</td></tr>`;
+  renderFreePlan(doc.free_plan, p);
   $("#usage-notes").innerHTML = [
     "估算，不是发票：只按公开单价计算超出每月含量的部分，不含套餐月费；账单周期、四舍五入和同账号其他 Worker 的用量都可能使实际金额不同。",
     `单价来源：<a href="${esc(p.durable_objects.source)}" target="_blank" rel="noopener">Durable Objects pricing</a>（${esc(p.durable_objects.as_of)}）、<a href="${esc(p.r2.source)}" target="_blank" rel="noopener">R2 pricing</a>（${esc(p.r2.as_of)}，${esc(p.r2.storage_class)}）。`,
