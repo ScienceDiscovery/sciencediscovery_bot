@@ -43,7 +43,7 @@ SQLite、R2 模拟数据及运行时文件保存在 `.wrangler/local/`，正常 
 
 - `src/worker/index.ts`：公开 Fetch、Access 鉴权管理、Cron 与 `BotObject`。所有投递都进入固定名称 `archive-v1`，避免多个 Worker 实例各自去重。管理路径通过 Access JWT 校验后仅可调用只读 RPC；未认证路径不会转入管理方法。
 - `src/worker/archive.ts`：完整正文和包含请求／应用响应的详情先写 R2，随后用 SQLite 事务写查询索引、计数、delivery 去重和待刷新状态。存储失败返回 503，不确认成功；失败前写入的 R2 对象可能成为未索引对象，后续维护不能只按日期随意清理。
-- `src/worker/board.ts`：订阅处理器暂存本次刷新意图，只有归档事务成功才计入 `requested`。同仓短时间事件合并，默认 20 秒去抖、成功触发间隔至少 60 秒；正式实例设 `SDBOT_BOARD_DEBOUNCE=600`，10 分钟内的事件合并为一次采集，两次触发至少相隔 10 分钟，测试实例保留默认值便于验证；失败从 30 秒指数退避到 600 秒。发送前保存 120 秒执行租约，崩溃后恢复。Alarm 执行期间不阻塞新投递；正式实例每五分钟 Cron 修复调度，空闲站点默认每小时刷新一次。测试实例采用同样的调度规则，但只操作测试看板；停用任何环境时清空该环境的目标映射。
+- `src/worker/board.ts`：订阅处理器暂存本次刷新意图，只有归档事务成功才计入 `requested`。同仓短时间事件合并，默认 20 秒去抖、成功触发间隔至少 60 秒；正式实例设 `SDBOT_BOARD_DEBOUNCE=600`，10 分钟内的事件合并为一次采集，两次触发至少相隔 10 分钟；失败从 30 秒指数退避到 600 秒。发送前保存 120 秒执行租约，崩溃后恢复。Alarm 执行期间不阻塞新投递；正式实例每五分钟 Cron 修复调度，只调度 `ScienceDiscovery/github-status-board`，空闲时默认每小时刷新一次。停用看板调度时清空 `SDBOT_BOARD_TARGETS`。
 - `src/core/actions.ts`：只为目标看板仓申请 `Metadata: read / Actions: write` 安装令牌，调用固定 `collect.yml`、固定 `main`，传入源仓和刷新编号。私钥、令牌、原始 Webhook 内容不会作为工作流 inputs 传递。
 - `tools/workers-local.mjs` 与 `src/worker/local-admin.ts`：本地管理桥和现有面板。校验 loopback hostname，并继续拒绝 Cf-* 头；公网 bundle 包含受认证保护的管理页面，不包含本地管理桥。
 
@@ -55,7 +55,7 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 
 ## 日志
 
-正式与测试配置均开启 Workers Logs（`observability.logs.enabled` 与 `invocation_logs`），用于排查线上请求和 Durable Object 调用失败。代码本身不输出 `console` 日志，平台为每次调用记录请求方法、URL、响应状态、耗时和未捕获异常，不记录请求或响应正文。日志只在 Cloudflare 账号控制台可见，保留期由套餐决定。
+正式配置 `wrangler.jsonc` 开启 Workers Logs（`observability.logs.enabled` 与 `invocation_logs`），用于排查线上请求和 Durable Object 调用失败。代码本身不输出 `console` 日志，平台为每次调用记录请求方法、URL、响应状态、耗时和未捕获异常，不记录请求或响应正文。日志只在 Cloudflare 账号控制台可见，保留期由套餐决定。
 
 平台会把 cookie 以及名称含 `auth`、`key`、`secret`、`token`、`jwt` 的请求头值替换为 `REDACTED`，因此 `/actions/token` 的 OIDC Bearer 凭据不会以明文进入日志。GitHub／GitCode 的 `x-*-signature-256` 不在平台脱敏范围，会按原值记录；签名只能核验对应那一次投递正文，不能推出 Webhook secret，而正文不进入日志。投递存档中的请求头仍由 `safeHeaders` 另行脱敏。Worker 顶层对未处理异常统一返回 503、不输出原因，排查时对照同一时刻 `BotObject` 的调用记录。[Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)、[脱敏规则](https://developers.cloudflare.com/workers/runtime-apis/handlers/tail/)
 
@@ -85,9 +85,9 @@ Durable Objects 的 SQLite 按读取与写入的行数计量，免费额度按�
 
 ## Actions 配置
 
-两个看板仓都需要 `collect.yml`、`collection_context.py`、`collect_with_oidc.py` 和已有采集器代码。每个看板仓的 `board-config.json` 只保存本站映射，相同工作流按运行仓选择唯一源仓，拒绝另一个环境的目标或源仓；正式与测试快照不能互相覆盖。
+只有正式看板仓 `ScienceDiscovery/github-status-board` 需要 `collect.yml`、`collection_context.py`、`collect_with_oidc.py` 和已有采集器代码。它的 `board-config.json` 只保存正式源仓映射，工作流按运行仓选择唯一源仓，拒绝不匹配的目标或源仓。
 
-正式与测试目标仓分别配置 `SDBOT_TOKEN_BROKER_URL` 和 `SDBOT_TOKEN_AUDIENCE` 两个 Actions Variables；私钥仅由对应 Worker 使用。`collect_with_oidc.py` 校验本站映射后，通过工作流 OIDC 身份换取源仓只读／目标仓 Contents 写令牌，采集后尝试撤销。Worker 同时固定看板仓／组织 ID、main 与 collect.yml；详见 [Actions OIDC](actions-oidc.md)。
+正式看板仓配置 `SDBOT_TOKEN_BROKER_URL` 和 `SDBOT_TOKEN_AUDIENCE` 两个 Actions Variables，令牌端点是正式 Worker 的 `/actions/token`；私钥仅由正式 Worker 使用。`collect_with_oidc.py` 校验本站映射后，通过工作流 OIDC 身份换取源仓只读／目标仓 Contents 写令牌，采集后尝试撤销。Worker 同时固定看板仓／组织 ID、main 与 collect.yml；详见 [Actions OIDC](actions-oidc.md)。
 
 源仓读取权限沿用看板要求：Contents、Issues、Pull requests、Actions、Checks、Commit statuses；目标仓需要 Contents 写与触发任务的 Actions 写权限。App 必须安装到两端，跨组织分别使用对应 installation。Actions 用 App 令牌提交 site，使已有 `pages.yml` 的 push 触发器生效；不能换成默认 GITHUB_TOKEN 写入后期待自动触发另一个工作流。
 
