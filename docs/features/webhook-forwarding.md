@@ -10,6 +10,8 @@
 - **目标 URL**：只接受 `https`；
 - **来源**：`github`、`gitcode` 或两者；
 - **事件类型**：可多选 `issue`、`issue_comment`、`pull_request`、`pull_request_review`、`push`、`ping`、`other`。类型是归一化后的 kind，`other` 表示这六类之外、已经归档的事件，例如 `workflow_run`、`installation` 或未识别的事件；
+- **仓库**（可选）：一组 `owner/name`，最多 50 个，不区分大小写；留空表示所有仓库；
+- **附加标头**（可选）：最多 10 个，例如 `Authorization: Bearer <令牌>`，用于目标服务的鉴权；
 - **签名密钥**（可选）。
 
 ## 转发规则
@@ -24,6 +26,8 @@
   - `X-Sdbot-Provider`；
   - `X-Sdbot-Event`：归一化后的 kind；
   - `X-Sdbot-Delivery`：平台 delivery id，没有时用记录 id。
+- **仓库过滤**：订阅填了仓库时，只转发这些仓库的投递，按归一化后的仓库名（GitHub 的 `full_name`、GitCode 的项目路径）不区分大小写比较。不在 `SDBOT_REPOS` 范围、记为 `ignored` 的投递，只要仓库在订阅列表里也会转发。没有仓库的投递（例如 App 级别的 `installation`）只发给未填仓库的订阅。
+- **附加标头**：原样加入每次转发请求。名称须是合法的 HTTP 字段名，同名（不区分大小写）不能出现两次；值最长 1024 个字符，不能含换行或其他控制字符，防止拼出额外的标头。Bot 自己设置或会改变请求结构与路由的标头不能配置：`Content-Type`、`Content-Length`、`Content-Encoding`、`Transfer-Encoding`、`Host`、`Connection`、`Keep-Alive`、`Upgrade`、`TE`、`Trailer`、`Expect`、`Cookie`、`User-Agent`、`X-Hub-Signature-256`，以及以 `X-Sdbot-`、`Proxy-`、`CF-`、`Sec-` 开头的名称。
 - **签名**：设置了密钥时，对原始正文做 HMAC-SHA256，十六进制摘要放在 `X-Hub-Signature-256: sha256=<hex>`。
 - **超时与重定向**：单次超时 5 秒，不跟随重定向，3xx 记为失败。
 - **不重试**：目标失败、超时或被拒绝时，Webhook 仍按来源平台原来的成功状态确认，转发也不会再重试。
@@ -37,7 +41,7 @@
 
 ## 密钥与可见范围
 
-签名密钥保存在 Bot 的 Durable Object 中，只能通过 Access 认证后的 `GET /admin/api/forwards` 读回，用于编辑时核对。它不会进入日志、`/admin/api/status`、`/admin/api/usage` 或 Webhook 响应。
+签名密钥和附加标头的值（常常是令牌）保存在 Bot 的 Durable Object 中，只能通过 Access 认证后的 `GET /admin/api/forwards` 读回，用于编辑时核对。它们不会进入日志、`/admin/api/status`、`/admin/api/usage`、投递记录或 Webhook 响应。管理页的订阅卡片只显示标头名称；编辑表单中的标头值默认遮住，勾选「显示标头值」才显示。
 
 ## 管理接口
 
@@ -69,6 +73,7 @@
 - 目标返回 500、302 和超时时 Webhook 仍返回 200，并记录各自的结果；
 - 验签失败和重复投递不转发；
 - 密钥不进入状态和用量接口；
-- 20 条上限、405、跨站 403 和未认证 401。
+- 20 条上限、405、跨站 403 和未认证 401；
+- 按仓库过滤（不区分大小写，含范围外仓库）、附加标头送达目标且不出现在状态、用量和投递接口中，以及非法字段名、含换行的值、保留标头、重复名称和超过 10 个标头时的 422。
 
-浏览器旅程 `test/journey-cloud-admin.spec.cjs` 在 390px 下完成配置，并确认加载后没有定时请求。
+浏览器旅程 `test/journey-cloud-admin.spec.cjs` 在 390px 下完成配置（含仓库和 `Authorization` 标头，值默认遮住、卡片只显示名称），并确认加载后没有定时请求。

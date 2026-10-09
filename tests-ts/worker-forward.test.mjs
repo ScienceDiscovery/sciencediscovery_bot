@@ -153,3 +153,67 @@ test('forwarding sends verified, archived deliveries to matching HTTPS targets o
     assert.equal((await mf.dispatchFetch('http://localhost/admin/api/forwards', { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } })).status, 401);
   });
 });
+
+test('subscriptions can be limited to repositories and send configured headers', { timeout: 60000 }, async t => {
+  await mkdir('.tmp/tests-ts', { recursive: true });
+  const directory = await mkdtemp(resolve('.tmp/tests-ts/worker-forward-repos-'));
+  const access = await accessFixture();
+  const received = [];
+  const mf = await workerRuntime({ directory, bindings: { ...access.bindings, SDBOT_GITHUB_WEBHOOK_SECRET: GITHUB_SECRET, SDBOT_REPOS: 'openJiuwen-ai/sciencediscovery', SDBOT_ENVIRONMENT: 'test' },
+    outboundService: async request => {
+      const jwks = access.jwks(request); if (jwks) return jwks;
+      received.push({ url: request.url, headers: Object.fromEntries(request.headers) });
+      return new Response('ok');
+    } });
+  t.after(async () => { await mf.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const create = async fields => { const response = await access.admin(mf, '/admin/api/forwards', { method: 'POST', body: { providers: ['github'], types: ['issue'], ...fields } }); return { status: response.status, body: await response.json() }; };
+  const to = path => received.filter(r => r.url === 'https://a.example' + path);
+  const deliver = async repo => {
+    const delivery = github('issues', { action: 'opened', repository: { full_name: repo }, issue: { number: 1 } });
+    assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', delivery.init)).status, 200);
+  };
+
+  await t.test('repositories and headers are validated', async () => {
+    for (const [fields, error] of [
+      [{ repos: ['not-a-repo'] }, /repos must be owner\/name/],
+      [{ repos: 'openJiuwen-ai/sciencediscovery' }, /repos must be a list/],
+      [{ headers: [{ name: 'Bad Name', value: 'x' }] }, /not a valid field name/],
+      [{ headers: [{ name: 'X-Note', value: 'one\r\nX-Injected: yes' }] }, /without line breaks/],
+      [{ headers: [{ name: 'Content-Type', value: 'text/plain' }] }, /cannot be configured/],
+      [{ headers: [{ name: 'X-Sdbot-Event', value: 'issue' }] }, /cannot be configured/],
+      [{ headers: [{ name: 'X-Hub-Signature-256', value: 'sha256=0' }] }, /cannot be configured/],
+      [{ headers: [{ name: 'Host', value: 'a.example' }] }, /cannot be configured/],
+      [{ headers: [{ name: 'Authorization', value: 'a' }, { name: 'authorization', value: 'b' }] }, /more than once/],
+      [{ headers: Array.from({ length: 11 }, (_, i) => ({ name: 'X-H' + i, value: 'v' })) }, /at most 10 headers/],
+    ]) {
+      const result = await create({ name: 'invalid', url: 'https://a.example/x', ...fields });
+      assert.equal(result.status, 422, JSON.stringify(fields).slice(0, 80));
+      assert.match(result.body.error, error);
+    }
+  });
+
+  await t.test('only listed repositories are forwarded, compared without case', async () => {
+    assert.equal((await create({ name: 'Main repo', url: 'https://a.example/main', repos: ['OPENJIUWEN-AI/SCIENCEDISCOVERY'] })).status, 201);
+    assert.equal((await create({ name: 'Other repo', url: 'https://a.example/other-repo', repos: ['someone/else'] })).status, 201);
+    assert.equal((await create({ name: 'Any repo', url: 'https://a.example/any' })).status, 201);
+    await deliver('openJiuwen-ai/sciencediscovery');
+    await until(() => to('/main').length === 1 && to('/any').length === 1);
+    // An out-of-scope repository is still archived (ignored) and still forwarded where it is listed.
+    await deliver('someone/else');
+    await until(() => to('/other-repo').length === 1 && to('/any').length === 2);
+    await new Promise(r => setTimeout(r, 300));
+    assert.deepEqual([to('/main').length, to('/other-repo').length, to('/any').length], [1, 1, 2]);
+  });
+
+  await t.test('configured headers reach the target and stay admin-only', async () => {
+    const created = await create({ name: 'With token', url: 'https://a.example/with-token', headers: [{ name: 'Authorization', value: 'Bearer crsr_test_value' }, { name: 'X-Env', value: 'prod' }] });
+    assert.equal(created.status, 201);
+    assert.deepEqual(created.body.subscription.headers, [{ name: 'Authorization', value: 'Bearer crsr_test_value' }, { name: 'X-Env', value: 'prod' }]);
+    await deliver('openJiuwen-ai/sciencediscovery');
+    const [sent] = await until(() => to('/with-token').length && to('/with-token'));
+    assert.deepEqual([sent.headers.authorization, sent.headers['x-env'], sent.headers['x-sdbot-provider'], sent.headers['content-type']], ['Bearer crsr_test_value', 'prod', 'github', 'application/json']);
+    for (const path of ['/admin/api/status', '/admin/api/usage', '/admin/api/events']) assert.doesNotMatch(await (await access.admin(mf, path)).text(), /crsr_test_value/, path);
+    const list = await (await access.admin(mf, '/admin/api/forwards')).json();
+    assert.equal(list.subscriptions.find(s => s.name === 'With token').headers[0].value, 'Bearer crsr_test_value', 'readable for editing behind Access');
+  });
+});

@@ -43,7 +43,11 @@
   .form-actions, .card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .card-actions { margin-top: 8px; }
   .form-error { color: var(--bad); margin: 0; }
-  .config-form > label.inline-check { display: flex; gap: 6px; align-items: center; }
+  .config-form > label.inline-check, .config-form label.inline-check { display: flex; gap: 6px; align-items: center; }
+  /* Header rows: name and remove button on one line, the value below, so 390 px needs no sideways scroll. */
+  .config-form fieldset.header-rows { display: grid; gap: 8px; }
+  .header-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+  .header-row .header-value { grid-column: 1 / -1; }
   #usage-page h3 { margin: 20px 0 8px; font-size: 15px; }
   #usage-page p, #usage-page li { overflow-wrap: anywhere; }
   .usage-notes { color: var(--muted); font-size: 12px; margin: 8px 0 0; padding-left: 18px; }
@@ -162,6 +166,11 @@
         <label><input type="checkbox" name="types" value="pull_request"> pull_request</label><label><input type="checkbox" name="types" value="pull_request_review"> pull_request_review</label>
         <label><input type="checkbox" name="types" value="push"> push</label><label><input type="checkbox" name="types" value="ping"> ping</label>
         <label><input type="checkbox" name="types" value="other"> other（以上之外的已归档事件）</label>
+      </fieldset>
+      <label>仓库（可选，每行一个 owner/name；留空表示所有仓库） <textarea name="repos" rows="2" spellcheck="false" placeholder="openJiuwen-ai/sciencediscovery"></textarea></label>
+      <fieldset class="header-rows"><legend>附加标头（可选，最多 10 个，例如 Authorization: Bearer …）</legend>
+        <div id="forward-headers"></div>
+        <div class="form-actions"><button type="button" id="add-forward-header">添加标头</button><label class="inline-check muted"><input type="checkbox" id="show-forward-headers"> 显示标头值</label></div>
       </fieldset>
       <label>签名密钥（可选，HMAC-SHA256 写入 X-Hub-Signature-256） <input type="password" name="secret" maxlength="256" autocomplete="off"></label>
       <label class="muted inline-check"><input type="checkbox" id="show-forward-secret"> 显示密钥</label>
@@ -517,6 +526,7 @@ function renderForwards(doc) {
     <header><h3>${esc(f.name)}</h3><span class="${f.last?.error ? "bad" : f.last ? "ok" : "muted"}">${f.last ? (f.last.error ? "最近失败" : "最近成功") : "未转发"}</span></header>
     <p><code>${esc(f.url)}</code></p>
     <div class="routes">${f.providers.map(v => `<code>${esc(v)}</code>`).join("")}${f.types.map(v => `<code>${esc(v)}</code>`).join("")}</div>
+    <p class="scope">仓库：${esc(f.repos.length ? f.repos.join("、") : "所有仓库")}${f.headers.length ? ` · 附加标头：${esc(f.headers.map(h => h.name).join("、"))}` : ""}</p>
     <p class="scope">${f.has_secret ? "已设置签名密钥" : "不签名"} · 最近一次：${lastResult(f.last)}</p>
     <div class="card-actions"><button type="button" data-edit-forward="${esc(f.id)}">编辑</button><button type="button" data-delete-forward="${esc(f.id)}">删除</button></div>
   </article>`).join("") || '<p class="muted">还没有转发订阅</p>';
@@ -525,11 +535,25 @@ async function loadForwards() {
   if (!cloudAdmin) return cloudOnly($("#forward-list"));
   renderForwards(await api("/api/forwards"));
 }
+// Header values are often credentials: masked unless "显示标头值" is checked, and only names appear on the cards.
+function headerRow(header = { name: "", value: "" }) {
+  const row = document.createElement("div");
+  row.className = "header-row";
+  row.innerHTML = `<input type="text" class="header-name" placeholder="Authorization" aria-label="标头名称" maxlength="64" autocomplete="off">`
+    + `<button type="button" class="remove-header">删除</button>`
+    + `<input type="${$("#show-forward-headers").checked ? "text" : "password"}" class="header-value" placeholder="Bearer …" aria-label="标头值" maxlength="1024" autocomplete="off">`;
+  row.querySelector(".header-name").value = header.name;
+  row.querySelector(".header-value").value = header.value;
+  $("#forward-headers").append(row);
+}
 function openForward(sub) {
   const form = $("#forward-form");
   editingForward = sub ? sub.id : null;
   form.hidden = false;
   field(form, "name").value = sub?.name || ""; field(form, "url").value = sub?.url || ""; field(form, "secret").value = sub?.secret || "";
+  field(form, "repos").value = (sub?.repos || []).join("\n");
+  $("#forward-headers").replaceChildren();
+  for (const header of sub?.headers || []) headerRow(header);
   check(form, "providers", sub?.providers || ["github"]); check(form, "types", sub?.types || []);
   form.querySelector(".form-error").textContent = "";
   field(form, "name").focus();
@@ -537,9 +561,16 @@ function openForward(sub) {
 $("#new-forward").addEventListener("click", () => openForward(null));
 $("#cancel-forward").addEventListener("click", () => { $("#forward-form").hidden = true; editingForward = null; });
 $("#show-forward-secret").addEventListener("change", ev => { field($("#forward-form"), "secret").type = ev.target.checked ? "text" : "password"; });
+$("#add-forward-header").addEventListener("click", () => { headerRow(); $("#forward-headers .header-row:last-child .header-name").focus(); });
+$("#forward-headers").addEventListener("click", ev => { const remove = ev.target.closest(".remove-header"); if (remove) remove.closest(".header-row").remove(); });
+$("#show-forward-headers").addEventListener("change", ev => { document.querySelectorAll("#forward-headers .header-value").forEach(input => { input.type = ev.target.checked ? "text" : "password"; }); });
 $("#forward-form").addEventListener("submit", async ev => {
   ev.preventDefault();
-  const form = ev.target, body = { name: field(form, "name").value, url: field(form, "url").value, providers: checked(form, "providers"), types: checked(form, "types"), secret: field(form, "secret").value };
+  const form = ev.target, body = { name: field(form, "name").value, url: field(form, "url").value, providers: checked(form, "providers"), types: checked(form, "types"), secret: field(form, "secret").value,
+    repos: field(form, "repos").value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean),
+    // Rows left completely empty are ignored; a half-filled row is sent so the server can say what is missing.
+    headers: [...document.querySelectorAll("#forward-headers .header-row")].map(row => ({ name: row.querySelector(".header-name").value.trim(), value: row.querySelector(".header-value").value }))
+      .filter(header => header.name || header.value) };
   try {
     await send(editingForward ? "/api/forwards/" + editingForward : "/api/forwards", editingForward ? "PUT" : "POST", body);
     form.hidden = true; editingForward = null;

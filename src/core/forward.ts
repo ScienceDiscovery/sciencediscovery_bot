@@ -11,9 +11,17 @@ export const FORWARD_PROVIDERS = ['github', 'gitcode'] as const;
 export const FORWARD_TYPES = ['issue', 'issue_comment', 'pull_request', 'pull_request_review', 'push', 'ping', 'other'] as const;
 const NAMED = new Set<string>(FORWARD_TYPES.filter(type => type !== 'other'));
 
+export const FORWARD_REPO_LIMIT = 50;
+export const FORWARD_HEADER_LIMIT = 10;
+
 export interface ForwardResult { at: string; delivery_id: string; status: number | null; error: string | null }
+export interface ForwardHeader { name: string; value: string }
 export interface ForwardSubscription {
   id: string; name: string; url: string; providers: string[]; types: string[]; secret: string;
+  /** owner/name, lower case; empty forwards every repository. */
+  repos: string[];
+  /** Extra request headers such as Authorization; values are credentials and stay admin-only. */
+  headers: ForwardHeader[];
   created: string; updated: string; last: ForwardResult | null;
 }
 
@@ -69,13 +77,46 @@ export function targetProblem(value: string): string | null {
   if (host.startsWith('[')) return !v6 || blockedIPv6(v6) ? 'loopback, private, link-local or reserved address' : null;
   return null;
 }
+const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+// RFC 9110 token characters for a field name.
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/;
+// Headers the bot sets itself, or that would change how the request is framed or routed.
+const RESERVED_HEADERS = new Set(['content-type', 'content-length', 'content-encoding', 'transfer-encoding', 'host', 'connection', 'keep-alive', 'upgrade', 'te',
+  'trailer', 'expect', 'cookie', 'user-agent', 'x-hub-signature-256']);
+const reservedHeader = (name: string): boolean => RESERVED_HEADERS.has(name) || name.startsWith('x-sdbot-') || name.startsWith('proxy-') || name.startsWith('cf-') || name.startsWith('sec-');
+function parseRepos(value: unknown): string[] | string {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return 'repos must be a list of owner/name';
+  const repos = value.map(r => typeof r === 'string' ? r.trim() : '').filter(Boolean);
+  if (repos.length !== value.length && value.some(r => typeof r !== 'string')) return 'repos must be a list of owner/name';
+  if (repos.length > FORWARD_REPO_LIMIT || repos.some(r => !REPO.test(r))) return `repos must be owner/name, at most ${FORWARD_REPO_LIMIT}`;
+  return [...new Set(repos.map(r => r.toLowerCase()))];
+}
+function parseHeaders(value: unknown): ForwardHeader[] | string {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return 'headers must be a list of {name, value}';
+  const headers: ForwardHeader[] = [], seen = new Set<string>();
+  for (const item of value) {
+    const entry = object(item), name = string(entry.name).trim(), text = string(entry.value);
+    if (!HEADER_NAME.test(name)) return `header name ${JSON.stringify(name.slice(0, 64))} is not a valid field name`;
+    const lower = name.toLowerCase();
+    if (reservedHeader(lower)) return `header ${name} is set by the bot or controls the connection and cannot be configured`;
+    if (seen.has(lower)) return `header ${name} appears more than once`;
+    // Line breaks or other control characters could smuggle extra headers.
+    if (typeof entry.value !== 'string' || text.length > 1024 || /[\u0000-\u0008\u000a-\u001f\u007f]/.test(text)) return `header ${name} needs a value of at most 1024 characters without line breaks`;
+    seen.add(lower);
+    headers.push({ name, value: text.trim() });
+  }
+  if (headers.length > FORWARD_HEADER_LIMIT) return `at most ${FORWARD_HEADER_LIMIT} headers`;
+  return headers;
+}
 const pick = (values: unknown, allowed: readonly string[]): string[] | null => {
   const list = array(values);
   if (!list.length || list.some(v => typeof v !== 'string' || !allowed.includes(v))) return null;
   return [...new Set(list as string[])].sort((a, b) => allowed.indexOf(a) - allowed.indexOf(b));
 };
 /** Validates an admin request body; returns the fields or the reason it was refused. */
-export function parseSubscription(input: unknown): { ok: true; value: Pick<ForwardSubscription, 'name' | 'url' | 'providers' | 'types' | 'secret'> } | { ok: false; error: string } {
+export function parseSubscription(input: unknown): { ok: true; value: Pick<ForwardSubscription, 'name' | 'url' | 'providers' | 'types' | 'secret' | 'repos' | 'headers'> } | { ok: false; error: string } {
   const doc = object(input), name = string(doc.name).trim(), url = string(doc.url).trim(), secret = string(doc.secret);
   if (!name || name.length > 80) return { ok: false, error: 'name must be 1-80 characters' };
   const problem = targetProblem(url);
@@ -84,14 +125,19 @@ export function parseSubscription(input: unknown): { ok: true; value: Pick<Forwa
   if (!providers) return { ok: false, error: 'providers must be a non-empty subset of github, gitcode' };
   if (!types) return { ok: false, error: `types must be a non-empty subset of ${FORWARD_TYPES.join(', ')}` };
   if (doc.secret !== undefined && typeof doc.secret !== 'string' || secret.length > 256) return { ok: false, error: 'secret must be a string of at most 256 characters' };
-  return { ok: true, value: { name, url, providers, types, secret } };
+  const repos = parseRepos(doc.repos), headers = parseHeaders(doc.headers);
+  if (typeof repos === 'string') return { ok: false, error: repos };
+  if (typeof headers === 'string') return { ok: false, error: headers };
+  return { ok: true, value: { name, url, providers, types, secret, repos, headers } };
 }
 /** The subscription type an archived delivery falls under. */
 export const forwardType = (kind: string): string => NAMED.has(kind) ? kind : 'other';
 /** Verified and archived: accepted or out-of-scope deliveries, never rejected ones or redeliveries. */
 export const forwardable = (record: Doc): boolean => (record.status === 'accepted' || record.status === 'ignored') && !record.duplicate;
+/** Source, type and, when the subscription lists repositories, the delivery's repository (case-insensitive). */
 export const matches = (sub: ForwardSubscription, record: Doc): boolean =>
-  sub.providers.includes(string(record.provider)) && sub.types.includes(forwardType(string(record.kind)));
+  sub.providers.includes(string(record.provider)) && sub.types.includes(forwardType(string(record.kind)))
+  && (!sub.repos?.length || sub.repos.includes(string(record.repo).toLowerCase()));
 
 /** One delivery to one target: the original body, five seconds, no redirects. Never throws. */
 export async function deliver(sub: ForwardSubscription, record: Doc, body: Uint8Array, contentType: string,
@@ -102,6 +148,8 @@ export async function deliver(sub: ForwardSubscription, record: Doc, body: Uint8
   if (problem) return result(null, `target rejected: ${problem}`);
   const headers: Record<string, string> = { 'Content-Type': contentType || 'application/json', 'User-Agent': 'sciencediscovery-bot-forward',
     'X-Sdbot-Provider': string(record.provider), 'X-Sdbot-Event': string(record.kind), 'X-Sdbot-Delivery': delivery };
+  // Configured headers are added to the bot's own; reserved names are refused on save and skipped here, so they cannot replace them.
+  for (const header of sub.headers || []) if (!reservedHeader(header.name.toLowerCase())) headers[header.name] = header.value;
   if (sub.secret) headers['X-Hub-Signature-256'] = await sign(body, sub.secret);
   try {
     const response = await fetcher(sub.url, { method: 'POST', headers, body: new Uint8Array(body), redirect: 'manual', signal: AbortSignal.timeout(FORWARD_TIMEOUT_MS) });
@@ -113,5 +161,5 @@ export async function deliver(sub: ForwardSubscription, record: Doc, body: Uint8
     return result(null, name === 'TimeoutError' || name === 'AbortError' ? `timed out after ${FORWARD_TIMEOUT_MS / 1000} s` : 'network error');
   }
 }
-/** What the admin page shows; the secret is readable there and nowhere else. */
-export const publicSubscription = (sub: ForwardSubscription): Doc => ({ ...sub, has_secret: !!sub.secret });
+/** What the admin page shows; the secret and header values are readable there and nowhere else. */
+export const publicSubscription = (sub: ForwardSubscription): Doc => ({ ...sub, repos: sub.repos || [], headers: sub.headers || [], has_secret: !!sub.secret });
