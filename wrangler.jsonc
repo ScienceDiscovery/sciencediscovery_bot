@@ -19,6 +19,8 @@
     "SDBOT_ACTIONS_REPOSITORY_ID": "1379305235",
     "SDBOT_ACTIONS_OWNER_ID": "329935216",
     "SDBOT_ADMIN_HOSTNAME": "sciencediscovery-bot-worker.llmbots.co",
+    "SDBOT_ACCESS_ISSUER": "https://dalongmao.cloudflareaccess.com",
+    "SDBOT_ACCESS_AUD": "0ad463e608da4dfca63827f759f18ae21e5ac58646ad157b6aaaaa21483bdca0",
     "SDBOT_GITHUB_APP_ID": "5016872",
     "SDBOT_REPOS": "openJiuwen-ai/sciencediscovery",
     "SDBOT_BOARD_TARGETS": "{\"openJiuwen-ai/sciencediscovery\":\"ScienceDiscovery/github-status-board\"}",
