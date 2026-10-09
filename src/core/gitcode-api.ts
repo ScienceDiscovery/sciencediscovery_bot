@@ -1,6 +1,6 @@
 /** GitCode REST v5 client for merge requests. Merging is deliberately not implemented. */
 import { scrub } from './redact.js';
-import { array, number, object, string, type Doc } from './types.js';
+import { array, object, string, type Doc } from './types.js';
 
 type Fetcher = typeof fetch;
 export class GitCodeApiError extends Error {
@@ -10,6 +10,19 @@ export interface GitCodePull { number: number; url: string; state: string; title
 export interface GitCodeComment { id: string; body: string; author: string; created_at: number; url: string }
 export interface GitCodeApiOptions { api_url: string; web_url: string; token: string; auth_mode: 'header' | 'query' }
 
+/**
+ * The merge request number (`!N`) from `number` or `iid`, as a JSON integer or an integer string such as "175".
+ * GitCode's global `id` is a different identifier and is never used.
+ */
+export function mergeRequestNumber(value: unknown): number | null {
+  const doc = object(value);
+  for (const raw of [doc.number, doc.iid]) {
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+    if (Number.isSafeInteger(n) && n > 0) return n;
+  }
+  return null;
+}
+const missingNumber = (): GitCodeApiError => new GitCodeApiError('gitcode_error', 'GitCode returned a merge request without a number');
 const messageOf = (value: unknown): string => {
   const doc = object(value);
   for (const key of ['error_message', 'message', 'error', 'msg']) if (typeof doc[key] === 'string') return doc[key] as string;
@@ -41,8 +54,8 @@ export class GitCodeApi {
     try { return await response.json(); } catch { throw new GitCodeApiError('gitcode_error', `GitCode ${label} returned invalid JSON`, response.status, true); }
   }
   private pull(repository: string, value: unknown): GitCodePull {
-    const p = object(value), head = object(p.head), base = object(p.base), n = number(p.number) ?? number(p.iid);
-    if (n === null) throw new GitCodeApiError('gitcode_error', 'GitCode returned a merge request without a number');
+    const p = object(value), head = object(p.head), base = object(p.base), n = mergeRequestNumber(p);
+    if (n === null) throw missingNumber();
     return { number: n, url: string(p.html_url) || `${this.options.web_url.replace(/\/+$/, '')}/${repository}/merge_requests/${n}`, state: string(p.state),
       title: string(p.title), body: string(p.body), head_ref: string(head.ref), head_sha: string(head.sha), head_repo: string(object(head.repo).full_name),
       base_ref: string(base.ref), labels: array(p.labels).map(l => typeof l === 'string' ? l : string(object(l).name)).filter(Boolean) };
@@ -63,6 +76,8 @@ export class GitCodeApi {
     for (let page = 1; page <= 3; page++) {
       const list = array(await this.request('merge request list', 'GET', `/repos/${repository}/pulls`, { state: 'all', per_page: 100, page }));
       for (const item of list) {
+        // One malformed entry must not hide the merge request next to it.
+        if (mergeRequestNumber(item) === null) continue;
         const pull = this.pull(repository, item);
         if (pull.head_ref === branch && (!pull.head_repo || pull.head_repo.toLowerCase() === headRepository.toLowerCase())) found.push(pull);
       }
@@ -77,7 +92,10 @@ export class GitCodeApi {
     return this.pull(repository, await this.request('merge request creation', 'POST', `/repos/${repository}/pulls`, {}, fields));
   }
   async updatePull(repository: string, n: number, fields: { title?: string; body?: string; state?: 'open' | 'closed' }): Promise<GitCodePull> {
-    return this.pull(repository, await this.request('merge request update', 'PATCH', `/repos/${repository}/pulls/${n}`, {}, fields));
+    const updated = await this.request('merge request update', 'PATCH', `/repos/${repository}/pulls/${n}`, {}, fields);
+    if (mergeRequestNumber(updated) !== null) return this.pull(repository, updated);
+    // The update was accepted but its response does not say which merge request it is; read !n back instead of failing the sync.
+    try { return await this.getPull(repository, n); } catch { throw missingNumber(); }
   }
   async pullCommitCount(repository: string, n: number): Promise<number> {
     let total = 0;

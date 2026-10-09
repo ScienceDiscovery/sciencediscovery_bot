@@ -48,6 +48,8 @@ class World {
   compare = 'ahead';
   /** GitCode refusing a non-fast-forward update of main on its side. */
   rejectMain = false;
+  /** Body GitCode answers a merge request update with, when it is not the merge request itself. */
+  patchResponse: Doc | null = null;
   failApi: { method: string; path: RegExp; status: number } | null = null;
   private nextCheck = 100;
   private nextPull = 11;
@@ -111,6 +113,7 @@ class World {
           if (body.title) pull.title = String(body.title);
           if (body.body) pull.body = String(body.body);
           if (body.state) pull.state = String(body.state);
+          if (this.patchResponse) return this.json(this.patchResponse);
         }
         return this.json(this.pullDoc(pull));
       }
@@ -346,6 +349,21 @@ test('closed closes the MR and deletes the sync branch; merged also fast-forward
   assert.equal(h.listener(await h.send('github_pull_request_merged.json')), 'duplicate');
   await h.tick();
   assert.equal(h.world.updates.length, updates); assert.equal(h.world.deletes.length, 2);
+});
+
+test('an MR update answered without a number still closes the MR and deletes the sync branch', async t => {
+  for (const [action, response] of [['merged', {}], ['closed', { state: 'closed' }]] as const) {
+    const h = await setup(); t.after(h.cleanup);
+    await h.send('github_pull_request_opened.json'); await h.tick();
+    h.world.patchResponse = response;
+    await h.send(`github_pull_request_${action}.json`); await h.tick();
+    const [record] = await h.records();
+    assert.equal(record.action, action); assert.equal(record.status, 'success', record.summary); assert.doesNotMatch(record.summary, /同步失败/);
+    assert.match(record.summary, /已关闭 GitCode MR !11.*；已删除 GitCode 分支 github-pr\/120$/);
+    assert.equal(h.world.pulls.get(11)!.state, 'closed'); assert.deepEqual(h.world.deletes, ['refs/heads/github-pr/120']);
+    assert.ok(h.world.calls.includes(`GET https://gitcode.test/api/v5/repos/${TARGET}/pulls/11`), 'the closed MR is read back by its number');
+    assert.ok(!h.world.calls.some(call => /\/merge(\/|$)/.test(call)));
+  }
 });
 
 test('a merge that cannot fast-forward GitCode main never sends a zero old SHA; the MR is still closed and the branch deleted', async t => {
