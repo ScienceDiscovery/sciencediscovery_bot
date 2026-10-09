@@ -31,6 +31,8 @@
   #subscription-search { max-width: 100%; box-sizing: border-box; }
   #usage-page h2, #forwards-page h2, #callers-page h2 { margin: 0; font-size: 18px; }
   #forwards-page p, #callers-page p { overflow-wrap: anywhere; }
+  /* Copyable commands wrap instead of widening the page on narrow screens. */
+  pre.howto { margin: 8px 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 ui-monospace, monospace; }
   /* Configuration forms: one column, full-width inputs, so they work at 390 px without sideways scrolling. */
   .config-form { display: grid; gap: 10px; max-width: 760px; border: 1px solid var(--line); border-radius: 6px; padding: 14px; margin: 12px 0; }
   .config-form > label { display: grid; gap: 4px; }
@@ -170,7 +172,15 @@
   </section>
   <section id="callers-page" aria-label="外部调用" hidden>
     <h2>外部调用</h2>
-    <p id="caller-help" class="muted"></p>
+    <div id="caller-help">
+      <p class="muted">先在调用方自己的机器上用 openssl 生成一对 RSA 密钥和自签名证书（也可以用 P-256 EC 密钥）：<code>caller.key</code> 是私钥，只留在调用方，不要上传；把 <code>caller.crt</code> 的全文粘贴到下面「新增客户端」并保存（含私钥的 PEM 会被拒绝；RSA 证书用 RS256，P-256 证书用 ES256），然后复制卡片上的客户端 ID。每次需要令牌时，用私钥签一个新的 JWT：<code>iss</code> 和 <code>sub</code> 都是客户端 ID，<code>aud</code> 是 <code>sdbot:caller</code>，带 <code>iat</code>、<code>exp</code>、<code>jti</code>，<code>exp - iat</code> 不超过 600 秒，每个 <code>jti</code> 只能用一次；把它放进 <code>Authorization: Bearer</code>，加上 <code>Content-Type: application/json</code>，向 <code><span class="caller-origin">https://sciencediscovery-bot-worker.llmbots.co</span>/caller/v1/token</code> 发送 <code>POST</code>，正文只有 <code>{"repo":"openJiuwen-ai/sciencediscovery"}</code>，这个地址不经过 Cloudflare Access。成功时得到 <code>{ "token", "expires_at", "repository" }</code>：把 <code>token</code> 放进 <code>Authorization: Bearer</code> 直接请求 <code>https://api.github.com</code>，例如 <code>POST /repos/openJiuwen-ai/sciencediscovery/issues/123/comments</code>、正文 <code>{"body":"..."}</code> 发一条评论；PR 的评论、标签和开关状态也走 Issues 接口，同一个令牌可以处理。令牌只有 <code>metadata: read</code>、<code>issues: write</code>、<code>pull_requests: write</code>，不能改仓库文件；<code>expires_at</code> 是 GitHub 给的到期时间，大约一小时，过期后重新签 JWT 再兑换。仓库必须在 <code>SDBOT_REPOS</code> 中，填了允许列表时还必须在列表里；组织还没批准 GitHub App 的 Issues 与 Pull requests 写权限时返回 503；每个客户端每分钟最多 60 次。完整命令（含 openssl 签 JWT 的脚本）见仓库文档 <code>docs/features/caller-api.md</code>。</p>
+      <pre class="howto"># 1. 生成密钥对和证书；caller.crt 粘贴到下面
+openssl req -x509 -newkey rsa:2048 -sha256 -nodes -keyout caller.key -out caller.crt -days 365 -subj "/CN=my-caller"
+# 2. 用 caller.key 签 JWT（iss=sub=客户端 ID，aud=sdbot:caller，iat/exp/jti）后兑换
+curl -X POST <span class="caller-origin">https://sciencediscovery-bot-worker.llmbots.co</span>/caller/v1/token -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" -d '{"repo":"openJiuwen-ai/sciencediscovery"}'
+# 3. 用返回的 token 调用 GitHub，例如在 #123 下评论
+curl -X POST https://api.github.com/repos/openJiuwen-ai/sciencediscovery/issues/123/comments -H "Authorization: Bearer $TOKEN" -d '{"body":"..."}'</pre>
+    </div>
     <div class="filters"><button id="reload-callers">刷新外部调用</button><button id="new-caller">新增客户端</button><span id="caller-count" class="muted" role="status"></span></div>
     <form id="caller-form" class="config-form" hidden novalidate>
       <label>名称 <input type="text" name="name" maxlength="80" autocomplete="off"></label>
@@ -547,10 +557,8 @@ $("#forward-list").addEventListener("click", async ev => {
 
 function renderCallers(doc) {
   callers = doc.clients;
-  $("#caller-help").innerHTML = `调用方保管私钥，这里只保存公钥证书。调用方向 <code>POST ${esc(doc.endpoint)}</code> 发送 <code>{"repo": "owner/name"}</code>，`
-    + `在 <code>Authorization: Bearer</code> 放一个 JWT：<code>iss</code> 与 <code>sub</code> 为客户端 ID，<code>aud</code> 为 <code>${esc(doc.audience)}</code>，带 <code>exp</code>、<code>iat</code>、<code>jti</code>，`
-    + `有效期不超过 ${esc(doc.max_token_seconds)} 秒，算法与证书一致（RS256 或 ES256）。成功时得到该仓库的 GitHub 安装令牌（<code>${esc(doc.permissions)}</code>），由调用方自己访问 api.github.com。`
-    + `每个客户端每分钟最多 ${esc(doc.rate_per_minute)} 次。此路径不经过 Cloudflare Access。`;
+  // The help text is static; only the exchange address follows the origin this page is served from.
+  document.querySelectorAll("#caller-help .caller-origin").forEach(span => { span.textContent = location.origin; });
   $("#caller-count").textContent = `${callers.length} / ${doc.limit} 个客户端`;
   $("#new-caller").disabled = callers.length >= doc.limit;
   const now = Date.now();
