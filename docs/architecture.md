@@ -68,7 +68,7 @@ Webhook 已接受、Actions 已触发、采集提交成功、Pages 部署成功�
 | `static/index.html` | Bot 管理面板的事件记录与监听点页面；与公开 Pages 看板是两个不同界面 |
 | 看板仓 `publish.py`、`gsb/`、工作流 | Python 增量采集、历史回填、测试报告解析、提交和 Pages 发布 |
 
-私有 R2 保存请求正文及脱敏请求头／响应详情，SQLite 保存索引、计数、有限 delivery 去重窗口和刷新待办；启用 GitCode 同步时还保存每个 PR 的同步状态和最近 300 条脱敏同步记录。Bot 不保存看板的历史回填游标、整套项目快照或测试日志，但会持续保存完整投递档案，因此不能把 Bot 总存储量理解成恒定的小缓存。
+私有 R2 保存请求正文及脱敏请求头／响应详情，SQLite 保存索引、计数、有限 delivery 去重窗口和刷新待办；启用 GitCode 同步时还保存每个 PR 的同步状态和最近 300 条脱敏同步记录。Bot 不保存看板的历史回填游标、整套项目快照或测试日志。正式 Worker 的完整投递档案（R2 正文／详情与 SQLite 索引）按 UTC 日期保留 60 天（`SDBOT_ARCHIVE_RETENTION_DAYS`），由 5 分钟 Cron 分批删除过期日期，累计计数不受影响；保留期内的档案量仍随投递量增长，不能把 Bot 总存储量理解成恒定的小缓存。详见[投递归档](features/webhook-history.md)。
 
 OIDC 兑换不进入 Webhook 档案。SQLite 只额外保存短期的运行／尝试／用途签发记录，防止同一采集尝试反复领取令牌；不保存 JWT、安装令牌或 App 私钥。校验条件、失败与重试行为见 [Actions OIDC 临时凭据](features/actions-oidc.md)。
 

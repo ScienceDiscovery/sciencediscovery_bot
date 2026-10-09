@@ -67,6 +67,14 @@ test('GitCode deliveries reach the bus only for the GitCode sync target, and onl
   assert.ok(!on.repos.includes('openjiuwen/sciencediscovery'));
   for (const off of [configFromEnv({ ...sync, SDBOT_GITCODE_SYNC_TARGET: 'off' }), configFromEnv({ ...sync, GITCODE_TOKEN: '' })]) assert.equal(tracks(off, 'openJiuwen/sciencediscovery', 'gitcode'), false);
 });
+test('archive retention defaults to 60 days and accepts only whole days from 1 to 3650', () => {
+  for (const value of [undefined, '', ' ']) assert.equal(configFromEnv(value === undefined ? {} : { SDBOT_ARCHIVE_RETENTION_DAYS: value }).archive_retention_days, 60);
+  for (const value of ['1', '30', '60', '3650']) {
+    const cfg = configFromEnv({ SDBOT_ARCHIVE_RETENTION_DAYS: value });
+    assert.equal(cfg.archive_retention_days, Number(value)); assert.deepEqual(validateConfig(cfg), []);
+  }
+  for (const value of ['0', '3651', '-5', '1.5', 'abc', '60d']) assert.match(validateConfig(configFromEnv({ SDBOT_ARCHIVE_RETENTION_DAYS: value })).join(), /archive retention/, value);
+});
 test('configuration rejects unsafe listeners and conflicting publisher targets', () => {
   const cfg = configFromEnv(); cfg.webhook_host = '0.0.0.0'; assert.ok(validateConfig(cfg).length);
   cfg.allow_non_loopback = true; cfg.admin_port = cfg.webhook_port; cfg.admin_host = cfg.webhook_host; assert.ok(validateConfig(cfg).length);

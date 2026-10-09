@@ -42,6 +42,8 @@ export interface Config {
   webhook_host: string; webhook_port: number; admin_host: string; admin_port: number;
   admin_enabled: boolean; allow_non_loopback: boolean; admin_token: string;
   data_dir: string; static_dir: string; max_body_bytes: number; dedupe_window: number;
+  /** Days of Worker delivery archive (R2 bodies/exchanges and the deliveries index) to keep, by UTC day. */
+  archive_retention_days: number;
   repos: string[]; secrets: Record<string, string>; log_level: string;
   board_targets: Record<string, string>; board_repo: string; board_track_repo: string;
   board_source_dir: string; board_token: string; board_debounce: number; board_refresh: number; board_execution: 'local' | 'github_actions';
@@ -60,6 +62,8 @@ export function configFromEnv(env: Environment = {}, root = '.'): Config {
     admin_enabled: bool('SDBOT_ADMIN_ENABLED', true), allow_non_loopback: bool('SDBOT_ALLOW_NON_LOOPBACK', false),
     admin_token: str('SDBOT_ADMIN_TOKEN').trim(), data_dir: str('SDBOT_DATA_DIR', `${root}/.data`), static_dir: `${root}/static`,
     max_body_bytes: int('SDBOT_MAX_BODY_MB', 25) * 1024 * 1024, dedupe_window: int('SDBOT_DEDUPE_WINDOW', 2000),
+    // Unset or blank means 60; anything that is not a whole number fails validation instead of silently becoming 60.
+    archive_retention_days: !str('SDBOT_ARCHIVE_RETENTION_DAYS').trim() ? 60 : /^\d+$/.test(str('SDBOT_ARCHIVE_RETENTION_DAYS').trim()) ? Number(str('SDBOT_ARCHIVE_RETENTION_DAYS').trim()) : NaN,
     repos: str('SDBOT_REPOS').split(',').map(v => v.trim().toLowerCase()).filter(Boolean),
     secrets: {}, log_level: str('SDBOT_LOG_LEVEL', 'INFO'),
     board_targets: JSON.parse(str('SDBOT_BOARD_TARGETS', '{}')),
@@ -129,6 +133,7 @@ export function validateConfig(cfg: Config): string[] {
   }
   if (cfg.max_body_bytes <= 0 || !Number.isSafeInteger(cfg.max_body_bytes)) problems.push('body limit must be positive');
   if (cfg.dedupe_window < 0 || !Number.isSafeInteger(cfg.dedupe_window)) problems.push('dedupe window must not be negative');
+  if (!Number.isInteger(cfg.archive_retention_days) || cfg.archive_retention_days < 1 || cfg.archive_retention_days > 3650) problems.push('archive retention must be a whole number of days from 1 to 3650');
   for (const [label, host, port] of [['webhook', cfg.webhook_host, cfg.webhook_port], ['admin', cfg.admin_host, cfg.admin_port]] as const) {
     if (!['127.0.0.1', 'localhost', '::1'].includes(host) && !cfg.allow_non_loopback) problems.push(`${label} listener requires loopback or SDBOT_ALLOW_NON_LOOPBACK=1`);
     if (!Number.isInteger(port) || port < 1 || port > 65535 || [4310, 4311].includes(port)) problems.push(`${label} port is invalid or reserved`);

@@ -53,6 +53,7 @@ docker compose down
 | SDBOT_REPOS | 两个跟踪源仓 | 逗号分隔；空值／空白不放开范围，见[接入范围](features/webhook-ingestion.md) |
 | SDBOT_MAX_BODY_MB | 25 | 最大接收正文 MiB，超限保存前缀并标记 |
 | SDBOT_DEDUPE_WINDOW | 2000 | 记忆的平台 delivery 数量 |
+| SDBOT_ARCHIVE_RETENTION_DAYS | 60 | Worker 投递档案保留天数（UTC 日期），1–3650 的整数；Node 文件归档不清理 |
 | SDBOT_DATA_DIR | .data，容器 /data | 私有投递与队列目录 |
 | SDBOT_RUN_DIR | .run | 宿主脚本 PID／日志目录 |
 | SDBOT_LOG_LEVEL | INFO | 进程日志级别 |

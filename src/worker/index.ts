@@ -5,7 +5,7 @@ import { Router } from '../core/bus.js';
 import { GitHubApp } from '../core/github-app.js';
 import { dispatchCollection } from '../core/actions.js';
 import { Mutex, object } from '../core/types.js';
-import { WorkerArchive } from './archive.js';
+import { WorkerArchive, type PruneResult } from './archive.js';
 import { WorkerBoard } from './board.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
 import { authorizeAdmin } from './access.js';
@@ -18,6 +18,7 @@ export class BotObject extends DurableObject<WorkerEnv> {
   private readonly app: BotApplication;
   private readonly board: WorkerBoard;
   private readonly sync: WorkerGitCodeSync;
+  private readonly archive: WorkerArchive;
   constructor(ctx: DurableObjectState, env: WorkerEnv) {
     super(ctx, env);
     const cfg = workerConfig(env);
@@ -27,7 +28,7 @@ export class BotObject extends DurableObject<WorkerEnv> {
     this.board = new WorkerBoard(ctx.storage, cfg);
     this.sync = new WorkerGitCodeSync(ctx.storage, cfg);
     // Staged board refreshes and sync events commit in the same transaction as the archive index.
-    const archive = new WorkerArchive(ctx.storage, env.ARCHIVE, cfg.dedupe_window, () => { this.board.commitPending(); this.sync.commitPending(); });
+    const archive = this.archive = new WorkerArchive(ctx.storage, env.ARCHIVE, cfg.dedupe_window, () => { this.board.commitPending(); this.sync.commitPending(); }, cfg.archive_retention_days);
     const save = archive.save.bind(archive);
     archive.save = async (...args) => { await this.schedule(); await save(...args); };
     this.app = new BotApplication(new Pipeline(cfg, archive, new Router(this.board, this.sync)), async () => '');
@@ -67,6 +68,8 @@ export class BotObject extends DurableObject<WorkerEnv> {
   // Read-only RPC for the OIDC-authenticated dashboard collector.
   gitcodeSync(): Promise<Record<string, unknown>> { return this.sync.snapshot(); }
   async wake(): Promise<void> { await this.mutex.run(() => this.schedule()); }
+  // Cron-driven retention step; bounded per call and independent of the ingestion mutex.
+  pruneArchive(now?: number): Promise<PruneResult> { return this.archive.prune(now); }
   async alarm(): Promise<void> {
     const jobs = await this.mutex.run(async () => { const result = this.board.claim(); await this.schedule(); return result; });
     const dispatches = jobs.map(async job => {
@@ -113,7 +116,10 @@ export default {
     }
     catch { return jsonResponse({ ok: false, error: 'service unavailable' }, 503); }
   },
-  async scheduled(_controller: ScheduledController, env: WorkerEnv): Promise<void> {
-    await env.BOT.getByName(OBJECT_NAME).wake();
+  async scheduled(controller: ScheduledController, env: WorkerEnv): Promise<void> {
+    const bot = env.BOT.getByName(OBJECT_NAME);
+    await bot.wake();
+    // A failed retention step is retried by the next cron; it never blocks queue scheduling.
+    try { await bot.pruneArchive(controller.scheduledTime); } catch { console.error('archive retention step failed; retrying on the next cron'); }
   },
 };
