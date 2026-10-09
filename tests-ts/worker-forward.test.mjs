@@ -92,6 +92,7 @@ test('forwarding sends verified, archived deliveries to matching HTTPS targets o
       return [subs.issues, subs.broken, subs.redirect, subs.slow].every(id => by[id]) && by;
     });
     assert.deepEqual([last[subs.issues].status, last[subs.issues].error, last[subs.issues].delivery_id], [200, null, delivery.delivery]);
+    assert.deepEqual([last[subs.issues].event, last[subs.issues].repo, last[subs.issues].test, typeof last[subs.issues].duration_ms], ['issue', 'openJiuwen-ai/sciencediscovery', undefined, 'number']);
     assert.deepEqual([last[subs.broken].status, last[subs.broken].error], [500, 'HTTP 500']);
     assert.deepEqual([last[subs.redirect].status, last[subs.redirect].error], [302, 'redirect not followed (HTTP 302)']);
     assert.deepEqual([last[subs.slow].status, last[subs.slow].error], [null, 'timed out after 5 s']);
@@ -215,5 +216,102 @@ test('subscriptions can be limited to repositories and send configured headers',
     for (const path of ['/admin/api/status', '/admin/api/usage', '/admin/api/events']) assert.doesNotMatch(await (await access.admin(mf, path)).text(), /crsr_test_value/, path);
     const list = await (await access.admin(mf, '/admin/api/forwards')).json();
     assert.equal(list.subscriptions.find(s => s.name === 'With token').headers[0].value, 'Bearer crsr_test_value', 'readable for editing behind Access');
+  });
+});
+
+test('a test send reaches the target at once and the latest 20 results are kept', { timeout: 60000 }, async t => {
+  await mkdir('.tmp/tests-ts', { recursive: true });
+  const directory = await mkdtemp(resolve('.tmp/tests-ts/worker-forward-test-'));
+  const access = await accessFixture();
+  const received = [];
+  const mf = await workerRuntime({ directory, bindings: { ...access.bindings, SDBOT_GITHUB_WEBHOOK_SECRET: GITHUB_SECRET, SDBOT_REPOS: 'openJiuwen-ai/sciencediscovery', SDBOT_ENVIRONMENT: 'test' },
+    outboundService: async request => {
+      const jwks = access.jwks(request); if (jwks) return jwks;
+      received.push({ url: request.url, headers: Object.fromEntries(request.headers), body: Buffer.from(await request.arrayBuffer()) });
+      // A careless target that echoes the credentials it was sent, then a long tail.
+      if (new URL(request.url).hostname === 'echo.example') {
+        return new Response(`denied: Authorization ${request.headers.get('authorization')}, X-Env ${request.headers.get('x-env')}\n` + 'x'.repeat(5000), { status: 500 });
+      }
+      return new Response('{"ok":true}');
+    } });
+  t.after(async () => { await mf.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const admin = (path, options) => access.admin(mf, path, options);
+  const json = async response => ({ status: response.status, body: await response.json() });
+  const runTest = async id => json(await admin(`/admin/api/forwards/${id}/test`, { method: 'POST', body: {} }));
+  const list = async () => (await json(await admin('/admin/api/forwards'))).body;
+  const to = path => received.filter(r => r.url === 'https://a.example' + path);
+  const credentials = [{ name: 'Authorization', value: 'Bearer crsr_test_value' }, { name: 'X-Env', value: 'custom-value-123' }];
+  let tested;
+
+  await t.test('the test request carries the subscription headers and signature, but not its filters', async () => {
+    // Filters that no delivery here would pass: a test is sent regardless of source, type and repository.
+    const created = await json(await admin('/admin/api/forwards', { method: 'POST', body: { name: 'Tested', url: 'https://a.example/tested', providers: ['gitcode'], types: ['pull_request'],
+      repos: ['someone/else'], secret: 'forward-target-secret', headers: credentials } }));
+    tested = created.body.subscription.id;
+    assert.deepEqual(created.body.subscription.recent, []);
+    const reply = await runTest(tested);
+    assert.equal(reply.status, 200);
+    const { result } = reply.body;
+    assert.deepEqual([result.status, result.error, result.test, result.event, result.repo, typeof result.duration_ms], [200, null, true, 'ping', '', 'number']);
+    assert.match(result.delivery_id, /^test-[0-9a-f-]{36}$/);
+    assert.equal(reply.body.response_excerpt, '{"ok":true}');
+    const [sent] = to('/tested');
+    assert.equal(to('/tested').length, 1, 'sent before the reply');
+    assert.deepEqual([sent.headers['x-sdbot-test'], sent.headers['x-sdbot-provider'], sent.headers['x-sdbot-event'], sent.headers['x-sdbot-delivery']], ['1', 'test', 'ping', result.delivery_id]);
+    assert.deepEqual([sent.headers.authorization, sent.headers['x-env'], sent.headers['content-type']], ['Bearer crsr_test_value', 'custom-value-123', 'application/json']);
+    assert.equal(sent.headers['x-hub-signature-256'], 'sha256=' + createHmac('sha256', 'forward-target-secret').update(sent.body).digest('hex'));
+    const body = JSON.parse(sent.body.toString());
+    assert.deepEqual([body.test, body.subscription], [true, { id: tested, name: 'Tested' }]);
+    const sub = (await list()).subscriptions.find(s => s.id === tested);
+    assert.deepEqual([sub.last, sub.recent], [result, [result]]);
+  });
+
+  await t.test('a failing target shows its status and a scrubbed, shortened excerpt', async () => {
+    const created = await json(await admin('/admin/api/forwards', { method: 'POST', body: { name: 'Echo', url: 'https://echo.example/hook', providers: ['github'], types: ['issue'], headers: credentials } }));
+    const reply = await runTest(created.body.subscription.id);
+    assert.equal(reply.status, 200);
+    assert.deepEqual([reply.body.result.status, reply.body.result.error], [500, 'HTTP 500']);
+    const excerpt = reply.body.response_excerpt;
+    assert.match(excerpt, /^denied: Authorization \[REDACTED\], X-Env \[REDACTED\]\nx+$/);
+    assert.ok(excerpt.length <= 500);
+    assert.doesNotMatch(excerpt, /crsr_test_value|custom-value-123/);
+    // Test sends are not webhooks: nothing is archived and the excerpt is not stored.
+    const stored = await (await admin('/admin/api/forwards')).text();
+    assert.doesNotMatch(stored, /denied/);
+    assert.doesNotMatch(await (await admin('/admin/api/events')).text(), new RegExp(reply.body.result.delivery_id));
+  });
+
+  await t.test('history keeps the newest 20 results, deliveries and tests together, across edits', async () => {
+    const updated = await json(await admin('/admin/api/forwards/' + tested, { method: 'PUT', body: { name: 'Tested', url: 'https://a.example/tested', providers: ['github'], types: ['issue'],
+      secret: 'forward-target-secret', headers: credentials } }));
+    assert.equal(updated.body.subscription.recent.length, 1, 'editing keeps the results');
+    const delivery = github('issues', { action: 'opened', repository, issue: { number: 7 } });
+    assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', delivery.init)).status, 200);
+    const recent = await until(async () => { const sub = (await list()).subscriptions.find(s => s.id === tested); return sub.recent.length === 2 && sub.recent; });
+    assert.deepEqual([recent[0].delivery_id, recent[0].event, recent[0].repo, recent[0].test, recent[1].test], [delivery.delivery, 'issue', 'openJiuwen-ai/sciencediscovery', undefined, true]);
+    const ids = [];
+    for (let i = 0; i < 18; i++) ids.unshift((await runTest(tested)).body.result.delivery_id);
+    let doc = await list(), sub = doc.subscriptions.find(s => s.id === tested);
+    assert.equal(doc.history, 20);
+    assert.deepEqual(sub.recent.slice(0, 18).map(r => r.delivery_id), ids, 'newest first');
+    assert.deepEqual(sub.recent.slice(18).map(r => r.event), ['issue', 'ping']);
+    for (let i = 0; i < 2; i++) ids.unshift((await runTest(tested)).body.result.delivery_id);
+    sub = (await list()).subscriptions.find(s => s.id === tested);
+    assert.deepEqual(sub.recent.map(r => r.delivery_id), ids, 'the oldest two dropped');
+    assert.deepEqual(sub.last, sub.recent[0]);
+  });
+
+  await t.test('the test action is a same-origin JSON POST behind Access', async () => {
+    const before = received.length, path = `/admin/api/forwards/${tested}/test`;
+    for (const method of ['GET', 'PUT', 'DELETE']) {
+      const response = await admin(path, { method, ...(method === 'PUT' ? { body: {} } : {}) });
+      assert.deepEqual([response.status, response.headers.get('allow')], [405, 'POST'], method);
+    }
+    assert.equal((await runTest(randomUUID())).status, 404);
+    assert.equal((await admin(path, { method: 'POST', body: {}, headers: { origin: 'https://evil.example' } })).status, 403);
+    assert.equal((await admin(path, { method: 'POST', body: 'x=1', headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status, 415);
+    assert.equal((await admin(`/admin/api/callers/${randomUUID()}/test`, { method: 'POST', body: {} })).status, 405);
+    assert.equal((await mf.dispatchFetch('http://localhost' + path, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } })).status, 401);
+    assert.equal(received.length, before, 'no refused request reached a target');
   });
 });

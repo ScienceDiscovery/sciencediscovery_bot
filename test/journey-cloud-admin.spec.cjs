@@ -234,6 +234,32 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   expect(await overflow()).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('forward-list-mobile.png'), fullPage: true });
 
+  // The test button sends one marked request right away (this target answers 503 with no body);
+  // the outcome and the call history appear on the card without reloading the list.
+  const testing = reads.length;
+  await card.getByRole('button', { name: '测试', exact: true }).click();
+  await expect(card.locator('.test-result')).toContainText('测试结果：HTTP 503');
+  await expect(card.locator('.test-result')).toContainText(/\d+ ms/);
+  await expect(card.locator('.test-result')).toContainText('返回内容为空');
+  await expect(card.locator('header')).toContainText('最近失败');
+  expect(reads.slice(testing)).toEqual([expect.stringMatching(/^POST \/admin\/api\/forwards\/[0-9a-f-]{36}\/test$/)]);
+  const history = card.locator('details');
+  await history.locator('summary').click();
+  await expect(history.locator('summary')).toHaveText('最近 1 次调用（最多保留 20 次）');
+  await expect(history.locator('li')).toHaveCount(1);
+  await expect(history.locator('li')).toContainText('ping');
+  await expect(history.locator('li')).toContainText('测试');
+  // A second test adds a row and keeps the opened history open.
+  await card.getByRole('button', { name: '测试', exact: true }).click();
+  await expect(history.locator('li')).toHaveCount(2);
+  await expect(history).toHaveAttribute('open', '');
+  expect(await overflow()).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('forward-test-mobile.png'), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  expect(await overflow()).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('forward-test-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+
   // A certificate client: the private key is refused, the certificate alone is stored.
   const pair = makeCertificate({ type: 'ec', cn: 'journey caller' });
   await page.getByRole('link', { name: '外部调用', exact: true }).click();

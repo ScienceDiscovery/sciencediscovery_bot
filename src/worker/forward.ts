@@ -1,5 +1,5 @@
 /// <reference types="@cloudflare/workers-types" />
-import { FORWARD_LIMIT, deliver, forwardable, matches, parseSubscription, publicSubscription, type ForwardResult, type ForwardSubscription } from '../core/forward.js';
+import { FORWARD_HISTORY, FORWARD_LIMIT, deliver, deliverTest, forwardable, matches, parseSubscription, publicSubscription, type ForwardResult, type ForwardSubscription } from '../core/forward.js';
 import type { Doc } from '../core/types.js';
 
 export interface AdminReply { status: number; body: Doc }
@@ -7,7 +7,7 @@ export interface AdminReply { status: number; body: Doc }
 /**
  * Forward subscriptions in the bot's Durable Object. The list is read once per object
  * lifetime and kept in memory, so an incoming webhook costs no extra SQLite reads.
- * Webhook bodies are never stored again; only each subscription's last result is kept.
+ * Webhook bodies are never stored again; each subscription keeps its latest results in its own row.
  */
 export class WorkerForwards {
   private cache: ForwardSubscription[] | null = null;
@@ -31,17 +31,27 @@ export class WorkerForwards {
     const contentType = headers.get('content-type') || 'application/json';
     for (const sub of targets) waitUntil(deliver(sub, record, body, contentType, this.fetcher).then(result => this.record(sub.id, result)).catch(() => undefined));
   }
+  /** The newest results live in the subscription's row: still one row write per send, and no extra reads. */
   private record(id: string, result: ForwardResult): void {
     const sub = this.list().find(item => item.id === id);
     // A subscription deleted while its delivery was in flight stays deleted.
     if (!sub) return;
+    sub.recent = [result, ...(sub.recent || (sub.last ? [sub.last] : []))].slice(0, FORWARD_HISTORY);
     sub.last = result;
     this.save(sub);
   }
-  /** Access-authenticated management: list, create, update, delete. */
+  /** Admin test button: sends a marked test request now and answers with its result. */
+  async test(id: string): Promise<AdminReply> {
+    const sub = this.list().find(item => item.id === id);
+    if (!sub) return { status: 404, body: { ok: false, error: 'subscription not found' } };
+    const { result, excerpt } = await deliverTest(sub, this.fetcher);
+    this.record(id, result);
+    return { status: 200, body: { ok: true, result, response_excerpt: excerpt } };
+  }
+  /** Access-authenticated management: list, create, update, delete; editing keeps the recent results. */
   admin(method: string, id: string | null, input: unknown): AdminReply {
     const subs = this.list(), index = id ? subs.findIndex(sub => sub.id === id) : -1;
-    if (method === 'GET' && !id) return { status: 200, body: { ok: true, limit: FORWARD_LIMIT, subscriptions: subs.map(publicSubscription) } };
+    if (method === 'GET' && !id) return { status: 200, body: { ok: true, limit: FORWARD_LIMIT, history: FORWARD_HISTORY, subscriptions: subs.map(publicSubscription) } };
     if (id && index < 0) return { status: 404, body: { ok: false, error: 'subscription not found' } };
     if (method === 'DELETE' && id) {
       this.storage.sql.exec('DELETE FROM forward_subscriptions WHERE id=?', id);

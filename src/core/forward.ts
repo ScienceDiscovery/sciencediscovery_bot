@@ -1,3 +1,4 @@
+import { scrub } from './redact.js';
 import { sign } from './signature.js';
 import { array, object, string, type Doc } from './types.js';
 
@@ -13,8 +14,14 @@ const NAMED = new Set<string>(FORWARD_TYPES.filter(type => type !== 'other'));
 
 export const FORWARD_REPO_LIMIT = 50;
 export const FORWARD_HEADER_LIMIT = 10;
+/** Results kept per subscription, newest first, including test sends. */
+export const FORWARD_HISTORY = 20;
 
-export interface ForwardResult { at: string; delivery_id: string; status: number | null; error: string | null }
+export interface ForwardResult {
+  at: string; delivery_id: string; status: number | null; error: string | null;
+  /** Older results lack these. */
+  duration_ms?: number; event?: string; repo?: string; test?: boolean;
+}
 export interface ForwardHeader { name: string; value: string }
 export interface ForwardSubscription {
   id: string; name: string; url: string; providers: string[]; types: string[]; secret: string;
@@ -23,6 +30,8 @@ export interface ForwardSubscription {
   /** Extra request headers such as Authorization; values are credentials and stay admin-only. */
   headers: ForwardHeader[];
   created: string; updated: string; last: ForwardResult | null;
+  /** The latest results, newest first; `last` is the first of them. */
+  recent?: ForwardResult[];
 }
 
 // Cloud metadata services answer on these names besides 169.254.169.254.
@@ -139,27 +148,66 @@ export const matches = (sub: ForwardSubscription, record: Doc): boolean =>
   sub.providers.includes(string(record.provider)) && sub.types.includes(forwardType(string(record.kind)))
   && (!sub.repos?.length || sub.repos.includes(string(record.repo).toLowerCase()));
 
-/** One delivery to one target: the original body, five seconds, no redirects. Never throws. */
-export async function deliver(sub: ForwardSubscription, record: Doc, body: Uint8Array, contentType: string,
-  fetcher: typeof fetch = (...args) => fetch(...args), now = () => new Date()): Promise<ForwardResult> {
-  const delivery = string(record.delivery_id) || string(record.record_id);
-  const result = (status: number | null, error: string | null): ForwardResult => ({ at: now().toISOString(), delivery_id: delivery, status, error });
+type Sent = { result: ForwardResult; excerpt: string | null };
+/** The first `limit` bytes of a response body; the rest is cancelled, and a failed read keeps what arrived. */
+async function bodyStart(response: Response, limit = 4096): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const bytes = new Uint8Array(limit);
+  let size = 0;
+  try {
+    while (size < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const take = value.subarray(0, limit - size);
+      bytes.set(take, size);
+      size += take.length;
+    }
+  } catch { /* timed out or reset: show what arrived */ }
+  await reader.cancel().catch(() => undefined);
+  return new TextDecoder().decode(bytes.subarray(0, size));
+}
+/** Sends one request to a subscription's target: five seconds, no redirects. Never throws. */
+async function send(sub: ForwardSubscription, record: Doc, body: Uint8Array, contentType: string, fetcher: typeof fetch, now: () => Date,
+  extra: Record<string, string> = {}, readBody = false): Promise<Sent> {
+  const delivery = string(record.delivery_id) || string(record.record_id), started = Date.now();
+  const result = (status: number | null, error: string | null): ForwardResult => ({ at: now().toISOString(), delivery_id: delivery, status, error,
+    duration_ms: Date.now() - started, event: string(record.kind), repo: string(record.repo), ...(extra['X-Sdbot-Test'] ? { test: true } : {}) });
   const problem = targetProblem(sub.url);
-  if (problem) return result(null, `target rejected: ${problem}`);
+  if (problem) return { result: result(null, `target rejected: ${problem}`), excerpt: null };
   const headers: Record<string, string> = { 'Content-Type': contentType || 'application/json', 'User-Agent': 'sciencediscovery-bot-forward',
     'X-Sdbot-Provider': string(record.provider), 'X-Sdbot-Event': string(record.kind), 'X-Sdbot-Delivery': delivery };
   // Configured headers are added to the bot's own; reserved names are refused on save and skipped here, so they cannot replace them.
   for (const header of sub.headers || []) if (!reservedHeader(header.name.toLowerCase())) headers[header.name] = header.value;
+  Object.assign(headers, extra);
   if (sub.secret) headers['X-Hub-Signature-256'] = await sign(body, sub.secret);
   try {
     const response = await fetcher(sub.url, { method: 'POST', headers, body: new Uint8Array(body), redirect: 'manual', signal: AbortSignal.timeout(FORWARD_TIMEOUT_MS) });
-    await response.body?.cancel().catch(() => undefined);
-    if (response.ok) return result(response.status, null);
-    return result(response.status, response.status >= 300 && response.status < 400 ? `redirect not followed (HTTP ${response.status})` : `HTTP ${response.status}`);
+    let excerpt: string | null = null;
+    // Only a test shows what the target answered; credentials it may echo back are scrubbed first.
+    if (readBody) excerpt = scrub(await bodyStart(response), [sub.secret, ...(sub.headers || []).map(h => h.value)], 500, true);
+    else await response.body?.cancel().catch(() => undefined);
+    const error = response.ok ? null : response.status >= 300 && response.status < 400 ? `redirect not followed (HTTP ${response.status})` : `HTTP ${response.status}`;
+    return { result: result(response.status, error), excerpt };
   } catch (error) {
     const name = (error as { name?: string })?.name;
-    return result(null, name === 'TimeoutError' || name === 'AbortError' ? `timed out after ${FORWARD_TIMEOUT_MS / 1000} s` : 'network error');
+    return { result: result(null, name === 'TimeoutError' || name === 'AbortError' ? `timed out after ${FORWARD_TIMEOUT_MS / 1000} s` : 'network error'), excerpt: null };
   }
 }
+/** One archived delivery to one target: the original body. */
+export async function deliver(sub: ForwardSubscription, record: Doc, body: Uint8Array, contentType: string,
+  fetcher: typeof fetch = (...args) => fetch(...args), now = () => new Date()): Promise<ForwardResult> {
+  return (await send(sub, record, body, contentType, fetcher, now)).result;
+}
+/**
+ * A test request from the admin page: a small JSON body marked with X-Sdbot-Test, sent with the
+ * subscription's own URL, headers and signature but without its source, type or repository filter.
+ */
+export async function deliverTest(sub: ForwardSubscription, fetcher: typeof fetch = (...args) => fetch(...args), now = () => new Date()): Promise<Sent> {
+  const delivery = 'test-' + crypto.randomUUID();
+  const body = new TextEncoder().encode(JSON.stringify({ test: true, zen: 'sciencediscovery-bot forward test', subscription: { id: sub.id, name: sub.name }, sent_at: now().toISOString() }));
+  return send(sub, { provider: 'test', kind: 'ping', delivery_id: delivery, repo: '' }, body, 'application/json', fetcher, now, { 'X-Sdbot-Test': '1' }, true);
+}
 /** What the admin page shows; the secret and header values are readable there and nowhere else. */
-export const publicSubscription = (sub: ForwardSubscription): Doc => ({ ...sub, repos: sub.repos || [], headers: sub.headers || [], has_secret: !!sub.secret });
+export const publicSubscription = (sub: ForwardSubscription): Doc => ({ ...sub, repos: sub.repos || [], headers: sub.headers || [],
+  recent: sub.recent || (sub.last ? [sub.last] : []), has_secret: !!sub.secret });
