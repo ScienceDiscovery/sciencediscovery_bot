@@ -13,7 +13,7 @@
   main { padding: 16px 20px; display: grid; gap: 16px; }
   main > * { min-width: 0; }
   [hidden] { display: none !important; }
-  nav { display: flex; gap: 8px; }
+  nav { display: flex; gap: 8px; flex-wrap: wrap; }
   nav a { color: var(--fg); text-decoration: none; padding: 6px 10px; border-radius: 4px; }
   nav a[aria-current="page"] { background: var(--bg); box-shadow: inset 0 -2px var(--ok); }
   #events-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
@@ -29,7 +29,19 @@
   .subscription .scope { color: var(--muted); font-size: 12px; }
   #subscription-count { color: var(--muted); margin-top: 12px; }
   #subscription-search { max-width: 100%; box-sizing: border-box; }
-  #usage-page h2 { margin: 0; font-size: 18px; }
+  #usage-page h2, #forwards-page h2, #callers-page h2 { margin: 0; font-size: 18px; }
+  #forwards-page p, #callers-page p { overflow-wrap: anywhere; }
+  /* Configuration forms: one column, full-width inputs, so they work at 390 px without sideways scrolling. */
+  .config-form { display: grid; gap: 10px; max-width: 760px; border: 1px solid var(--line); border-radius: 6px; padding: 14px; margin: 12px 0; }
+  .config-form > label { display: grid; gap: 4px; }
+  .config-form input[type=text], .config-form input[type=url], .config-form input[type=password], .config-form textarea { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+  .config-form textarea { font: 12px/1.5 ui-monospace, monospace; }
+  .config-form fieldset { border: 1px solid var(--line); border-radius: 4px; display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; min-width: 0; }
+  .config-form fieldset label { display: inline-flex; gap: 4px; align-items: center; }
+  .form-actions, .card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .card-actions { margin-top: 8px; }
+  .form-error { color: var(--bad); margin: 0; }
+  .config-form > label.inline-check { display: flex; gap: 6px; align-items: center; }
   #usage-page h3 { margin: 20px 0 8px; font-size: 15px; }
   #usage-page p, #usage-page li { overflow-wrap: anywhere; }
   .usage-notes { color: var(--muted); font-size: 12px; margin: 8px 0 0; padding-left: 18px; }
@@ -94,7 +106,7 @@
 <body>
 <header>
   <h1>sciencediscovery-bot</h1>
-  <nav aria-label="管理页面"><a href="#events" data-view="events">事件记录</a><a href="#subscriptions" data-view="subscriptions">监听点</a><a href="#usage" data-view="usage">资源用量</a></nav>
+  <nav aria-label="管理页面"><a href="#events" data-view="events">事件记录</a><a href="#subscriptions" data-view="subscriptions">监听点</a><a href="#usage" data-view="usage">资源用量</a><a href="#forwards" data-view="forwards">转发</a><a href="#callers" data-view="callers">外部调用</a></nav>
   <span id="listeners" class="muted"></span>
   <span id="timezone" class="muted"></span>
   <span id="clock" class="muted"></span>
@@ -134,6 +146,46 @@
     </div>
     <div id="subscription-count" role="status"></div>
     <div id="subscription-list" class="subscription-grid"></div>
+  </section>
+  <section id="forwards-page" aria-label="转发" hidden>
+    <h2>Webhook 转发</h2>
+    <p class="muted">只转发已经验签并归档成功的投递，同一 delivery 的重复投递不再转发。目标只接受 https，不能是回环、私网、链路本地或云元数据地址；每次 5 秒超时、不跟随重定向。目标失败不影响 Webhook 的确认。正文不另存，只记录每条订阅最近一次结果。</p>
+    <div class="filters"><button id="reload-forwards">刷新转发</button><button id="new-forward">新增订阅</button><span id="forward-count" class="muted" role="status"></span></div>
+    <form id="forward-form" class="config-form" hidden novalidate>
+      <label>名称 <input type="text" name="name" maxlength="80" autocomplete="off"></label>
+      <label>目标 URL <input type="url" name="url" placeholder="https://" autocomplete="off"></label>
+      <fieldset><legend>来源</legend><label><input type="checkbox" name="providers" value="github"> github</label><label><input type="checkbox" name="providers" value="gitcode"> gitcode</label></fieldset>
+      <fieldset><legend>事件类型</legend>
+        <label><input type="checkbox" name="types" value="issue"> issue</label><label><input type="checkbox" name="types" value="issue_comment"> issue_comment</label>
+        <label><input type="checkbox" name="types" value="pull_request"> pull_request</label><label><input type="checkbox" name="types" value="pull_request_review"> pull_request_review</label>
+        <label><input type="checkbox" name="types" value="push"> push</label><label><input type="checkbox" name="types" value="ping"> ping</label>
+        <label><input type="checkbox" name="types" value="other"> other（以上之外的已归档事件）</label>
+      </fieldset>
+      <label>签名密钥（可选，HMAC-SHA256 写入 X-Hub-Signature-256） <input type="password" name="secret" maxlength="256" autocomplete="off"></label>
+      <label class="muted inline-check"><input type="checkbox" id="show-forward-secret"> 显示密钥</label>
+      <div class="form-actions"><button type="submit">保存订阅</button><button type="button" id="cancel-forward">取消</button></div>
+      <p class="form-error" role="alert"></p>
+    </form>
+    <div id="forward-list" class="subscription-grid"></div>
+  </section>
+  <section id="callers-page" aria-label="外部调用" hidden>
+    <h2>外部调用</h2>
+    <p id="caller-help" class="muted"></p>
+    <div class="filters"><button id="reload-callers">刷新外部调用</button><button id="new-caller">新增客户端</button><span id="caller-count" class="muted" role="status"></span></div>
+    <form id="caller-form" class="config-form" hidden novalidate>
+      <label>名称 <input type="text" name="name" maxlength="80" autocomplete="off"></label>
+      <label>公钥证书（PEM，只含 CERTIFICATE；含私钥会被拒绝） <textarea name="certificate" rows="8" placeholder="-----BEGIN CERTIFICATE-----" spellcheck="false"></textarea></label>
+      <fieldset><legend>允许的操作</legend><label><input type="checkbox" name="operations" value="comment"> comment</label><label><input type="checkbox" name="operations" value="labels"> labels</label><label><input type="checkbox" name="operations" value="state"> state</label></fieldset>
+      <label>允许的仓库（每行一个 owner/name；留空表示 bot 已配置的全部仓库） <textarea name="repos" rows="3" spellcheck="false"></textarea></label>
+      <div class="form-actions"><button type="submit">保存客户端</button><button type="button" id="cancel-caller">取消</button></div>
+      <p class="form-error" role="alert"></p>
+    </form>
+    <div id="caller-list" class="subscription-grid"></div>
+    <h3>最近调用</h3>
+    <div class="table-scroll"><table class="usage-table">
+      <thead><tr><th>时间</th><th>客户端</th><th>操作</th><th>平台</th><th>仓库</th><th>编号</th><th>上游状态</th><th>结果</th></tr></thead>
+      <tbody id="caller-audit"></tbody>
+    </table></div>
   </section>
   <section id="usage-page" aria-label="资源用量" hidden>
     <h2>资源用量</h2>
@@ -181,12 +233,15 @@ const headers = token ? { Authorization: "Bearer " + token } : {};
 let offset = 0, pageSize = 100, listRequest = 0, detailRequest = 0, currentDetail = null;
 let subscriptions = [], refreshRequest = 0;
 let usageRequest = 0;
-const currentView = () => location.hash === "#subscriptions" ? "subscriptions" : location.hash === "#usage" ? "usage" : "events";
+const VIEWS = ["events", "subscriptions", "usage", "forwards", "callers"];
+const currentView = () => VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "events";
 function selectView() {
   const view = currentView();
   $("#events-page").hidden = view !== "events";
   $("#subscriptions-page").hidden = view !== "subscriptions";
   $("#usage-page").hidden = view !== "usage";
+  $("#forwards-page").hidden = view !== "forwards";
+  $("#callers-page").hidden = view !== "callers";
   for (const link of document.querySelectorAll("[data-view]")) {
     if (link.dataset.view === view) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
@@ -245,7 +300,7 @@ function card(k, v, s, cls, meters = "") { return `<div class="card"><div class=
 async function loadStatus() {
   const st = await api("/api/status");
   const c = st.config, counts = st.counts;
-  $("#listeners").textContent = st.runtime === "cloudflare" ? `${st.environment} · 云端记录 · 只读 · v${st.version}` : `webhook ${c.webhook.host}:${c.webhook.port} · admin ${c.admin.host}:${c.admin.port}${c.admin.token_required ? " (token)" : ""} · v${st.version}`;
+  $("#listeners").textContent = st.runtime === "cloudflare" ? `${st.environment} · 云端记录 · 投递只读 · v${st.version}` : `webhook ${c.webhook.host}:${c.webhook.port} · admin ${c.admin.host}:${c.admin.port}${c.admin.token_required ? " (token)" : ""} · v${st.version}`;
   const secretCards = Object.entries(c.providers).map(([p, v]) =>
     card(p + " 密钥", v.secret_configured ? "已配置" : "未配置", v.secret_configured ? "HMAC 验签开启" : v.signature_required ? "未启用此平台接入" : "接受未签名投递", v.secret_configured ? "ok" : "bad")).join("");
   const routes = Object.entries(counts.by_route || {}).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([r, n]) => `${r} ${n}`).join(" · ");
@@ -430,11 +485,129 @@ document.addEventListener("click", (ev) => {
   if (btn) openDetail(btn.dataset.id);
 });
 
+// ---- Forwarding and certificate callers: Worker-only configuration, read on page load, view switch or refresh.
+const FORWARD_TYPES = ["issue", "issue_comment", "pull_request", "pull_request_review", "push", "ping", "other"];
+let forwards = [], callers = [], editingForward = null, editingCaller = null;
+const send = (path, method, body) => api(path, { method, headers: { "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
+// HTMLFormElement.name is the form's own attribute, so fields are always looked up by name.
+const field = (form, name) => form.elements.namedItem(name);
+const checked = (form, name) => [...form.querySelectorAll(`input[name="${name}"]:checked`)].map(input => input.value);
+const check = (form, name, values) => form.querySelectorAll(`input[name="${name}"]`).forEach(input => { input.checked = values.includes(input.value); });
+const cloudOnly = (box) => { box.innerHTML = '<p class="muted">本机运行不提供此功能；它只在 Cloudflare 上的正式 Worker 中可用。</p>'; };
+function lastResult(last) {
+  if (!last) return '<span class="muted">尚未转发</span>';
+  const outcome = last.error ? `<span class="bad">${esc(last.error)}</span>` : `<span class="ok">HTTP ${esc(last.status)}</span>`;
+  return `${esc(eventTime(last.at))} · <code>${esc(String(last.delivery_id).slice(0, 18))}</code> · ${outcome}`;
+}
+function renderForwards(doc) {
+  forwards = doc.subscriptions;
+  $("#forward-count").textContent = `${forwards.length} / ${doc.limit} 条订阅`;
+  $("#new-forward").disabled = forwards.length >= doc.limit;
+  $("#forward-list").innerHTML = forwards.map(f => `<article class="subscription" data-forward="${esc(f.id)}">
+    <header><h3>${esc(f.name)}</h3><span class="${f.last?.error ? "bad" : f.last ? "ok" : "muted"}">${f.last ? (f.last.error ? "最近失败" : "最近成功") : "未转发"}</span></header>
+    <p><code>${esc(f.url)}</code></p>
+    <div class="routes">${f.providers.map(v => `<code>${esc(v)}</code>`).join("")}${f.types.map(v => `<code>${esc(v)}</code>`).join("")}</div>
+    <p class="scope">${f.has_secret ? "已设置签名密钥" : "不签名"} · 最近一次：${lastResult(f.last)}</p>
+    <div class="card-actions"><button type="button" data-edit-forward="${esc(f.id)}">编辑</button><button type="button" data-delete-forward="${esc(f.id)}">删除</button></div>
+  </article>`).join("") || '<p class="muted">还没有转发订阅</p>';
+}
+async function loadForwards() {
+  if (!cloudAdmin) return cloudOnly($("#forward-list"));
+  renderForwards(await api("/api/forwards"));
+}
+function openForward(sub) {
+  const form = $("#forward-form");
+  editingForward = sub ? sub.id : null;
+  form.hidden = false;
+  field(form, "name").value = sub?.name || ""; field(form, "url").value = sub?.url || ""; field(form, "secret").value = sub?.secret || "";
+  check(form, "providers", sub?.providers || ["github"]); check(form, "types", sub?.types || []);
+  form.querySelector(".form-error").textContent = "";
+  field(form, "name").focus();
+}
+$("#new-forward").addEventListener("click", () => openForward(null));
+$("#cancel-forward").addEventListener("click", () => { $("#forward-form").hidden = true; editingForward = null; });
+$("#show-forward-secret").addEventListener("change", ev => { field($("#forward-form"), "secret").type = ev.target.checked ? "text" : "password"; });
+$("#forward-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const form = ev.target, body = { name: field(form, "name").value, url: field(form, "url").value, providers: checked(form, "providers"), types: checked(form, "types"), secret: field(form, "secret").value };
+  try {
+    await send(editingForward ? "/api/forwards/" + editingForward : "/api/forwards", editingForward ? "PUT" : "POST", body);
+    form.hidden = true; editingForward = null;
+    await loadForwards();
+  } catch (err) { form.querySelector(".form-error").textContent = "保存失败：" + err.message; }
+});
+$("#forward-list").addEventListener("click", async ev => {
+  const edit = ev.target.closest("[data-edit-forward]"), remove = ev.target.closest("[data-delete-forward]");
+  if (edit) openForward(forwards.find(f => f.id === edit.dataset.editForward));
+  if (remove && confirm("删除这条转发订阅？")) {
+    try { await send("/api/forwards/" + remove.dataset.deleteForward, "DELETE"); await loadForwards(); }
+    catch (err) { $("#forward-count").textContent = "删除失败：" + err.message; }
+  }
+});
+
+function renderCallers(doc) {
+  callers = doc.clients;
+  $("#caller-help").innerHTML = `调用方保管私钥，这里只保存公钥证书。调用 <code>POST /caller/v1/comments</code>、<code>/caller/v1/labels</code>、<code>/caller/v1/state</code>，`
+    + `在 <code>Authorization: Bearer</code> 放一个 JWT：<code>iss</code> 与 <code>sub</code> 为客户端 ID，<code>aud</code> 为 <code>${esc(doc.audience)}</code>，带 <code>exp</code>、<code>iat</code>、<code>jti</code>，`
+    + `有效期不超过 ${esc(doc.max_token_seconds)} 秒，算法与证书一致（RS256 或 ES256）。每个客户端每分钟最多 ${esc(doc.rate_per_minute)} 次。此路径不经过 Cloudflare Access。`;
+  $("#caller-count").textContent = `${callers.length} / ${doc.limit} 个客户端`;
+  $("#new-caller").disabled = callers.length >= doc.limit;
+  const now = Date.now();
+  $("#caller-list").innerHTML = callers.map(c => {
+    const valid = Date.parse(c.not_before) <= now && now <= Date.parse(c.not_after);
+    return `<article class="subscription" data-caller="${esc(c.id)}">
+      <header><h3>${esc(c.name)}</h3><span class="${valid ? "ok" : "bad"}">${valid ? "证书有效" : "证书不在有效期"}</span></header>
+      <p>客户端 ID（iss / sub）：<code>${esc(c.id)}</code></p>
+      <p class="scope">${esc(c.alg)} · ${esc(c.subject || "无 CN")} · ${esc(eventTime(c.not_before))} 至 ${esc(eventTime(c.not_after))}<br>SHA-256 <code>${esc(c.fingerprint)}</code></p>
+      <div class="routes">${c.operations.map(v => `<code>${esc(v)}</code>`).join("")}</div>
+      <p class="scope">仓库：${esc(c.repos.length ? c.repos.join("、") : "bot 已配置的全部仓库")}</p>
+      <div class="card-actions"><button type="button" data-edit-caller="${esc(c.id)}">编辑</button><button type="button" data-delete-caller="${esc(c.id)}">删除</button></div>
+    </article>`;
+  }).join("") || '<p class="muted">还没有外部调用客户端</p>';
+  $("#caller-audit").innerHTML = doc.audit.map(a => `<tr>${td("时间", esc(eventTime(a.at)))}${td("客户端", `<code>${esc(a.client.slice(0, 8))}</code>`)}${td("操作", esc(a.operation))}${td("平台", esc(a.provider))}`
+    + `${td("仓库", esc(a.repo))}${td("编号", esc(a.number))}${td("上游状态", esc(a.upstream_status ?? "—"))}${td("结果", esc({ ok: "成功", failed: "上游失败", forbidden: "未授权" }[a.result] || a.result), a.result === "ok" ? "ok" : "bad")}</tr>`).join("")
+    || '<tr><td colspan="8" class="muted">还没有调用记录</td></tr>';
+}
+async function loadCallers() {
+  if (!cloudAdmin) { $("#caller-help").textContent = ""; return cloudOnly($("#caller-list")); }
+  renderCallers(await api("/api/callers"));
+}
+function openCaller(client) {
+  const form = $("#caller-form");
+  editingCaller = client ? client.id : null;
+  form.hidden = false;
+  field(form, "name").value = client?.name || ""; field(form, "certificate").value = client?.certificate || ""; field(form, "repos").value = (client?.repos || []).join("\n");
+  check(form, "operations", client?.operations || ["comment"]);
+  form.querySelector(".form-error").textContent = "";
+  field(form, "name").focus();
+}
+$("#new-caller").addEventListener("click", () => openCaller(null));
+$("#cancel-caller").addEventListener("click", () => { $("#caller-form").hidden = true; editingCaller = null; });
+$("#caller-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const form = ev.target, body = { name: field(form, "name").value, certificate: field(form, "certificate").value, operations: checked(form, "operations"),
+    repos: field(form, "repos").value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean) };
+  try {
+    await send(editingCaller ? "/api/callers/" + editingCaller : "/api/callers", editingCaller ? "PUT" : "POST", body);
+    form.hidden = true; editingCaller = null;
+    await loadCallers();
+  } catch (err) { form.querySelector(".form-error").textContent = "保存失败：" + err.message; }
+});
+$("#caller-list").addEventListener("click", async ev => {
+  const edit = ev.target.closest("[data-edit-caller]"), remove = ev.target.closest("[data-delete-caller]");
+  if (edit) openCaller(callers.find(c => c.id === edit.dataset.editCaller));
+  if (remove && confirm("删除这个外部调用客户端？之后它签的 JWT 都会被拒绝。")) {
+    try { await send("/api/callers/" + remove.dataset.deleteCaller, "DELETE"); await loadCallers(); }
+    catch (err) { $("#caller-count").textContent = "删除失败：" + err.message; }
+  }
+});
+
 async function refresh() {
   const requestId = ++refreshRequest;
   try {
     const view = currentView();
-    await Promise.all([loadStatus(), view === "subscriptions" ? loadSubscriptions() : view === "events" ? loadEvents() : null]);
+    const lists = { subscriptions: loadSubscriptions, events: loadEvents, forwards: loadForwards, callers: loadCallers };
+    await Promise.all([loadStatus(), lists[view] ? lists[view]() : null]);
     if (requestId !== refreshRequest) return;
     $("#banner").style.display = "none";
     $("#clock").textContent = "更新于 " + new Date().toLocaleTimeString();
@@ -448,7 +621,7 @@ async function refresh() {
 // Data is read when the page loads and when someone asks for it; nothing polls.
 // Refresh buttons reload the status, the current list and the usage section together.
 const reloadAll = () => { refresh(); loadUsage(); };
-for (const id of ["#reload", "#reload-subscriptions", "#reload-usage"]) $(id).addEventListener("click", reloadAll);
+for (const id of ["#reload", "#reload-subscriptions", "#reload-usage", "#reload-forwards", "#reload-callers"]) $(id).addEventListener("click", reloadAll);
 for (const id of ["#subscription-business", "#subscription-mode"]) $(id).addEventListener("change", renderSubscriptions);
 $("#subscription-search").addEventListener("input", renderSubscriptions);
 // Usage was read with the page; opening its view reads nothing new.

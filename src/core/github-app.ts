@@ -56,6 +56,10 @@ export class GitHubApp {
   async tokenForSync(repository: string): Promise<string> {
     return (await this.installationToken(repository, { metadata: 'read', contents: 'read', pull_requests: 'read', checks: 'write' })).token;
   }
+  /** Certificate callers: comment, label and open/close one issue or pull request; never repository contents. */
+  async tokenForCaller(repository: string): Promise<string> {
+    return (await this.installationToken(repository, { metadata: 'read', issues: 'write', pull_requests: 'write' })).token;
+  }
   private async installationToken(repository: string, permissions: Doc): Promise<InstallationGrant> {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new TypeError('invalid repository');
     const installation = await this.request('GET', `/repos/${repository}/installation`);

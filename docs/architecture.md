@@ -42,6 +42,9 @@ flowchart TD
     COLLECT -->|Python 采集器读取| API[源仓 GitHub API 与测试产物]
     API --> DATA[进度 .sync/ 与公开数据 site/ 原子提交]
     DATA -->|site/ 有变化| PAGES[pages.yml 发布 GitHub Pages]
+    ARCHIVE -->|归档成功后，后台| FORWARD[转发订阅 / HTTPS 目标]
+    CALLER[持证书的外部服务] -->|JWT / 不经 Access| CALLAPI[同 Worker /caller/v1]
+    CALLAPI -->|issues、pull_requests 写令牌| SOURCE
     USER[管理员] --> ACCESS[Cloudflare Access]
     ACCESS --> ADMIN[同 Worker /admin/ 只读管理]
     ADMIN --> ARCHIVE
@@ -85,6 +88,7 @@ Webhook secret 用于校验收到的请求；App 私钥用于签发短期 JWT，
 | Actions 读取源仓 | OIDC 向对应 Worker 换取源仓安装令牌：Contents、Issues、Pull requests、Actions、Checks、Commit statuses read |
 | Actions 提交看板仓 | OIDC 向对应 Worker 换取目标仓安装令牌：Contents write；与跨组织源仓令牌分别申请 |
 | Actions 发布 Pages | job 级 `GITHUB_TOKEN`：Contents read、Pages write、ID token write |
+| 外部调用写 Issue／PR | 每次调用为该仓申请安装令牌：Metadata read、Issues write、Pull requests write；App 需开启这两项读写并经组织批准，见[外部调用](features/caller-api.md) |
 | Worker 部署／资源配置 | Cloudflare 的部署授权，与 GitHub App 凭据独立；不在运行时管理页或 Pages 中提供 |
 
 App 注册权限、各组织 installation 批准的权限、Webhook 事件订阅以及 Bot 监听注册需要分别配置。只增加权限不会自动订阅新事件。新增业务通过事件总线注册，管理页读取实际注册表；慢任务自行进入持久队列，不能在接收 handler 中执行长任务。详见[事件总线](features/event-bus.md)与[接入说明](features/webhook-ingestion.md)。
