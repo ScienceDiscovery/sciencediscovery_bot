@@ -12,7 +12,7 @@
 
 ## 照着做
 
-先在调用方自己的机器上用 openssl 生成一对 RSA 密钥和一张自签名证书（命令见下；也可以改用 P-256 EC 密钥）：`caller.key` 是私钥，只留在调用方，任何时候都不要上传；`caller.crt` 是证书，把它的全文粘贴到管理页「外部调用」里新增的客户端并保存（含私钥的 PEM 会被拒绝；RSA 证书对应 RS256，P-256 证书对应 ES256），保存后复制页面上显示的客户端 ID。之后每次需要令牌时，用私钥签一个新的 JWT：`iss` 和 `sub` 都填客户端 ID，`aud` 填 `sdbot:caller`，并带上 `iat`、`exp` 和一个随机的 `jti`，`exp - iat` 不超过 600 秒，每个 `jti` 只能用一次；把这个 JWT 放进 `Authorization: Bearer` 头，加上 `Content-Type: application/json`，向 `https://sciencediscovery-bot-worker.llmbots.co/caller/v1/token` 发送 `POST`，正文只有 `{"repo":"openJiuwen-ai/sciencediscovery"}`，这个地址不经过 Cloudflare Access。成功时返回 `{ "token", "expires_at", "repository" }`：把 `token` 放进 `Authorization: Bearer`，直接请求 `https://api.github.com`，例如 `POST /repos/openJiuwen-ai/sciencediscovery/issues/123/comments`、正文 `{"body":"..."}` 就会以 GitHub App 的身份在 #123 下发一条评论；同一个令牌也可以处理 PR，因为 GitHub 的 PR 评论、标签和开关状态都走 Issues 接口。令牌只有 `metadata: read`、`issues: write`、`pull_requests: write`，不能改仓库文件；`expires_at` 是 GitHub 给的到期时间，大约一小时，过期后重新签一个 JWT 再兑换。仓库必须在 `SDBOT_REPOS` 中，客户端填了仓库允许列表时还必须在列表里；组织还没批准 GitHub App 的 Issues 与 Pull requests 写权限时，兑换返回 503；每个客户端每分钟最多兑换 60 次。
+先在调用方自己的机器上用 openssl 生成一对 RSA 密钥和一张自签名证书（命令见下；也可以改用 P-256 EC 密钥）：`caller.key` 是私钥，只留在调用方，任何时候都不要上传；`caller.crt` 是证书，把它的全文粘贴到管理页「外部调用」里新增的客户端并保存（含私钥的 PEM 会被拒绝；RSA 证书对应 RS256，P-256 证书对应 ES256），保存后复制页面上显示的客户端 ID。之后每次需要令牌时，用私钥签一个新的 JWT：`iss` 和 `sub` 都填客户端 ID，`aud` 填 `sdbot:caller`，并带上 `iat`、`exp` 和一个随机的 `jti`，`exp - iat` 不超过 600 秒，每个 `jti` 只能用一次；把这个 JWT 放进 `Authorization: Bearer` 头，加上 `Content-Type: application/json`，向 `https://<管理页主机>/caller/v1/token` 发送 `POST`（主机名就是管理页地址栏里的主机，管理页「外部调用」上的命令会自动填成你正在打开的这台 Worker），正文只有 `{"repo":"openJiuwen-ai/sciencediscovery"}`，这个地址不经过 Cloudflare Access。成功时返回 `{ "token", "expires_at", "repository" }`：把 `token` 放进 `Authorization: Bearer`，直接请求 `https://api.github.com`，例如 `POST /repos/openJiuwen-ai/sciencediscovery/issues/123/comments`、正文 `{"body":"..."}` 就会以 GitHub App 的身份在 #123 下发一条评论；同一个令牌也可以处理 PR，因为 GitHub 的 PR 评论、标签和开关状态都走 Issues 接口。令牌只有 `metadata: read`、`issues: write`、`pull_requests: write`，不能改仓库文件；`expires_at` 是 GitHub 给的到期时间，大约一小时，过期后重新签一个 JWT 再兑换。仓库必须在 `SDBOT_REPOS` 中，客户端填了仓库允许列表时还必须在列表里；组织还没批准 GitHub App 的 Issues 与 Pull requests 写权限时，兑换返回 503；每个客户端每分钟最多兑换 60 次。
 
 ```bash
 # 1. 生成密钥对和证书（只做一次）。caller.key 是私钥，留在本机；caller.crt 粘贴到管理页「外部调用」。
@@ -31,7 +31,7 @@ SIGNATURE=$(printf '%s.%s' "$HEADER" "$PAYLOAD" | openssl dgst -sha256 -sign cal
 JWT="$HEADER.$PAYLOAD.$SIGNATURE"
 
 # 3. 兑换令牌（这个地址不经过 Cloudflare Access）。
-GRANT=$(curl -sS -X POST https://sciencediscovery-bot-worker.llmbots.co/caller/v1/token \
+GRANT=$(curl -sS -X POST "https://<管理页主机>/caller/v1/token" \
   -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
   -d '{"repo":"openJiuwen-ai/sciencediscovery"}')
 TOKEN=$(printf '%s' "$GRANT" | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')
