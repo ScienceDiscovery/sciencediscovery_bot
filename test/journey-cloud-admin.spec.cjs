@@ -205,6 +205,12 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await form.getByLabel('gitcode').check();
   await form.getByLabel('pull_request', { exact: true }).check();
   await form.getByLabel(/签名密钥/).fill('journey-secret');
+  // Limit to one repository and add an Authorization header; its value is masked while typing.
+  await form.getByLabel(/仓库（可选/).fill('openJiuwen-ai/sciencediscovery');
+  await form.getByRole('button', { name: '添加标头' }).click();
+  await form.getByLabel('标头名称').fill('Authorization');
+  await form.getByLabel('标头值', { exact: true }).fill('Bearer crsr_journey');
+  await expect(form.getByLabel('标头值', { exact: true })).toHaveAttribute('type', 'password');
   expect(await overflow()).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('forward-form-mobile.png'), fullPage: true });
   await form.getByRole('button', { name: '保存订阅' }).click();
@@ -213,9 +219,15 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await expect(card).toContainText('https://hooks.example/issues');
   await expect(card).toContainText('已设置签名密钥');
   await expect(card).toContainText('尚未转发');
+  await expect(card).toContainText('仓库：openjiuwen-ai/sciencediscovery');
+  await expect(card).toContainText('附加标头：Authorization');
+  await expect(page.locator('#forward-list')).not.toContainText('crsr_journey');
   // Edit keeps the stored secret readable to the admin, then changes the types.
   await card.getByRole('button', { name: '编辑' }).click();
   await expect(form.getByLabel(/签名密钥/)).toHaveValue('journey-secret');
+  await expect(form.getByLabel('标头值', { exact: true })).toHaveValue('Bearer crsr_journey');
+  await form.getByLabel('显示标头值').check();
+  await expect(form.getByLabel('标头值', { exact: true })).toHaveAttribute('type', 'text');
   await form.getByLabel('push', { exact: true }).check();
   await form.getByRole('button', { name: '保存订阅' }).click();
   await expect(card.locator('.routes')).toContainText('push');
