@@ -6,14 +6,14 @@
 
 所有管理页面与 API 均要求 Cloudflare Access 身份。根路径 `/api/status` 等不提供别名，Webhook 与健康路径不要求交互登录。Node 的本机管理端继续使用原有 Bearer／loopback／Cf-* 拒绝规则，本地管理桥不进入云端部署产物。
 
-正式和测试 Worker 已部署这套页面；现有配置尚缺 Access 应用、允许登录成员及 issuer／AUD，管理请求暂时返回 503，不能登录。Webhook 接收、归档和正式看板调度已经独立运行。管理认证配置完成后，面板显示本实例已保存的云端投递，无需迁移或重新接收。
+正式 Worker 已部署这套页面并配置 Access 应用与 issuer／AUD，指定成员登录后查询本实例已保存的云端投递。原测试 Worker 已删除，不再有测试管理页。
 
 管理重放按钮及 `POST /api/replay/<record_id>` 已移除。云端管理写方法返回 405，Node 已删除端点返回 404；查询不会执行监听器、增加投递或调度刷新。需要重新采集时使用看板仓 Actions。开发 fixture CLI 不属于管理重放，仍可用于隔离测试。
 
 ## Access 配置
 
 1. 在 Cloudflare Zero Trust 创建 self-hosted Access 应用，保护接收域名的 `/admin` 及所有 `/admin/*` 路径。只允许指定成员登录；不要把整个接收域名配置为需要登录，否则 GitHub 无法投递，Actions 也无法使用 OIDC 兑换令牌。`/actions/token` 由 Worker 自行校验 GitHub OIDC，不要求浏览器 Access 登录。
-2. 在对应 Wrangler 配置的 `vars` 中设置 `SDBOT_ACCESS_ISSUER=https://<team>.cloudflareaccess.com`、`SDBOT_ACCESS_AUD=<application-aud>` 和 `SDBOT_ADMIN_HOSTNAME=<管理所在域名>`。issuer 不带尾部斜杠，AUD 为对应 Access 应用的标识；这些不是私钥。正式与测试分别配置。
+2. 在对应 Wrangler 配置的 `vars` 中设置 `SDBOT_ACCESS_ISSUER=https://<team>.cloudflareaccess.com`、`SDBOT_ACCESS_AUD=<application-aud>` 和 `SDBOT_ADMIN_HOSTNAME=<管理所在域名>`。issuer 不带尾部斜杠，AUD 为对应 Access 应用的标识；这些不是私钥。
 3. 部署后验证未认证访问被拦截，指定成员登录后可打开 `/admin/`、查询真实云端记录。确认 `/webhook/github` 的签名请求不受登录限制，`/api/status` 仍为 404。
 
 参数缺失时 `/admin` 返回 503 `admin unavailable`，不会自动降级为匿名或旧本机口令认证。参数齐全但无效身份为 401；Access 本身可能先返回登录页面。浏览器不保存 App 私钥或管理员 API token。
@@ -22,18 +22,13 @@ Worker 用 jose 验证 RS256 签名、固定 issuer、AUD、有效期与主体�
 
 参考：[Access 路径规则](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/)、[JWT 校验](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)。
 
-## 正式与测试
+## 部署实例
 
-| 配置 | 运行环境 | 存储边界 | 业务范围 |
-| --- | --- | --- | --- |
-| `wrangler.jsonc` | 正式实例 | 正式独立归档桶及对象命名空间 | 正式源仓 → 正式看板已启用，Cron 每五分钟 |
-| `wrangler.test.jsonc` | 测试实例 | 测试独立归档桶及对象命名空间 | 仅实验源仓映射到测试看板，独立 App 与调度 |
+云端只有正式 Worker `sciencediscovery-bot`，配置是 `wrangler.jsonc`，由 `main` 分支经 Workers Builds 发布：正式源仓 → 正式看板，Cron 每五分钟，使用独立归档桶与对象命名空间。原测试 Worker、测试域名和测试存储已删除，仓库也不再保留测试配置；不要重建测试实例。
 
-两套命名空间、Secrets 和部署版本分开，测试不得绑定正式存储或保存正式 App 私钥。测试实例使用独立测试 App 私钥，测试看板 Actions 通过 OIDC 换取临时令牌。测试 App 的安装范围须覆盖实验源仓及测试看板仓，也可以包含其他仓库；业务范围由实例配置过滤，范围外投递仍归档，不触发业务。新环境凭据未齐备时保持目标映射为空，验证凭据后才部署启用配置。
+`npm run workers:check` 只对 `wrangler.jsonc` 做本地 dry-run，不创建远端资源。日常发布经 Workers Builds 完成，见 [Worker 自动部署](worker-delivery.md)；手动 `npx wrangler deploy -c wrangler.jsonc` 只作维护入口，执行前确认当前登录账号、私有 bucket、Secrets 与调度范围。配置里声明 bucket 不代表它已经在账号创建。
 
-`npm run workers:check` 对两份配置做本地 dry-run，不创建远端资源。真实发布分别使用 `npx wrangler deploy -c wrangler.jsonc` 和 `npx wrangler deploy -c wrangler.test.jsonc`；发布前确认当前登录账号、私有 bucket、Secrets 与调度范围。要开放管理登录还必须配置 Access 策略；认证未完成时保持拒绝访问。配置里声明 bucket 不代表它已经在账号创建。
-
-同一实例内管理和接收共享发布与存储资源；测试代码先在独立测试实例验证，再部署正式。管理分页限制单次工作量，详情按需读正文；不在接收互斥区内运行大批历史扫描。
+同一实例内管理和接收共享发布与存储资源；改动在合入前用本地 workerd 测试和浏览器旅程验证。管理分页限制单次工作量，详情按需读正文；不在接收互斥区内运行大批历史扫描。
 
 ## 历史与切换
 

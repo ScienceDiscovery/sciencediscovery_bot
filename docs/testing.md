@@ -13,7 +13,7 @@ npm test
 npm run test:workers
 # 生产 Worker 适配：真实 SQLite/R2 模拟器，GitHub 出站请求使用模拟接口
 npm run test:worker-adapter
-# 打包检查，不发布
+# 对正式配置 wrangler.jsonc 打包检查，不发布
 npm run workers:check
 ```
 
@@ -52,6 +52,9 @@ npm run test:e2e:cloud-admin
 Actions 触发模式还需验证队列重启后恢复、失败不确认代数，以及 `last_dispatch` 不被误报成 `last_success` 或 Pages 提交。看板仓负责历史续跑与指标缓存的 Python、浏览器及真实 Actions 验证。
 
 ## 提交前
+
+云端没有测试实例：合入 `main` 即由 Workers Builds 发布正式 Worker `sciencediscovery-bot`，所以上面的本地检查、workerd 测试和浏览器旅程就是合入前的全部验证，不再有“先部署测试 Worker”这一步。
+
 
 - 文档：核对对应特性、API、配置、启用条件和边界，检查 [docs 目录](README.md)与相对链接。
 - 公开面：没有新增管理信息到 webhook 响应；监听列表只由管理端读取。

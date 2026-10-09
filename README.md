@@ -2,9 +2,9 @@
 
 以 Webhook 为入口的 TypeScript 事件总线。支持 GitHub App、普通组织／仓库 Webhook 和 GitCode 接入，保存请求与响应，按订阅更新静态看板。使用 Node.js 22+；核心采用标准 Fetch／Web Crypto，并通过 Cloudflare Workers 运行时验证。
 
-正式 Worker 只处理 `openJiuwen-ai/sciencediscovery`，独立测试 Worker 面向 `ScienceDiscovery/sciencediscovery`；其他 Webhook 仍完整记录。看板采集在各看板仓的 GitHub Actions 中执行，再由 Pages 工作流发布。分析业务当前为占位。
+正式 Worker 只处理 `openJiuwen-ai/sciencediscovery`；其他 Webhook 仍完整记录。看板采集在看板仓的 GitHub Actions 中执行，再由 Pages 工作流发布。分析业务当前为占位。
 
-云端部署使用 `wrangler.jsonc`（正式）和 `wrangler.test.jsonc`（测试），步骤见 [Workers 指南](docs/features/workers.md)。管理入口为同域名 `/admin/`，必须先配置 [Cloudflare Access](docs/features/cloud-admin.md)。
+云端只有正式 Worker `sciencediscovery-bot`，配置是 `wrangler.jsonc`，由 `main` 分支经 Workers Builds 发布，见 [Worker 自动部署](docs/features/worker-delivery.md) 和 [Workers 指南](docs/features/workers.md)。原测试 Worker 已删除，不再有云端测试版本；改动在本地用 `npm test`、workerd 测试和浏览器旅程验证。管理入口为同域名 `/admin/`，必须先配置 [Cloudflare Access](docs/features/cloud-admin.md)。
 
 ## 本机快速启动
 

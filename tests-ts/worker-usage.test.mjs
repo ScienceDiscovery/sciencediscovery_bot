@@ -118,8 +118,11 @@ test('without the analytics token only local size and counters are shown', async
   assert.equal(local.archive.counts.accepted, 1);
 });
 
-test('every Wrangler configuration names the bucket it binds and the account for analytics', async () => {
-  for (const file of ['wrangler.jsonc', 'wrangler.test.jsonc']) {
+test('the production Wrangler configuration is the only one and names its bucket and account', async () => {
+  // The test Worker was deleted; no second configuration may bring it back.
+  const { readdir } = await import('node:fs/promises');
+  assert.deepEqual((await readdir('.')).filter(name => /^wrangler.*\.(jsonc?|toml)$/.test(name)), ['wrangler.jsonc']);
+  for (const file of ['wrangler.jsonc']) {
     const config = JSON.parse((await readFile(file, 'utf8')).replace(/^\s*\/\/.*$/gm, ''));
     assert.equal(config.vars.SDBOT_ARCHIVE_BUCKET, config.r2_buckets.find(bucket => bucket.binding === 'ARCHIVE').bucket_name, file);
     assert.match(config.vars.SDBOT_CLOUDFLARE_ACCOUNT_ID, /^[0-9a-f]{32}$/, file);

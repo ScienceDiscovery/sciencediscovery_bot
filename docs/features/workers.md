@@ -6,11 +6,11 @@ Worker 保留 Webhook 验签、事件总线、配置的源仓范围、全量投�
 
 Bot 代码随 GitHub 提交自动部署的接入方案见 [Worker 自动部署](worker-delivery.md)，可选择 Cloudflare Workers Builds 或 Bot 仓 GitHub Actions。下文的看板 Actions 负责数据采集，不负责部署 Bot。
 
-现有正式服务使用 `wrangler.jsonc`，App Webhook URL 使用正式接收域名下的 `/webhook/github`。该实例仅将 `openJiuwen-ai/sciencediscovery` 映射到 `ScienceDiscovery/github-status-board`，启用持久 Alarm 与每五分钟的修复 Cron。本地 Compose 的 bot 与 cloudflared 已停止，数据卷保留；不要为查看旧档案直接恢复带看板调度的整套服务。
+云端只有正式 Worker `sciencediscovery-bot`，配置是 `wrangler.jsonc`，由 `main` 分支经 Workers Builds 发布；App Webhook URL 使用正式接收域名下的 `/webhook/github`。该实例仅将 `openJiuwen-ai/sciencediscovery` 映射到 `ScienceDiscovery/github-status-board`，启用持久 Alarm 与每五分钟的修复 Cron。本地 Compose 的 bot 与 cloudflared 已停止，数据卷保留；不要为查看旧档案直接恢复带看板调度的整套服务。
 
-独立测试实例使用 `wrangler.test.jsonc`，接收地址使用独立测试域名下的 `/webhook/github`。它使用自己的 SQLite Durable Object、私有 R2、测试 App 与 Webhook secret；只允许实验源仓，唯一目标为 `ScienceDiscovery/sciencediscovery` → `ScienceDiscovery/github-status-board-test`。测试配置启用持久 Alarm 和每五分钟修复 Cron，须在测试 App 安装到实验源仓及测试看板仓、云端 Secrets 和看板 Actions 凭据验证通过后部署。测试看板通过 OIDC 向测试 Worker 兑换临时凭据，工作流不再保存测试 App 私钥。
+原独立测试 Worker 及其域名、R2、Durable Object 和构建连接已删除，`wrangler.test.jsonc` 也已从仓库移除，不再有云端测试版本。实验源仓和测试看板仓不再连接任何 Bot，测试看板也没有可兑换 OIDC 凭据的 Worker。不要重建测试 Worker、R2 桶、域名或 Workers Builds 连接；改动在本地用 `npm test`、workerd 测试和浏览器旅程验证，见[验证指南](../testing.md)。
 
-两个实例均提供最小健康检查 `/healthz`。同域名的 `/admin/` 已随代码部署，但目前尚未配置 Access 应用与 issuer／AUD，返回 503 `admin unavailable`，不能登录查询；这不影响 Webhook 接收与云端存档。开通步骤见[云端只读管理](cloud-admin.md)。App ID 是非敏感配置，密钥单独保存在云端 Secrets。部署到另一账号时应替换 App ID、域名及资源名称；首次部署先按下文关闭调度和 routes，不能照搬正式启用配置。
+正式 Worker 提供最小健康检查 `/healthz`。同域名的 `/admin/` 由 Cloudflare Access 保护，配置见[云端只读管理](cloud-admin.md)。App ID 是非敏感配置，密钥单独保存在云端 Secrets。部署到另一账号时应替换 App ID、域名及资源名称；首次部署先按下文关闭调度和 routes，不能照搬正式启用配置。
 
 本地适配使用真实 workerd、SQLite Durable Object 和 R2 模拟存储，可验证重启恢复、查询、去重与调度。本地命令不会创建账号资源或切换云端服务；本地模拟器既不读取 Compose 的 `.env`，也不读取其历史数据。
 
@@ -97,16 +97,16 @@ Durable Objects 的 SQLite 按读取与写入的行数计量，免费额度按�
 
 ## 新账号首次上线步骤（本地验收不会执行）
 
-前提：两个看板仓已有采集工作流、脚本及各自的 `.sync/` 与 `site/`；App 权限、Worker Secrets、OIDC 信任和看板仓变量已配置，并通过真实采集和 Pages 验收。更新共享源码时保留各站数据和独立功能，不重新初始化同步进度。
+以下步骤用于在另一个账号重新建立正式实例，不用于建立测试实例。前提：看板仓已有采集工作流、脚本及 `.sync/` 与 `site/`；App 权限、Worker Secrets、OIDC 信任和看板仓变量已配置，并通过真实采集和 Pages 验收。更新共享源码时保留各站数据和独立功能，不重新初始化同步进度。
 
 1. 在目标 Cloudflare 账号开通 R2，创建私有归档 bucket；名称与对应 Wrangler 配置的 `r2_buckets[].bucket_name` 一致。不启用公开域名或公开读取，不配置未经评估的自动删除规则。
 2. 使用 `npx wrangler login --device` 授权部署工具，再用 `npx wrangler whoami` 核对账号；账号有多个时在配置中明确 `account_id`。Tunnel token 不能代替 Workers 部署授权。
 3. 首次部署保持 `workers_dev=false`、`preview_urls=false`、无 routes、`triggers.crons=[]`、`SDBOT_BOARD_TARGETS="{}"`。执行 `npm run workers:check` 只做本地检查；`npx wrangler deploy` 才会实际创建／更新云端 Worker 与 SQLite Durable Object 命名空间。首次初始化之后不要随意改类名、迁移标签、Worker 名称或 `archive-v1`，以免指向另一份历史。该阶段没有公开入口或 Cron，不要求未配置 Secrets 的服务已经能处理请求。
 4. 在 Worker 的 Settings → Variables and Secrets 中添加 Secret：`SDBOT_GITHUB_WEBHOOK_SECRET`、可选 `SDBOT_GITCODE_WEBHOOK_SECRET`、`SDBOT_GITHUB_APP_PRIVATE_KEY`。私钥保留完整多行 PEM，通过页面 Deploy 生效；不要放进普通 `vars`、工作流 inputs 或聊天。将非敏感的 `SDBOT_GITHUB_APP_ID` 写入 Wrangler `vars`。本机 `.env` 不会自动复制到 Worker；看板 Actions 不保存 App 私钥。至少一个平台必须有密钥；未配置密钥的平台直接拒绝，Worker 不支持免签接入。
 5. 为 Worker 选择一个新的域名，在 Settings → Domains & Routes 添加 Custom Domain，并将对应 `routes` 同步回 Wrangler 配置；先保留当前 Tunnel 域名。检查新地址的 `/healthz` 只返回 `{"ok":true}`、`/api/status` 返回 404，再使用 `/webhook/github` 接收签名投递。Webhook 地址不能要求浏览器交互登录。
-6. GitHub App 的 Webhook URL 属于 App 注册配置，修改会影响该 App 的全部安装；不能借此只切测试仓。先在实验源仓配置独立的临时仓库 Webhook，指向新地址，保持原 App 地址不动。先验证归档，再停用 Compose 对测试看板的自动触发并让 Worker 仅启用测试目标；核对签名失败、未知事件、重复投递、R2／SQLite 留存及真实采集／Pages 结果。
+6. GitHub App 的 Webhook URL 属于 App 注册配置，修改会影响该 App 的全部安装。先在源仓配置一个独立的临时仓库 Webhook，指向新地址，保持原 App 地址不动；在看板目标仍为空时核对签名失败、未知事件、重复投递和 R2／SQLite 留存。
 7. 启用采集时配置 `SDBOT_BOARD_TARGETS` 的 JSON 字符串映射，并恢复 `triggers.crons=["*/5 * * * *"]` 后部署。看板目标一旦启用并初始化，即使没有新投递，也可能经 Alarm 触发周期刷新；仅关闭 Cron 不能停用持久 Alarm。首次准备同时保持目标为空，正式切换前停用旧进程对应的看板触发，避免两套 Bot 重复调度。
-8. 验证签名、持久存档、实际监听结果与 Actions 触发后，修改 App Webhook URL 切换。管理认证单独按[只读管理配置](cloud-admin.md)开通；未完成时必须保持管理入口拒绝访问，不能将“接收已上线”视为“面板已可登录”。旧档案不迁移，保留数据卷；两看板仓的 `.sync/` 和 `site/` 不变。普通仓库／组织 Webhook 的 URL 也需要逐项核对；验证完移除临时测试 Webhook。保留旧数据卷和回退配置，确认新链路稳定后停止旧接收入口。
+8. 验证签名、持久存档、实际监听结果与 Actions 触发后，修改 App Webhook URL 切换。管理认证单独按[只读管理配置](cloud-admin.md)开通；未完成时必须保持管理入口拒绝访问，不能将“接收已上线”视为“面板已可登录”。旧档案不迁移，保留数据卷；看板仓的 `.sync/` 和 `site/` 不变。普通仓库／组织 Webhook 的 URL 也需要逐项核对；验证完移除临时测试 Webhook。保留旧数据卷和回退配置，确认新链路稳定后停止旧接收入口。
 
 部署命令成功不代表所有 Durable Object 已立即使用新代码和配置：云端传播可能持续数秒至数分钟，存储访问还可能因实例切换而失败。不要紧接部署就切正式 Webhook，也不能仅凭 `/healthz` 判断监听目标已经生效。用带明确测试标记的新 delivery 验证实际归档中的监听结果及目标 Actions 运行；关闭临时目标后也要验证实际结果已回到 `noop`。服务更新窗口收到 503 的投递需要重试；已经按旧配置接受的事件若需重新采集，应在看板仓运行 Actions，普通 redelivery 可能被去重。参见 [Cloudflare 生命周期说明](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)与[已知更新边界](https://developers.cloudflare.com/durable-objects/platform/known-issues/)。
 

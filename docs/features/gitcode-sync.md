@@ -48,7 +48,7 @@ Webhook 只把对应 PR 的读取时间改成「现在」，由持久队列（Wo
 
 ## 使用方式
 
-**启用条件**：设置了 `GITCODE_TOKEN`，且 `SDBOT_GITCODE_SYNC_TARGET` 不是 `off`。两者都不设置目标和用户名时，同步到 `openJiuwen/sciencediscovery`，以 `openJiuwen-bot` 推送。**停用方式**：把 `SDBOT_GITCODE_SYNC_TARGET` 设为 `off`（不区分大小写），或不提供 `GITCODE_TOKEN`；两种情况监听点都显示「已停用」并写明原因，启动校验不会因此失败。变量未设置或为空白都按「未设置」取默认值，只有 `off` 表示停用。测试实例必须设 `off`（`wrangler.test.jsonc` 已设置），否则加上令牌就会同步到正式 GitCode 仓。
+**启用条件**：设置了 `GITCODE_TOKEN`，且 `SDBOT_GITCODE_SYNC_TARGET` 不是 `off`。两者都不设置目标和用户名时，同步到 `openJiuwen/sciencediscovery`，以 `openJiuwen-bot` 推送。**停用方式**：把 `SDBOT_GITCODE_SYNC_TARGET` 设为 `off`（不区分大小写），或不提供 `GITCODE_TOKEN`；两种情况监听点都显示「已停用」并写明原因，启动校验不会因此失败。变量未设置或为空白都按「未设置」取默认值，只有 `off` 表示停用。云端只有正式 Worker（`wrangler.jsonc`）；本地或另建的任何非正式实例都必须设 `off`，否则加上令牌就会同步到正式 GitCode 仓。
 
 1. 准备一个对 GitCode 目标仓有推送分支、创建／更新／关闭 MR、读评论权限的账号及其访问令牌；默认使用 `openJiuwen-bot` 账号。
 2. 给 Bot 设置下表变量。令牌只放 Worker Secret 或已忽略的 `.env`，仓库和文档只出现变量名。

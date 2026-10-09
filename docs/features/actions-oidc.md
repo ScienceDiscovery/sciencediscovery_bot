@@ -4,7 +4,7 @@
 
 App 私钥由对应环境的 Worker 管理。看板 Actions 不读取 App 私钥，启动采集后使用 GitHub 签发的 OIDC 身份向 Worker 换取两个安装令牌：源仓只读令牌、看板仓 Contents 写令牌。Bot 触发工作流所用的 Actions 写令牌只用于 dispatch，不作为工作流输入传递。
 
-正式与测试分别使用自己的 Worker、App、信任配置与看板仓。定时、手动与 Bot 触发均走同一流程；管理 Access 登录与 Actions OIDC 是两套独立认证。
+云端只有正式 Worker `sciencediscovery-bot`（`wrangler.jsonc`），正式看板仓向它兑换令牌；原测试 Worker 已删除，测试看板不再有兑换端。定时、手动与 Bot 触发均走同一流程；管理 Access 登录与 Actions OIDC 是两套独立认证。
 
 ```mermaid
 sequenceDiagram
@@ -29,7 +29,7 @@ Worker 保留 `SDBOT_GITHUB_APP_ID` 和 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，
 
 | 变量 | 内容 |
 | --- | --- |
-| `SDBOT_ACTIONS_AUDIENCE` | 本环境独立的 OIDC audience，正式与测试不同 |
+| `SDBOT_ACTIONS_AUDIENCE` | 本 Worker 的 OIDC audience，与看板仓 `SDBOT_TOKEN_AUDIENCE` 一致 |
 | `SDBOT_ACTIONS_REPOSITORY_ID` | 对应看板仓不可变的数字 ID |
 | `SDBOT_ACTIONS_OWNER_ID` | 对应组织不可变的数字 ID |
 | `SDBOT_ADMIN_HOSTNAME` | 本 Worker 的指定域名，兑换端点也限制此域名 |

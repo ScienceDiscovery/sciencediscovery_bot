@@ -2,18 +2,18 @@
 
 | 文档 | 功能与内容 |
 | --- | --- |
-| [整体架构与当前状态](architecture.md) | Bot／看板／App／Workers 的职责、数据链路、存储、权限与正式／测试隔离 |
+| [整体架构与当前状态](architecture.md) | Bot／看板／App／Workers 的职责、数据链路、存储、权限；云端只有正式 Worker |
 | [Webhook 接入与验签](features/webhook-ingestion.md) | App／普通 Webhook、验签、事件模型、双仓处理范围与公开接口 |
 | [投递记录与查看](features/webhook-history.md) | 全量留存、请求与响应详情、历史分页、去重、只读查询 |
 | [事件总线与业务扩展](features/event-bus.md) | 订阅注册、匹配规则、异常隔离、新业务示例与监听点清单 |
-| [正式与测试看板更新](features/board-publication.md) | 双站点映射、后台队列、持久状态、App 安装凭据与 Actions 发布 |
+| [看板更新](features/board-publication.md) | 正式源仓到看板仓的映射、后台队列、持久状态、App 安装凭据与 Actions 发布 |
 | [GitHub PR 同步到 GitCode](features/gitcode-sync.md) | PR 事件同步成 GitCode MR、保持 head SHA、关闭 MR 并删除同步分支、合并后快进 GitCode 默认分支、GitCode Webhook 触发 CodeCheck 判定并写 GitHub Check、同步记录发布 |
 | [管理面板](features/admin-panel.md) | 事件页、监听点页、管理 API、浏览器时区与访问保护 |
 | [TypeScript 与运行环境](features/typescript-runtime.md) | Web 标准核心、Node 适配、Workers 验证与持久化边界 |
 | [Workers 与 Actions 采集](features/workers.md) | R2／SQLite 归档、持久调度、本地模拟器、采集工作流与上线准备 |
 | [Worker 自动部署](features/worker-delivery.md) | Workers Builds／GitHub Actions 接入方案、分支映射、构建命令与部署授权 |
 | [Actions OIDC 临时凭据](features/actions-oidc.md) | Worker 集中管理 App 私钥、工作流身份校验、最小权限令牌与环境隔离 |
-| [云端只读管理](features/cloud-admin.md) | 同 Worker 鉴权端点、Access 配置、正式／测试隔离与旧档案边界 |
+| [云端只读管理](features/cloud-admin.md) | 同 Worker 鉴权端点、Access 配置、部署实例与旧档案边界 |
 | [部署与配置](deployment.md) | 宿主机、Compose、cloudflared、配置变量与数据位置 |
 | [验证指南](testing.md) | TypeScript／HTTP／workerd 和浏览器测试、隔离资源与验收重点 |
 
