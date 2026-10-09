@@ -10,6 +10,41 @@
 - 原来的 `/caller/v1/comments`、`/caller/v1/labels`、`/caller/v1/state` 已删除，返回 404；
 - Node 本机运行不提供这项功能。
 
+## 照着做
+
+先在调用方自己的机器上用 openssl 生成一对 RSA 密钥和一张自签名证书（命令见下；也可以改用 P-256 EC 密钥）：`caller.key` 是私钥，只留在调用方，任何时候都不要上传；`caller.crt` 是证书，把它的全文粘贴到管理页「外部调用」里新增的客户端并保存（含私钥的 PEM 会被拒绝；RSA 证书对应 RS256，P-256 证书对应 ES256），保存后复制页面上显示的客户端 ID。之后每次需要令牌时，用私钥签一个新的 JWT：`iss` 和 `sub` 都填客户端 ID，`aud` 填 `sdbot:caller`，并带上 `iat`、`exp` 和一个随机的 `jti`，`exp - iat` 不超过 600 秒，每个 `jti` 只能用一次；把这个 JWT 放进 `Authorization: Bearer` 头，加上 `Content-Type: application/json`，向 `https://<管理页主机>/caller/v1/token` 发送 `POST`（主机名就是管理页地址栏里的主机，管理页「外部调用」上的命令会自动填成你正在打开的这台 Worker），正文只有 `{"repo":"openJiuwen-ai/sciencediscovery"}`，这个地址不经过 Cloudflare Access。成功时返回 `{ "token", "expires_at", "repository" }`：把 `token` 放进 `Authorization: Bearer`，直接请求 `https://api.github.com`，例如 `POST /repos/openJiuwen-ai/sciencediscovery/issues/123/comments`、正文 `{"body":"..."}` 就会以 GitHub App 的身份在 #123 下发一条评论；同一个令牌也可以处理 PR，因为 GitHub 的 PR 评论、标签和开关状态都走 Issues 接口。令牌只有 `metadata: read`、`issues: write`、`pull_requests: write`，不能改仓库文件；`expires_at` 是 GitHub 给的到期时间，大约一小时，过期后重新签一个 JWT 再兑换。仓库必须在 `SDBOT_REPOS` 中，客户端填了仓库允许列表时还必须在列表里；组织还没批准 GitHub App 的 Issues 与 Pull requests 写权限时，兑换返回 503；每个客户端每分钟最多兑换 60 次。
+
+```bash
+# 1. 生成密钥对和证书（只做一次）。caller.key 是私钥，留在本机；caller.crt 粘贴到管理页「外部调用」。
+openssl req -x509 -newkey rsa:2048 -sha256 -nodes -keyout caller.key -out caller.crt -days 365 -subj "/CN=my-caller"
+# 也可以用 P-256 EC 密钥（JWT 改用 ES256，需要用 JWT 库签名；下面第 2 步的 openssl 脚本只适用于 RSA）：
+# openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -sha256 -nodes -keyout caller.key -out caller.crt -days 365 -subj "/CN=my-caller"
+
+# 2. 每次兑换前：用私钥签一个新的 RS256 JWT（有效 300 秒，jti 随机）。
+CLIENT_ID='<管理页上显示的客户端 ID>'
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+NOW=$(date +%s)
+HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+PAYLOAD=$(printf '{"iss":"%s","sub":"%s","aud":"sdbot:caller","iat":%s,"exp":%s,"jti":"%s"}' \
+  "$CLIENT_ID" "$CLIENT_ID" "$NOW" "$((NOW + 300))" "$(openssl rand -hex 16)" | b64url)
+SIGNATURE=$(printf '%s.%s' "$HEADER" "$PAYLOAD" | openssl dgst -sha256 -sign caller.key | b64url)
+JWT="$HEADER.$PAYLOAD.$SIGNATURE"
+
+# 3. 兑换令牌（这个地址不经过 Cloudflare Access）。
+GRANT=$(curl -sS -X POST "https://<管理页主机>/caller/v1/token" \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+  -d '{"repo":"openJiuwen-ai/sciencediscovery"}')
+TOKEN=$(printf '%s' "$GRANT" | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')
+printf '%s' "$GRANT" | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["repository"], "expires", d["expires_at"])'
+
+# 4. 用令牌直接调用 GitHub：在 #123 下发一条评论（PR 同样走 Issues 接口）。
+curl -sS -X POST https://api.github.com/repos/openJiuwen-ai/sciencediscovery/issues/123/comments \
+  -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+  -d '{"body":"..."}'
+```
+
+第 3 步失败时看返回的状态码：401 多半是 JWT 的客户端 ID、`aud`、有效期或 `jti` 不对；403 是仓库不在允许范围；503 是 GitHub App 的写权限还没获组织批准。令牌和私钥都不要写进日志或提交到仓库。
+
 ## 管理客户端
 
 在 Access 保护的管理页「外部调用」中增删改查客户端，最多 20 个。每个客户端记录：
