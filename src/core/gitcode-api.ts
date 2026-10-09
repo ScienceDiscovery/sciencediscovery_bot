@@ -29,10 +29,8 @@ const messageOf = (value: unknown): string => {
   return '';
 };
 export class GitCodeApi {
-  /** HTTP status of the most recent successful request, for audit records. */
-  lastStatus: number | null = null;
   constructor(readonly options: GitCodeApiOptions, private readonly fetcher: Fetcher = (...args) => fetch(...args)) {}
-  private async request(label: string, method: string, path: string, query: Record<string, string | number> = {}, body?: Doc | unknown[]): Promise<unknown> {
+  private async request(label: string, method: string, path: string, query: Record<string, string | number> = {}, body?: Doc): Promise<unknown> {
     const url = new URL(this.options.api_url.replace(/\/+$/, '') + path);
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
     const headers: Record<string, string> = { Accept: 'application/json', 'User-Agent': 'sciencediscovery-bot' };
@@ -52,7 +50,6 @@ export class GitCodeApi {
       const shown = scrub(detail.replace(/\s+/g, ' '), [this.options.token], 160);
       throw new GitCodeApiError(code, `GitCode ${label} returned HTTP ${status}${shown ? ': ' + shown : ''}`, status, status === 429 || status >= 500);
     }
-    this.lastStatus = response.status;
     if (response.status === 204) return null;
     try { return await response.json(); } catch { throw new GitCodeApiError('gitcode_error', `GitCode ${label} returned invalid JSON`, response.status, true); }
   }
@@ -108,16 +105,6 @@ export class GitCodeApi {
       if (list.length < 100) break;
     }
     return total;
-  }
-  /** Certificate callers act on merge requests of the sync target only. */
-  async addComment(repository: string, n: number, body: string): Promise<void> {
-    await this.request('merge request comment', 'POST', `/repos/${repository}/pulls/${n}/comments`, {}, { body });
-  }
-  async addLabels(repository: string, n: number, labels: string[]): Promise<void> {
-    await this.request('merge request labels', 'POST', `/repos/${repository}/pulls/${n}/labels`, {}, labels);
-  }
-  async removeLabel(repository: string, n: number, label: string): Promise<void> {
-    await this.request('merge request label removal', 'DELETE', `/repos/${repository}/pulls/${n}/labels/${encodeURIComponent(label)}`);
   }
   async comments(repository: string, n: number): Promise<GitCodeComment[]> {
     const all: GitCodeComment[] = [];

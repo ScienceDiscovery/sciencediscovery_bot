@@ -47,6 +47,7 @@ Worker 保留 `SDBOT_GITHUB_APP_ID` 和 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，
 - subject 支持 GitHub 的原名称格式与包含不可变 ID 的格式；PR、tag 和其他工作流均不在当前信任范围。GitHub 的直接执行任务也可能包含 `job_workflow_ref`；该字段存在时必须仍指向同一个 collect.yml，引用其他文件的可复用工作流会被拒绝。将来改变工作流结构需显式调整信任策略。
 - 源仓令牌仅包含 Metadata、Contents、Issues、Pull requests、Actions、Checks、Commit statuses read；看板令牌仅包含 Metadata read、Contents write。跨组织分别换取 installation 令牌。
 - Durable Object 原子记录仓库／run／attempt／purpose；每次运行尝试每种用途只能兑换一次。记录保留至少一天，过期记录在后续请求中清理；不保存 JWT、安装令牌或私钥。
+- 每次成功签发后，另在发放记录表写一条：来源 `actions`、身份 `repositoryId:run_id:run_attempt`、`purpose`、实际仓库、所申请的权限和 GitHub 返回的令牌到期时间，不含令牌；管理页「外部调用」与证书兑换一起列出，保留 60 天、至多 1000 条。写记录失败时令牌照常返回，响应形状不变。见[外部调用](caller-api.md)。
 
 `POST /actions/gitcode-sync` 使用同一身份校验（不需要请求体，也不受每次运行一次的限制），只返回本看板源仓的 GitCode 同步记录，不签发令牌、不进入 Webhook 档案；同步未启用时返回 `enabled: false`。见 [GitHub PR 同步到 GitCode](gitcode-sync.md)。
 

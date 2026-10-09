@@ -29,7 +29,8 @@ Workers 本地模拟器使用同一面板，默认管理地址为 `http://127.0.
 | GET /api/listeners | listeners 实际注册清单、repositories 全局处理范围；不包含回调对象和密钥 |
 | GET /api/usage | 数据库大小、已维护的计数；Worker 另含 Cloudflare 计量与费用估算，Node 标明云端计量不可用 |
 | GET／POST /api/forwards，PUT／DELETE /api/forwards/<id> | 仅 Worker（`/admin` 前缀）：转发订阅 |
-| GET／POST /api/callers，PUT／DELETE /api/callers/<id> | 仅 Worker（`/admin` 前缀）：外部调用客户端与最近审计 |
+| GET／POST /api/callers，PUT／DELETE /api/callers/<id> | 仅 Worker（`/admin` 前缀）：外部调用客户端 |
+| GET /api/token-grants | 仅 Worker（`/admin` 前缀）：证书与 Actions 兑换发出的安装令牌记录（不含令牌），只读 |
 | GET /api/events | 投递摘要、offset、has_more；limit 默认 50、上限 500 |
 | GET /api/events/<record_id> | 指定投递的请求／实际响应、完整性与历史兼容信息 |
 
