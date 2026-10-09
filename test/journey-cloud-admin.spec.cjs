@@ -83,6 +83,24 @@ test('the admin page reads once on load and again only when someone asks', async
   await expect(page.locator('#usage-notes')).toContainText('估算，不是发票');
   await expect(page.locator('#usage-notes')).toContainText('每天 500 万行读、10 万行写');
   await expect(page.locator('#usage-notes')).toContainText('2026-09-30');
+  // The Free plan day table, from the same response: today is over on three metrics; an earlier day is not.
+  await expect(page.locator('#usage-page h3', { hasText: 'Free 计划每日上限（假设，不是账单）' })).toBeVisible();
+  const today = new Date().toISOString().slice(0, 10), first = today.slice(0, 8) + '01';
+  const dayRow = date => page.locator('#free-days tr', { has: page.locator('td', { hasText: new RegExp('^' + date + '$') }) });
+  await expect(dayRow(today).locator('td').last()).toHaveText('超出：请求、时长、行写');
+  await expect(dayRow(today).locator('td.bad')).toHaveCount(4);
+  if (first !== today) {
+    await expect(dayRow(first).locator('td').last()).toHaveText('未超出');
+    await expect(dayRow(first).locator('td.bad')).toHaveCount(0);
+  }
+  await expect(page.locator('#free-days tr').last()).toContainText('不按天重置');
+  await expect(page.locator('#free-days tr').last().locator('td').last()).toHaveText('未超出');
+  await expect(page.locator('#free-scope')).toContainText('数字只含本实例的 archive-v1');
+  await expect(page.locator('#free-days')).not.toContainText('$');
+  expect(counts).toEqual({ status: 5, events: 4, listeners: 1, usage: 2 });
+  // Reading the table sends nothing more as time passes.
+  await page.clock.runFor(15 * 60_000);
+  await page.waitForTimeout(500);
   expect(counts).toEqual({ status: 5, events: 4, listeners: 1, usage: 2 });
   await page.screenshot({ path: testInfo.outputPath('usage-desktop.png'), fullPage: true });
 
@@ -107,12 +125,15 @@ test('the admin page reads once on load and again only when someone asks', async
   // Without SDBOT_ANALYTICS_TOKEN the Worker returns local size and counters only (see worker-usage.test.mjs).
   await page.route('**/admin/api/usage', async route => {
     const real = await (await route.fetch()).json();
-    await route.fulfill({ json: { ...real, analytics: { status: 'unconfigured', message: '未配置 Analytics token，不能估算操作量' }, estimate: null } });
+    const message = '未配置 Analytics token，不能估算操作量';
+    await route.fulfill({ json: { ...real, analytics: { status: 'unconfigured', message }, estimate: null, free_plan: { ...real.free_plan, days: null, reason: message } } });
   });
   await page.getByRole('button', { name: '刷新用量' }).click();
   await expect(page.locator('#usage-estimate')).toHaveText('未配置 Analytics token，不能估算操作量');
   await expect(page.locator('#usage-cards')).toContainText('SQLite 数据库');
   await expect(page.locator('#usage-cards')).not.toContainText('R2 存储');
+  await expect(page.locator('#free-days tr').first()).toHaveText('未配置 Analytics token，不能估算操作量');
+  await expect(page.locator('#free-days tr').last()).toContainText('不按天重置');
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('usage-unconfigured-mobile.png'), fullPage: true });

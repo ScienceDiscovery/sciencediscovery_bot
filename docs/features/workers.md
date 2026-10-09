@@ -79,7 +79,9 @@ Durable Objects 的 SQLite 按读取与写入的行数计量，免费额度按�
 - 云端计量：R2 存储量与 Class A／B 次数来自 GraphQL Analytics 的 `r2StorageAdaptiveGroups`、`r2OperationsAdaptiveGroups`，按 `SDBOT_ARCHIVE_BUCKET` 过滤。Durable Object 的请求数来自 `durableObjectsInvocationsAdaptiveGroups`；行读、行写和活跃时长来自 `durableObjectsPeriodicGroups`（时长按 128 MB 折算 GB-s），两者都按本实例对象 ID 过滤，命名空间里只有 `archive-v1` 这一个对象。结果写入一行 SQLite 缓存 `usage_cache`，6 小时内不重复查询；没有人打开该页时不查询。
 - 配置：Worker Secret `SDBOT_ANALYTICS_TOKEN`（Account Analytics 只读），以及 vars `SDBOT_CLOUDFLARE_ACCOUNT_ID`、`SDBOT_ARCHIVE_BUCKET`。令牌只用于请求头，不进入响应、缓存或日志；缓存以账号、桶、对象和令牌的摘要为键，更换令牌后下一次读取重新查询。
 - 没有令牌时：页面只显示 `databaseSize` 和上述计数，费用行显示「未配置 Analytics token，不能估算操作量」，不填 0。Node 和本地模拟器没有云端计量，说明“本机运行没有 Cloudflare 云端计量”；Node 也没有 `databaseSize`。
-- 费用估算：标明是估算，不是发票。单价取自 Durable Objects pricing（2026-09-30）与 R2 pricing（2026-10-01，Standard），只计算超出 Paid 计划每月含量的部分，不含套餐月费。操作量按本自然月（UTC）至今累计，存储按当前大小持续一个月估算。页面不查询账号套餐，因此同时列出 Free 计划的每日上限（500 万行读、10 万行写，用尽后存储调用失败，00:00 UTC 重置）和当天用量。实现：`src/core/usage.ts`、`src/worker/usage.ts`；验证：`tests-ts/worker-usage.test.mjs`。
+- 费用估算：标明是估算，不是发票。单价取自 Durable Objects pricing（2026-09-30）与 R2 pricing（2026-10-01，Standard），只计算超出 Paid 计划每月含量的部分，不含套餐月费。操作量按本自然月（UTC）至今累计，存储按当前大小持续一个月估算。页面不查询账号套餐，因此同时列出 Free 计划的每日上限（500 万行读、10 万行写，用尽后存储调用失败，00:00 UTC 重置）和当天用量。
+
+「Free 计划每日上限（假设，不是账单）」表按 Workers Free 一列（Durable Objects pricing，2026-09-30）逐个 UTC 日对照：每天请求 10 万次、时长 13000 GB-s、行读 500 万行、行写 10 万行，任一项严格大于上限即标出超出的项；超出在 Free 上意味着当天调用失败，所以这张表不算金额。数据来自同一次缓存的结果（periodic 与 invocations 两个数据集按 `date` 汇总），不增加查询；某个数据集读取失败时该项显示「读取失败」，不当作 0，也不判为未超出。SQLite 存储用 `databaseSize` 单独对照 5 GB 总量，不按天重置。表中只有本实例的 `archive-v1`：Free 额度按整个账号合计，本对象单独超出即可确定账号超出，未超出不能说明账号安全。R2 的免费额度按月计算，仍只在费用表中表示。实现：`src/core/usage.ts`、`src/worker/usage.ts`；验证：`tests-ts/worker-usage.test.mjs`。
 
 ## Actions 配置
 

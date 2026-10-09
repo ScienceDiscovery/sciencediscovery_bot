@@ -16,8 +16,10 @@ export const PRICING = {
       { key: 'rows_written', label: 'SQLite 行写', included: 50_000_000, unit: 1_000_000, price: 1, per: '百万行' },
       { key: 'storage_gb_month', label: 'SQLite 存储', included: 5, unit: 1, price: 0.2, per: 'GB-month' },
     ],
-    // Free plan: daily limits reset at 00:00 UTC; spent limits make storage calls fail.
-    free_daily: { rows_read: 5_000_000, rows_written: 100_000 },
+    // Free plan: daily limits reset at 00:00 UTC; a spent limit makes those calls fail rather than cost more.
+    free_daily: { requests: 100_000, duration_gb_s: 13_000, rows_read: 5_000_000, rows_written: 100_000 },
+    // Free plan SQLite storage is a total, not a daily allowance.
+    free_storage_bytes: 5_000_000_000,
     // Duration bills the 128 MB each active object is allocated.
     gb_per_object: 0.128,
   },
@@ -78,6 +80,32 @@ export function estimate(metrics: { durable_objects?: Doc | null; r2?: Doc | nul
   return { lines, total: known ? Math.round(lines.reduce((sum, line) => sum + (line.cost as number), 0) * 100) / 100 : null };
 }
 
+const FREE_DAILY = ['requests', 'duration_gb_s', 'rows_read', 'rows_written'] as const;
+
+/**
+ * The Free plan read against this object's own days: a day is over when any known metric is
+ * strictly above its daily limit, and unknown when a metric could not be read and none is over.
+ * Free limits are per account, so a day within them here does not clear the account.
+ */
+export function freePlan(analytics: Doc, databaseBytes: number | null): Doc {
+  const limits = PRICING.durable_objects.free_daily, durable = analytics.durable_objects as Doc | null | undefined;
+  const measured = analytics.status === 'ok' || analytics.status === 'partial';
+  const storage = { bytes: databaseBytes, limit_bytes: PRICING.durable_objects.free_storage_bytes,
+    over: databaseBytes === null ? null : databaseBytes > PRICING.durable_objects.free_storage_bytes };
+  if (!measured || !durable || !Array.isArray(durable.days)) {
+    const errors = Object.entries((analytics.errors as Record<string, string>) || {}).filter(([name]) => name.startsWith('do_'));
+    return { limits, storage, days: null, reason: measured ? `读取失败：${errors.map(([name, message]) => `${name}（${message}）`).join('；') || 'Durable Object 数据集'}` : analytics.message || '云端计量不可用' };
+  }
+  const days = (durable.days as Doc[]).map(day => {
+    const value = (key: typeof FREE_DAILY[number]) => typeof day[key] === 'number' ? day[key] as number : null;
+    const over = FREE_DAILY.filter(key => { const used = value(key); return used !== null && used > limits[key]; });
+    const unknown = FREE_DAILY.filter(key => value(key) === null);
+    return { date: day.date, requests: value('requests'), duration_gb_s: value('duration_gb_s'), rows_read: value('rows_read'), rows_written: value('rows_written'),
+      over, unknown, status: over.length ? 'over' : unknown.length ? 'unknown' : 'within' };
+  });
+  return { limits, storage, days, reason: null };
+}
+
 /**
  * The /api/usage document: local counters always; Cloudflare metrics and the
  * estimate only when account analytics were read. Nothing is filled with zero.
@@ -88,5 +116,5 @@ export function usageDocument(runtime: string, local: Doc, analytics: Doc): Doc 
   return { ok: true, runtime, generated_at: new Date().toISOString(), database: { bytes },
     archive: { counts: local.counts ?? null, remembered_deliveries: local.remembered_deliveries ?? null },
     analytics, estimate: measured ? estimate({ durable_objects: analytics.durable_objects as Doc | null, r2: analytics.r2 as Doc | null }, bytes) : null,
-    pricing: PRICING };
+    free_plan: freePlan(analytics, bytes), pricing: PRICING };
 }
