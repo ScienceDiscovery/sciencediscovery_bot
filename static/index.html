@@ -34,6 +34,29 @@
   #usage-page p, #usage-page li { overflow-wrap: anywhere; }
   .usage-notes { color: var(--muted); font-size: 12px; margin: 8px 0 0; padding-left: 18px; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  /* Share of a limit: a bar capped at full width plus the percentage as text. */
+  .meter { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 12px; white-space: nowrap; }
+  td.num .meter { justify-content: flex-end; }
+  .meter-bar { flex: none; width: 64px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .meter-bar > span { display: block; height: 100%; background: var(--ok); }
+  .meter.near .meter-bar > span { background: var(--warn); }
+  .meter.over .meter-bar > span { background: var(--bad); }
+  .meter-text { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .meter.over .meter-text { color: var(--bad); }
+  .card .meter { white-space: normal; align-items: flex-start; }
+  .card .meter-bar { margin-top: 5px; }
+  .meter-text { min-width: 0; overflow-wrap: anywhere; }
+  /* Narrow screens: each usage row becomes label / value pairs instead of a sideways-scrolling table. */
+  @media (max-width: 700px) {
+    .usage-table thead { display: none; }
+    .usage-table tr { display: block; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .usage-table td { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; border: 0; padding: 2px 0; white-space: normal; }
+    .usage-table td::before { content: attr(data-label); color: var(--muted); flex: none; }
+    .usage-table td:first-child { font-weight: 600; }
+    .usage-table td:first-child::before, .usage-table td[data-label=""]::before { content: none; }
+    .usage-table td:empty { display: none; }
+    .usage-table td > div { text-align: right; min-width: 0; overflow-wrap: anywhere; }
+  }
 
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 12px; }
   .card { min-width: 0; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; background: var(--bg); }
@@ -121,14 +144,14 @@
     <div id="usage-cards" class="cards"></div>
     <h3>费用估算（不是发票）</h3>
     <p id="usage-period" class="muted"></p>
-    <div class="table-scroll"><table>
-      <thead><tr><th>项目</th><th class="num">本月用量</th><th class="num">每月含量</th><th class="num">超出单价</th><th class="num">估算费用</th></tr></thead>
+    <div class="table-scroll"><table class="usage-table">
+      <thead><tr><th>项目</th><th class="num">本月用量</th><th class="num">每月含量</th><th class="num">占每月含量</th><th class="num">超出单价</th><th class="num">估算费用</th></tr></thead>
       <tbody id="usage-estimate"></tbody>
     </table></div>
     <ul class="usage-notes" id="usage-notes"></ul>
     <h3>Free 计划每日上限（假设，不是账单）</h3>
     <p id="free-limits" class="muted"></p>
-    <div class="table-scroll"><table>
+    <div class="table-scroll"><table class="usage-table">
       <thead><tr><th>日期（UTC）</th><th class="num">请求</th><th class="num">时长（GB-s）</th><th class="num">行读</th><th class="num">行写</th><th>是否超出</th></tr></thead>
       <tbody id="free-days"></tbody>
     </table></div>
@@ -217,7 +240,7 @@ async function api(path, opts = {}) {
   } finally { clearTimeout(timer); }
 }
 
-function card(k, v, s, cls) { return `<div class="card"><div class="k">${esc(k)}</div><div class="v ${cls || ""}">${esc(v)}</div><div class="s">${esc(s)}</div></div>`; }
+function card(k, v, s, cls, meters = "") { return `<div class="card"><div class="k">${esc(k)}</div><div class="v ${cls || ""}">${esc(v)}</div><div class="s">${esc(s)}</div>${meters}</div>`; }
 
 async function loadStatus() {
   const st = await api("/api/status");
@@ -246,21 +269,32 @@ const count = (n) => n == null ? "—" : Number(n).toLocaleString("zh-CN");
 // Storage lines are GB-month; show them as sizes so small databases do not read as zero.
 const amount = (line, n) => line.per === "GB-month" ? bytes(Math.round(n * 1e9)) : count(Math.round(n * 1000) / 1000);
 const known = (n) => n == null ? "读取失败" : count(n);
+// Table cells carry their column name for the narrow layout; empty cells stay empty so it can hide them.
+const td = (label, html, cls = "") => `<td${cls ? ` class="${cls}"` : ""} data-label="${esc(label)}">${html === "" ? "" : `<div>${html}</div>`}</td>`;
+// Usage as a share of its limit. The bar stops at full width while the number keeps counting past 100 %;
+// with unknown usage or no limit nothing is drawn, so a failed read never shows as 0 %.
+function meter(used, limit, label = "") {
+  if (typeof used !== "number" || !Number.isFinite(used) || !(limit > 0)) return "";
+  const share = used / limit * 100, over = used > limit;
+  const text = share === 0 ? "0%" : share < 0.01 ? "<0.01%" : share < 10 ? share.toFixed(2) + "%" : share < 1000 ? share.toFixed(1) + "%" : Math.round(share).toLocaleString("zh-CN") + "%";
+  return `<span class="meter${over ? " over" : share >= 80 ? " near" : ""}" role="img" aria-label="${esc((label ? label + " " : "") + "占上限 " + text)}"><span class="meter-bar"><span style="width:${Math.min(100, share).toFixed(2)}%"></span></span><span class="meter-text">${esc(label ? label + " " : "")}${esc(text)}${over ? "（超出）" : ""}</span></span>`;
+}
 const FREE_NAME = { requests: "请求", duration_gb_s: "时长", rows_read: "行读", rows_written: "行写" };
 // The Free plan read against this object's days: over names the metrics above a limit; a failed metric is unknown, never zero.
 function renderFreePlan(plan, pricing) {
   const limits = plan.limits, storage = plan.storage;
   $("#free-limits").textContent = `按 Durable Objects pricing（${pricing.durable_objects.as_of}）的 Workers Free 一列：每天请求 ${count(limits.requests)} 次、时长 ${count(limits.duration_gb_s)} GB-s、行读 ${count(limits.rows_read)} 行、行写 ${count(limits.rows_written)} 行，每天 00:00 UTC 重置。超出时不是加价，而是当天这类调用失败；本表不计算金额。`;
-  const cell = (day, key) => day[key] == null ? `<td class="num warn">读取失败</td>`
-    : `<td class="num${day.over.includes(key) ? " bad" : ""}">${esc(count(day[key]))}${day.over.includes(key) ? "（超出）" : ""}</td>`;
+  const COLUMN = { requests: "请求", duration_gb_s: "时长（GB-s）", rows_read: "行读", rows_written: "行写" };
+  const cell = (day, key) => day[key] == null ? td(COLUMN[key], "读取失败", "num warn")
+    : td(COLUMN[key], `${esc(count(day[key]))}${day.over.includes(key) ? "（超出）" : ""}${meter(day[key], limits[key])}`, `num${day.over.includes(key) ? " bad" : ""}`);
   const failed = (day) => day.unknown.length ? `${day.unknown.map(key => FREE_NAME[key]).join("、")}读取失败` : "";
-  const verdict = (day) => day.status === "over" ? `<td class="bad">超出：${esc(day.over.map(key => FREE_NAME[key]).join("、"))}${day.unknown.length ? "；" + esc(failed(day)) : ""}</td>`
-    : day.status === "unknown" ? `<td class="warn">无法判断：${esc(failed(day))}</td>` : `<td class="ok">未超出</td>`;
+  const verdict = (day) => day.status === "over" ? td("是否超出", `超出：${esc(day.over.map(key => FREE_NAME[key]).join("、"))}${day.unknown.length ? "；" + esc(failed(day)) : ""}`, "bad")
+    : day.status === "unknown" ? td("是否超出", `无法判断：${esc(failed(day))}`, "warn") : td("是否超出", "未超出", "ok");
   const days = plan.days == null ? `<tr><td colspan="6" class="warn">${esc(plan.reason)}</td></tr>`
-    : plan.days.length ? plan.days.map(day => `<tr><td>${esc(day.date)}</td>${["requests", "duration_gb_s", "rows_read", "rows_written"].map(key => cell(day, key)).join("")}${verdict(day)}</tr>`).join("")
+    : plan.days.length ? plan.days.map(day => `<tr>${td("日期（UTC）", esc(day.date))}${["requests", "duration_gb_s", "rows_read", "rows_written"].map(key => cell(day, key)).join("")}${verdict(day)}</tr>`).join("")
     : `<tr><td colspan="6" class="muted">本月还没有本对象的用量记录</td></tr>`;
-  const stored = storage.over == null ? `<td class="warn">无法判断：本机运行没有 databaseSize</td>` : storage.over ? `<td class="bad">超出：存储</td>` : `<td class="ok">未超出</td>`;
-  $("#free-days").innerHTML = days + `<tr><td>SQLite 存储（总量，不按天重置）</td><td colspan="4" class="num${storage.over ? " bad" : ""}">${esc(bytes(storage.bytes))} / ${esc(bytes(storage.limit_bytes))}</td>${stored}</tr>`;
+  const stored = storage.over == null ? td("是否超出", "无法判断：本机运行没有 databaseSize", "warn") : storage.over ? td("是否超出", "超出：存储", "bad") : td("是否超出", "未超出", "ok");
+  $("#free-days").innerHTML = days + `<tr>${td("", "SQLite 存储（总量，不按天重置）")}<td colspan="4" class="num${storage.over ? " bad" : ""}" data-label="大小 / 上限"><div>${esc(bytes(storage.bytes))} / ${esc(bytes(storage.limit_bytes))}${meter(storage.bytes, storage.limit_bytes)}</div></td>${stored}</tr>`;
   $("#free-scope").textContent = "数字只含本实例的 archive-v1。Free 额度按整个账号合计，其他 Worker 没算进来；本对象单独超出就能确定账号超出，没超出不能说明账号安全。R2 的免费额度按月计算（每月 10 GB、100 万次 Class A、1000 万次 Class B），不在本表，见上方费用表。";
 }
 const usd = (n) => n == null ? "—" : "$" + Number(n).toFixed(2);
@@ -268,25 +302,32 @@ function renderUsage(doc) {
   const a = doc.analytics || {}, r2 = a.r2 || {}, d = a.durable_objects || {}, p = doc.pricing, c = doc.archive.counts || {};
   const measured = a.status === "ok" || a.status === "partial";
   const free = p.durable_objects.free_daily, today = d.today;
-  const share = (used, limit) => used == null ? "" : `（${(used / limit * 100).toFixed(1)}%）`;
-  $("#usage-cards").innerHTML = card("SQLite 数据库", bytes(doc.database.bytes), doc.database.bytes == null ? "本机运行没有 databaseSize" : "SqlStorage.databaseSize，本对象当前大小", "")
+  const paid = Object.fromEntries(p.durable_objects.paid.map(line => [line.key, line.included]));
+  const r2Free = Object.fromEntries(p.r2.monthly.map(line => [line.key, line.included]));
+  $("#usage-cards").innerHTML = card("SQLite 数据库", bytes(doc.database.bytes), doc.database.bytes == null ? "本机运行没有 databaseSize" : "SqlStorage.databaseSize，本对象当前大小", "",
+      meter(doc.database.bytes, p.durable_objects.free_storage_bytes, "对照 5 GB"))
     + card("投递计数", count(c.accepted), `rejected ${count(c.rejected)} · ignored ${count(c.ignored)} · duplicate ${count(c.duplicate)}`, "")
     + card("去重窗口", count(doc.archive.remembered_deliveries), "counters 中的 seen 计数", "")
-    + (measured ? card("R2 存储", bytes(r2.storage_bytes), r2.object_count == null ? "读取失败" : `${count(r2.object_count)} 个对象 · 采样 ${eventTime(r2.sampled_at)}`, "")
-      + card("R2 操作（本月）", `A ${count(r2.class_a)} / B ${count(r2.class_b)}`, `免费操作 ${count(r2.free)}${Object.keys(r2.unclassified || {}).length ? " · 未归类 " + Object.entries(r2.unclassified).map(([k, v]) => k + " " + v).join("、") : ""}`, "")
-      + card("Durable Object 行读 / 行写（本月）", `${count(d.rows_read)} / ${count(d.rows_written)}`, `请求 ${count(d.requests)} · 时长 ${count(d.duration_gb_s)} GB-s`, "")
-      + card("今日（UTC）行读 / 行写", today ? `${known(today.rows_read)} / ${known(today.rows_written)}` : "—",
-        today ? `Free 计划每日上限 ${count(free.rows_read)} / ${count(free.rows_written)}：读${share(today.rows_read, free.rows_read)} 写${share(today.rows_written, free.rows_written)}` : "读取失败",
-        today && (today.rows_read > free.rows_read * .8 || today.rows_written > free.rows_written * .8) ? "warn" : "")
+    + (measured ? card("R2 存储", r2.storage_bytes == null ? "读取失败" : bytes(r2.storage_bytes), r2.object_count == null ? "读取失败" : `${count(r2.object_count)} 个对象 · 采样 ${eventTime(r2.sampled_at)}`, "",
+        meter(r2.storage_bytes == null ? null : r2.storage_bytes / 1e9, r2Free.storage_gb_month, "每月免费 10 GB"))
+      + card("R2 操作（本月）", `A ${known(r2.class_a)} / B ${known(r2.class_b)}`, `免费操作 ${known(r2.free)}${Object.keys(r2.unclassified || {}).length ? " · 未归类 " + Object.entries(r2.unclassified).map(([k, v]) => k + " " + v).join("、") : ""}`, "",
+        meter(r2.class_a, r2Free.class_a, "A 对照每月免费") + meter(r2.class_b, r2Free.class_b, "B 对照每月免费"))
+      + card("Durable Object 行读 / 行写（本月）", `${known(d.rows_read)} / ${known(d.rows_written)}`, `请求 ${known(d.requests)} · 时长 ${known(d.duration_gb_s)} GB-s；对照 Paid 每月含量`, "",
+        meter(d.rows_read, paid.rows_read, "行读") + meter(d.rows_written, paid.rows_written, "行写") + meter(d.requests, paid.requests, "请求") + meter(d.duration_gb_s, paid.duration_gb_s, "时长"))
+      + card("今日（UTC）行读 / 行写", today ? `${known(today.rows_read)} / ${known(today.rows_written)}` : "读取失败",
+        `对照 Free 计划每日上限 ${count(free.rows_read)} / ${count(free.rows_written)}`,
+        today && (today.rows_read > free.rows_read || today.rows_written > free.rows_written) ? "bad" : "",
+        today ? meter(today.rows_read, free.rows_read, "行读") + meter(today.rows_written, free.rows_written, "行写") : "")
       : card("云端计量", a.status === "unavailable" ? "不可用" : "未读取", a.message || "", "warn"));
   const errors = Object.entries(a.errors || {}).map(([k, v]) => `${k}：${v}`).join("；");
   $("#usage-period").textContent = measured
     ? `操作量为 ${a.period.start} 起本自然月（UTC）至 ${eventTime(a.period.end)} 的累计；存储按当前大小持续一个月计算。云端计量读取于 ${eventTime(a.fetched_at)}，6 小时内复用，${eventTime(a.next_fetch_at)} 后打开或刷新才会重新查询。${errors ? "部分数据读取失败：" + errors : ""}`
     : "";
   $("#usage-estimate").innerHTML = measured
-    ? doc.estimate.lines.map(l => `<tr><td>${esc(l.item)}</td><td class="num">${esc(l.used == null ? "读取失败" : amount(l, l.used))}</td><td class="num">${esc(amount(l, l.included))}</td><td class="num">${esc("$" + l.unit_price + " / " + l.per)}</td><td class="num">${esc(usd(l.cost))}</td></tr>`).join("")
-      + `<tr><td><strong>合计（Paid 计划超出部分）</strong></td><td></td><td></td><td></td><td class="num"><strong>${esc(doc.estimate.total == null ? "部分未知" : usd(doc.estimate.total))}</strong></td></tr>`
-    : `<tr><td colspan="5" class="warn">${esc(a.message || "云端计量不可用，不能估算操作量")}</td></tr>`;
+    ? doc.estimate.lines.map(l => `<tr>${td("项目", esc(l.item))}${td("本月用量", esc(l.used == null ? "读取失败" : amount(l, l.used)), "num")}${td("每月含量", esc(amount(l, l.included)), "num")}`
+        + `${td("占每月含量", l.used == null ? '<span class="warn">读取失败</span>' : meter(l.used, l.included), "num")}${td("超出单价", esc("$" + l.unit_price + " / " + l.per), "num")}${td("估算费用", esc(usd(l.cost)), "num")}</tr>`).join("")
+      + `<tr>${td("", "<strong>合计（Paid 计划超出部分）</strong>")}${td("", "")}${td("", "")}${td("", "")}${td("", "")}${td("估算费用", `<strong>${esc(doc.estimate.total == null ? "部分未知" : usd(doc.estimate.total))}</strong>`, "num")}</tr>`
+    : `<tr><td colspan="6" class="warn">${esc(a.message || "云端计量不可用，不能估算操作量")}</td></tr>`;
   renderFreePlan(doc.free_plan, p);
   $("#usage-notes").innerHTML = [
     "估算，不是发票：只按公开单价计算超出每月含量的部分，不含套餐月费；账单周期、四舍五入和同账号其他 Worker 的用量都可能使实际金额不同。",
