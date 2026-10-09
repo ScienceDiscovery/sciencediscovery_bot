@@ -88,7 +88,6 @@
       <label>number <input id="f-number" size="6"></label>
       <label>limit <input id="f-limit" value="100" size="4"></label>
       <button id="reload">刷新</button>
-      <span class="muted">每 10 s 自动刷新</span>
     </div>
     <div class="table-scroll"><table>
       <thead><tr><th>时间（本地）</th><th>状态</th><th>平台</th><th>route</th><th>repo</th><th>#</th><th>标题 / 原因</th><th>监听处理</th><th>验签</th><th>delivery</th><th></th></tr></thead>
@@ -117,7 +116,7 @@
     <h2>资源用量</h2>
     <div class="filters">
       <button id="reload-usage">刷新用量</button>
-      <span id="usage-state" class="muted" role="status">打开本页时读取一次，不随事件页每 10 s 刷新</span>
+      <span id="usage-state" class="muted" role="status">随页面加载读取一次；之后点击刷新时再读取</span>
     </div>
     <div id="usage-cards" class="cards"></div>
     <h3>费用估算（不是发票）</h3>
@@ -151,17 +150,13 @@ if (token) history.replaceState(null, "", location.pathname);
 const headers = token ? { Authorization: "Bearer " + token } : {};
 let offset = 0, pageSize = 100, listRequest = 0, detailRequest = 0, currentDetail = null;
 let subscriptions = [], refreshRequest = 0;
-// Usage is never part of the 10 s refresh; a failed read retries no sooner than 15 minutes.
-const USAGE_RETRY_MS = 15 * 60 * 1000;
-let usageLoaded = false, usageRequest = 0, usageRetry = null;
+let usageRequest = 0;
 const currentView = () => location.hash === "#subscriptions" ? "subscriptions" : location.hash === "#usage" ? "usage" : "events";
 function selectView() {
   const view = currentView();
   $("#events-page").hidden = view !== "events";
   $("#subscriptions-page").hidden = view !== "subscriptions";
   $("#usage-page").hidden = view !== "usage";
-  // Usage is read once per page load when its view first opens; afterwards only on demand.
-  if (view === "usage" && !usageLoaded) { usageLoaded = true; loadUsage(); }
   for (const link of document.querySelectorAll("[data-view]")) {
     if (link.dataset.view === view) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
@@ -277,17 +272,15 @@ function renderUsage(doc) {
 }
 async function loadUsage() {
   const requestId = ++usageRequest;
-  clearTimeout(usageRetry);
   $("#usage-state").textContent = "正在读取…";
   try {
     const doc = await api("/api/usage");
     if (requestId !== usageRequest) return;
     renderUsage(doc);
-    $("#usage-state").textContent = "读取于 " + new Date().toLocaleTimeString() + "；不随事件页每 10 s 刷新";
+    $("#usage-state").textContent = "读取于 " + new Date().toLocaleTimeString() + "；点击刷新时再读取";
   } catch (err) {
     if (requestId !== usageRequest) return;
-    $("#usage-state").textContent = "读取失败：" + err.message + "；15 分钟后自动重试，也可手动刷新";
-    usageRetry = setTimeout(loadUsage, USAGE_RETRY_MS);
+    $("#usage-state").textContent = "读取失败：" + err.message + "；点击「刷新用量」重试";
   }
 }
 
@@ -305,7 +298,7 @@ async function loadEvents() {
   pageSize = Math.max(1, Math.min(Number(q.get("limit")) || 50, 500));
   $("#previous-page").disabled = offset === 0;
   $("#next-page").disabled = !doc.has_more;
-  $("#page-info").textContent = doc.count ? `第 ${offset + 1}–${offset + doc.count} 条${offset ? " · 浏览历史时暂停自动刷新" : ""}` : "没有匹配的事件";
+  $("#page-info").textContent = doc.count ? `第 ${offset + 1}–${offset + doc.count} 条` : "没有匹配的事件";
   $("#rows").innerHTML = doc.events.map((e) => {
     const cls = e.status === "accepted" ? (e.duplicate ? "warn" : "ok") : "bad";
     const title = e.status === "rejected" ? `${esc(e.reason)} (HTTP ${e.http_status})` : esc(e.title || e.note || "");
@@ -385,21 +378,19 @@ async function refresh() {
   }
 }
 
-$("#reload").addEventListener("click", refresh);
-$("#reload-subscriptions").addEventListener("click", refresh);
-$("#reload-usage").addEventListener("click", loadUsage);
+// Data is read when the page loads and when someone asks for it; nothing polls.
+// Refresh buttons reload the status, the current list and the usage section together.
+const reloadAll = () => { refresh(); loadUsage(); };
+for (const id of ["#reload", "#reload-subscriptions", "#reload-usage"]) $(id).addEventListener("click", reloadAll);
 for (const id of ["#subscription-business", "#subscription-mode"]) $(id).addEventListener("change", renderSubscriptions);
 $("#subscription-search").addEventListener("input", renderSubscriptions);
-window.addEventListener("hashchange", () => { selectView(); refresh(); });
+// Usage was read with the page; opening its view reads nothing new.
+window.addEventListener("hashchange", () => { selectView(); if (currentView() !== "usage") refresh(); });
 for (const id of ["#f-kind", "#f-status", "#f-route", "#f-number", "#f-limit"]) $(id).addEventListener("change", () => { offset = 0; refresh(); });
 $("#previous-page").addEventListener("click", () => { offset = Math.max(0, offset - pageSize); refresh(); });
 $("#next-page").addEventListener("click", () => { offset += pageSize; refresh(); });
 selectView();
-refresh();
-// The usage view has no timer: its data changes slowly and every read costs storage rows.
-const autoRefresh = () => currentView() === "subscriptions" || (currentView() === "events" && !offset);
-setInterval(() => { if (autoRefresh() && !document.hidden) refresh(); }, 10000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden && autoRefresh()) refresh(); });
+reloadAll();
 </script>
 </body>
 </html>

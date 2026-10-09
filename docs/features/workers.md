@@ -73,7 +73,7 @@ Durable Objects 的 SQLite 按读取与写入的行数计量，免费额度按�
 
 ### 管理页资源用量
 
-管理页的「资源用量」页通过 Access 保护的 `GET /admin/api/usage` 读取，打开该页时请求一次，另有手动刷新；读取失败时 15 分钟后才自动重试。它不在事件页每 10 秒的刷新里，Webhook、Alarm、Cron、`/healthz` 和 `/actions/token` 都不调用它。
+管理页的「资源用量」页通过 Access 保护的 `GET /admin/api/usage` 读取：打开或重新加载管理页时随状态和列表读取一次，之后只在点击「刷新」「刷新监听点」或「刷新用量」时再读取；页面没有定时器，读取失败也不自动重试。Webhook、Alarm、Cron、`/healthz` 和 `/actions/token` 都不调用它。
 
 - 本机数据：`SqlStorage.databaseSize`（数据库当前字节数），以及 `totals`、`routes` 和 `counters` 中的 `seen`。这些都是写入时已维护的小表，不对 `deliveries`、`seen` 或 GitCode 同步历史做 `COUNT(*)`／`SELECT *`，也不列举、`head` 或 `get` R2 对象，热路径不为统计增加写入。一次读取实测 4 行（无论 5 条还是 125 条投递），不写入，由 `tests-ts/worker-storage-cost.test.mjs` 限定。
 - 云端计量：R2 存储量与 Class A／B 次数来自 GraphQL Analytics 的 `r2StorageAdaptiveGroups`、`r2OperationsAdaptiveGroups`，按 `SDBOT_ARCHIVE_BUCKET` 过滤。Durable Object 的请求数来自 `durableObjectsInvocationsAdaptiveGroups`；行读、行写和活跃时长来自 `durableObjectsPeriodicGroups`（时长按 128 MB 折算 GB-s），两者都按本实例对象 ID 过滤，命名空间里只有 `archive-v1` 这一个对象。结果写入一行 SQLite 缓存 `usage_cache`，6 小时内不重复查询；没有人打开该页时不查询。
