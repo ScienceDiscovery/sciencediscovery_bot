@@ -4,7 +4,7 @@
 
 Bot 的接收服务、GitHub／GitCode 适配、签名验证、事件总线、请求归档接口、管理 API、fixture 工具、App 身份与发布队列均使用 TypeScript。正式运行入口是 Cloudflare Worker；Node.js 22+ 与 Docker Compose 保留作本机运行和回退。管理界面仍使用已有静态 HTML，查看交互保持一致，管理重放已移除。
 
-核心代码在 Cloudflare Workers 的 workerd 运行时执行，无需 `nodejs_compat`。`src/worker/index.ts` 使用 SQLite Durable Object 与 R2 归档、持久 Alarm 调度，通过 GitHub Actions 执行 Python 采集器，并提供 Access 鉴权的只读管理页面。正式与测试实例使用独立存储及 Secrets；测试 App 未接入前关闭测试调度。管理认证配置缺失时只读入口拒绝访问，不影响签名接收和 Actions 调度；旧档案不迁移，见 [Workers 指南](workers.md)。不能把测试用内存存储当成线上归档。
+核心代码在 Cloudflare Workers 的 workerd 运行时执行，无需 `nodejs_compat`。`src/worker/index.ts` 使用 SQLite Durable Object 与 R2 归档、持久 Alarm 调度，通过 GitHub Actions 执行 Python 采集器，并提供 Access 鉴权的只读管理页面。云端只有正式 Worker `sciencediscovery-bot`（`wrangler.jsonc`，`main` 分支），原测试实例已删除，不再有云端测试版本。管理认证配置缺失时只读入口拒绝访问，不影响签名接收和 Actions 调度；旧档案不迁移，见 [Workers 指南](workers.md)。不能把测试用内存存储当成线上归档。
 
 ## 代码边界
 

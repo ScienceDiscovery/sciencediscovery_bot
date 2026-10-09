@@ -6,11 +6,11 @@ Worker 保留 Webhook 验签、事件总线、配置的源仓范围、全量投�
 
 Bot 代码随 GitHub 提交自动部署的接入方案见 [Worker 自动部署](worker-delivery.md)，可选择 Cloudflare Workers Builds 或 Bot 仓 GitHub Actions。下文的看板 Actions 负责数据采集，不负责部署 Bot。
 
-现有正式服务使用 `wrangler.jsonc`，App Webhook URL 使用正式接收域名下的 `/webhook/github`。该实例仅将 `openJiuwen-ai/sciencediscovery` 映射到 `ScienceDiscovery/github-status-board`，启用持久 Alarm 与每五分钟的修复 Cron。本地 Compose 的 bot 与 cloudflared 已停止，数据卷保留；不要为查看旧档案直接恢复带看板调度的整套服务。
+云端只有正式 Worker `sciencediscovery-bot`，配置是 `wrangler.jsonc`，由 `main` 分支经 Workers Builds 发布；App Webhook URL 使用正式接收域名下的 `/webhook/github`。该实例仅将 `openJiuwen-ai/sciencediscovery` 映射到 `ScienceDiscovery/github-status-board`，启用持久 Alarm 与每五分钟的修复 Cron。本地 Compose 的 bot 与 cloudflared 已停止，数据卷保留；不要为查看旧档案直接恢复带看板调度的整套服务。
 
-独立测试实例使用 `wrangler.test.jsonc`，接收地址使用独立测试域名下的 `/webhook/github`。它使用自己的 SQLite Durable Object、私有 R2、测试 App 与 Webhook secret；只允许实验源仓，唯一目标为 `ScienceDiscovery/sciencediscovery` → `ScienceDiscovery/github-status-board-test`。测试配置启用持久 Alarm 和每五分钟修复 Cron，须在测试 App 安装到实验源仓及测试看板仓、云端 Secrets 和看板 Actions 凭据验证通过后部署。测试看板通过 OIDC 向测试 Worker 兑换临时凭据，工作流不再保存测试 App 私钥。
+原独立测试 Worker 及其域名、R2、Durable Object 和构建连接已删除，`wrangler.test.jsonc` 也已从仓库移除，不再有云端测试版本。实验源仓和测试看板仓不再连接任何 Bot，测试看板也没有可兑换 OIDC 凭据的 Worker。不要重建测试 Worker、R2 桶、域名或 Workers Builds 连接；改动在本地用 `npm test`、workerd 测试和浏览器旅程验证，见[验证指南](../testing.md)。
 
-两个实例均提供最小健康检查 `/healthz`。同域名的 `/admin/` 已随代码部署，但目前尚未配置 Access 应用与 issuer／AUD，返回 503 `admin unavailable`，不能登录查询；这不影响 Webhook 接收与云端存档。开通步骤见[云端只读管理](cloud-admin.md)。App ID 是非敏感配置，密钥单独保存在云端 Secrets。部署到另一账号时应替换 App ID、域名及资源名称；首次部署先按下文关闭调度和 routes，不能照搬正式启用配置。
+正式 Worker 提供最小健康检查 `/healthz`。同域名的 `/admin/` 由 Cloudflare Access 保护，配置见[云端只读管理](cloud-admin.md)。App ID 是非敏感配置，密钥单独保存在云端 Secrets。部署到另一账号时应替换 App ID、域名及资源名称；首次部署先按下文关闭调度和 routes，不能照搬正式启用配置。
 
 本地适配使用真实 workerd、SQLite Durable Object 和 R2 模拟存储，可验证重启恢复、查询、去重与调度。本地命令不会创建账号资源或切换云端服务；本地模拟器既不读取 Compose 的 `.env`，也不读取其历史数据。
 
@@ -43,7 +43,7 @@ SQLite、R2 模拟数据及运行时文件保存在 `.wrangler/local/`，正常 
 
 - `src/worker/index.ts`：公开 Fetch、Access 鉴权管理、Cron 与 `BotObject`。所有投递都进入固定名称 `archive-v1`，避免多个 Worker 实例各自去重。管理路径通过 Access JWT 校验后仅可调用只读 RPC；未认证路径不会转入管理方法。
 - `src/worker/archive.ts`：完整正文和包含请求／应用响应的详情先写 R2，随后用 SQLite 事务写查询索引、计数、delivery 去重和待刷新状态。存储失败返回 503，不确认成功；失败前写入的 R2 对象可能成为未索引对象，后续维护不能只按日期随意清理。
-- `src/worker/board.ts`：订阅处理器暂存本次刷新意图，只有归档事务成功才计入 `requested`。同仓短时间事件合并，默认 20 秒去抖、成功触发间隔至少 60 秒；正式实例设 `SDBOT_BOARD_DEBOUNCE=600`，10 分钟内的事件合并为一次采集，两次触发至少相隔 10 分钟，测试实例保留默认值便于验证；失败从 30 秒指数退避到 600 秒。发送前保存 120 秒执行租约，崩溃后恢复。Alarm 执行期间不阻塞新投递；正式实例每五分钟 Cron 修复调度，空闲站点默认每小时刷新一次。测试实例采用同样的调度规则，但只操作测试看板；停用任何环境时清空该环境的目标映射。
+- `src/worker/board.ts`：订阅处理器暂存本次刷新意图，只有归档事务成功才计入 `requested`。同仓短时间事件合并，默认 20 秒去抖、成功触发间隔至少 60 秒；正式实例设 `SDBOT_BOARD_DEBOUNCE=600`，10 分钟内的事件合并为一次采集，两次触发至少相隔 10 分钟；失败从 30 秒指数退避到 600 秒。发送前保存 120 秒执行租约，崩溃后恢复。Alarm 执行期间不阻塞新投递；正式实例每五分钟 Cron 修复调度，只调度 `ScienceDiscovery/github-status-board`，空闲时默认每小时刷新一次。停用看板调度时清空 `SDBOT_BOARD_TARGETS`。
 - `src/core/actions.ts`：只为目标看板仓申请 `Metadata: read / Actions: write` 安装令牌，调用固定 `collect.yml`、固定 `main`，传入源仓和刷新编号。私钥、令牌、原始 Webhook 内容不会作为工作流 inputs 传递。
 - `tools/workers-local.mjs` 与 `src/worker/local-admin.ts`：本地管理桥和现有面板。校验 loopback hostname，并继续拒绝 Cf-* 头；公网 bundle 包含受认证保护的管理页面，不包含本地管理桥。
 
@@ -55,7 +55,7 @@ Actions 调用在网络断开或进程崩溃时可能重试；GitHub dispatch �
 
 ## 日志
 
-正式与测试配置均开启 Workers Logs（`observability.logs.enabled` 与 `invocation_logs`），用于排查线上请求和 Durable Object 调用失败。代码本身不输出 `console` 日志，平台为每次调用记录请求方法、URL、响应状态、耗时和未捕获异常，不记录请求或响应正文。日志只在 Cloudflare 账号控制台可见，保留期由套餐决定。
+正式配置 `wrangler.jsonc` 开启 Workers Logs（`observability.logs.enabled` 与 `invocation_logs`），用于排查线上请求和 Durable Object 调用失败。代码本身不输出 `console` 日志，平台为每次调用记录请求方法、URL、响应状态、耗时和未捕获异常，不记录请求或响应正文。日志只在 Cloudflare 账号控制台可见，保留期由套餐决定。
 
 平台会把 cookie 以及名称含 `auth`、`key`、`secret`、`token`、`jwt` 的请求头值替换为 `REDACTED`，因此 `/actions/token` 的 OIDC Bearer 凭据不会以明文进入日志。GitHub／GitCode 的 `x-*-signature-256` 不在平台脱敏范围，会按原值记录；签名只能核验对应那一次投递正文，不能推出 Webhook secret，而正文不进入日志。投递存档中的请求头仍由 `safeHeaders` 另行脱敏。Worker 顶层对未处理异常统一返回 503、不输出原因，排查时对照同一时刻 `BotObject` 的调用记录。[Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)、[脱敏规则](https://developers.cloudflare.com/workers/runtime-apis/handlers/tail/)
 
@@ -85,9 +85,9 @@ Durable Objects 的 SQLite 按读取与写入的行数计量，免费额度按�
 
 ## Actions 配置
 
-两个看板仓都需要 `collect.yml`、`collection_context.py`、`collect_with_oidc.py` 和已有采集器代码。每个看板仓的 `board-config.json` 只保存本站映射，相同工作流按运行仓选择唯一源仓，拒绝另一个环境的目标或源仓；正式与测试快照不能互相覆盖。
+只有正式看板仓 `ScienceDiscovery/github-status-board` 需要 `collect.yml`、`collection_context.py`、`collect_with_oidc.py` 和已有采集器代码。它的 `board-config.json` 只保存正式源仓映射，工作流按运行仓选择唯一源仓，拒绝不匹配的目标或源仓。
 
-正式与测试目标仓分别配置 `SDBOT_TOKEN_BROKER_URL` 和 `SDBOT_TOKEN_AUDIENCE` 两个 Actions Variables；私钥仅由对应 Worker 使用。`collect_with_oidc.py` 校验本站映射后，通过工作流 OIDC 身份换取源仓只读／目标仓 Contents 写令牌，采集后尝试撤销。Worker 同时固定看板仓／组织 ID、main 与 collect.yml；详见 [Actions OIDC](actions-oidc.md)。
+正式看板仓配置 `SDBOT_TOKEN_BROKER_URL` 和 `SDBOT_TOKEN_AUDIENCE` 两个 Actions Variables，令牌端点是正式 Worker 的 `/actions/token`；私钥仅由正式 Worker 使用。`collect_with_oidc.py` 校验本站映射后，通过工作流 OIDC 身份换取源仓只读／目标仓 Contents 写令牌，采集后尝试撤销。Worker 同时固定看板仓／组织 ID、main 与 collect.yml；详见 [Actions OIDC](actions-oidc.md)。
 
 源仓读取权限沿用看板要求：Contents、Issues、Pull requests、Actions、Checks、Commit statuses；目标仓需要 Contents 写与触发任务的 Actions 写权限。App 必须安装到两端，跨组织分别使用对应 installation。Actions 用 App 令牌提交 site，使已有 `pages.yml` 的 push 触发器生效；不能换成默认 GITHUB_TOKEN 写入后期待自动触发另一个工作流。
 
@@ -97,16 +97,16 @@ Durable Objects 的 SQLite 按读取与写入的行数计量，免费额度按�
 
 ## 新账号首次上线步骤（本地验收不会执行）
 
-前提：两个看板仓已有采集工作流、脚本及各自的 `.sync/` 与 `site/`；App 权限、Worker Secrets、OIDC 信任和看板仓变量已配置，并通过真实采集和 Pages 验收。更新共享源码时保留各站数据和独立功能，不重新初始化同步进度。
+以下步骤用于在另一个账号重新建立正式实例，不用于建立测试实例。前提：看板仓已有采集工作流、脚本及 `.sync/` 与 `site/`；App 权限、Worker Secrets、OIDC 信任和看板仓变量已配置，并通过真实采集和 Pages 验收。更新共享源码时保留各站数据和独立功能，不重新初始化同步进度。
 
 1. 在目标 Cloudflare 账号开通 R2，创建私有归档 bucket；名称与对应 Wrangler 配置的 `r2_buckets[].bucket_name` 一致。不启用公开域名或公开读取，不配置未经评估的自动删除规则。
 2. 使用 `npx wrangler login --device` 授权部署工具，再用 `npx wrangler whoami` 核对账号；账号有多个时在配置中明确 `account_id`。Tunnel token 不能代替 Workers 部署授权。
 3. 首次部署保持 `workers_dev=false`、`preview_urls=false`、无 routes、`triggers.crons=[]`、`SDBOT_BOARD_TARGETS="{}"`。执行 `npm run workers:check` 只做本地检查；`npx wrangler deploy` 才会实际创建／更新云端 Worker 与 SQLite Durable Object 命名空间。首次初始化之后不要随意改类名、迁移标签、Worker 名称或 `archive-v1`，以免指向另一份历史。该阶段没有公开入口或 Cron，不要求未配置 Secrets 的服务已经能处理请求。
 4. 在 Worker 的 Settings → Variables and Secrets 中添加 Secret：`SDBOT_GITHUB_WEBHOOK_SECRET`、可选 `SDBOT_GITCODE_WEBHOOK_SECRET`、`SDBOT_GITHUB_APP_PRIVATE_KEY`。私钥保留完整多行 PEM，通过页面 Deploy 生效；不要放进普通 `vars`、工作流 inputs 或聊天。将非敏感的 `SDBOT_GITHUB_APP_ID` 写入 Wrangler `vars`。本机 `.env` 不会自动复制到 Worker；看板 Actions 不保存 App 私钥。至少一个平台必须有密钥；未配置密钥的平台直接拒绝，Worker 不支持免签接入。
 5. 为 Worker 选择一个新的域名，在 Settings → Domains & Routes 添加 Custom Domain，并将对应 `routes` 同步回 Wrangler 配置；先保留当前 Tunnel 域名。检查新地址的 `/healthz` 只返回 `{"ok":true}`、`/api/status` 返回 404，再使用 `/webhook/github` 接收签名投递。Webhook 地址不能要求浏览器交互登录。
-6. GitHub App 的 Webhook URL 属于 App 注册配置，修改会影响该 App 的全部安装；不能借此只切测试仓。先在实验源仓配置独立的临时仓库 Webhook，指向新地址，保持原 App 地址不动。先验证归档，再停用 Compose 对测试看板的自动触发并让 Worker 仅启用测试目标；核对签名失败、未知事件、重复投递、R2／SQLite 留存及真实采集／Pages 结果。
+6. GitHub App 的 Webhook URL 属于 App 注册配置，修改会影响该 App 的全部安装。先在源仓配置一个独立的临时仓库 Webhook，指向新地址，保持原 App 地址不动；在看板目标仍为空时核对签名失败、未知事件、重复投递和 R2／SQLite 留存。
 7. 启用采集时配置 `SDBOT_BOARD_TARGETS` 的 JSON 字符串映射，并恢复 `triggers.crons=["*/5 * * * *"]` 后部署。看板目标一旦启用并初始化，即使没有新投递，也可能经 Alarm 触发周期刷新；仅关闭 Cron 不能停用持久 Alarm。首次准备同时保持目标为空，正式切换前停用旧进程对应的看板触发，避免两套 Bot 重复调度。
-8. 验证签名、持久存档、实际监听结果与 Actions 触发后，修改 App Webhook URL 切换。管理认证单独按[只读管理配置](cloud-admin.md)开通；未完成时必须保持管理入口拒绝访问，不能将“接收已上线”视为“面板已可登录”。旧档案不迁移，保留数据卷；两看板仓的 `.sync/` 和 `site/` 不变。普通仓库／组织 Webhook 的 URL 也需要逐项核对；验证完移除临时测试 Webhook。保留旧数据卷和回退配置，确认新链路稳定后停止旧接收入口。
+8. 验证签名、持久存档、实际监听结果与 Actions 触发后，修改 App Webhook URL 切换。管理认证单独按[只读管理配置](cloud-admin.md)开通；未完成时必须保持管理入口拒绝访问，不能将“接收已上线”视为“面板已可登录”。旧档案不迁移，保留数据卷；看板仓的 `.sync/` 和 `site/` 不变。普通仓库／组织 Webhook 的 URL 也需要逐项核对；验证完移除临时测试 Webhook。保留旧数据卷和回退配置，确认新链路稳定后停止旧接收入口。
 
 部署命令成功不代表所有 Durable Object 已立即使用新代码和配置：云端传播可能持续数秒至数分钟，存储访问还可能因实例切换而失败。不要紧接部署就切正式 Webhook，也不能仅凭 `/healthz` 判断监听目标已经生效。用带明确测试标记的新 delivery 验证实际归档中的监听结果及目标 Actions 运行；关闭临时目标后也要验证实际结果已回到 `noop`。服务更新窗口收到 503 的投递需要重试；已经按旧配置接受的事件若需重新采集，应在看板仓运行 Actions，普通 redelivery 可能被去重。参见 [Cloudflare 生命周期说明](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)与[已知更新边界](https://developers.cloudflare.com/durable-objects/platform/known-issues/)。
 

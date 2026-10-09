@@ -1,4 +1,4 @@
-# 正式与测试看板更新
+# 看板更新
 
 ## 功能
 
@@ -7,9 +7,8 @@ Bot 验证并归档 Webhook，事件总线匹配跟踪源仓后，合并刷新�
 | 用途 | 来源 | 目标仓 |
 | --- | --- | --- |
 | 正式 | openJiuwen-ai/sciencediscovery | ScienceDiscovery/github-status-board |
-| 测试 | ScienceDiscovery/sciencediscovery | ScienceDiscovery/github-status-board-test |
 
-正式和测试 Worker 分别只处理表中对应的一行，使用不同 App；每个看板仓的 `board-config.json` 也只保留自己的一行。测试凭据不用于正式看板。各实例范围之外的 Webhook 仍完整归档，不触发看板。看板仓本身产生的事件也仅归档，避免更新回环。未配置目标时使用 NoopBoard，占位行为不变。
+云端只有正式 Worker `sciencediscovery-bot`（`wrangler.jsonc`，`main` 分支），只处理这一行；看板仓的 `board-config.json` 也只保留这一行。原测试 Worker 已删除，实验源仓 `ScienceDiscovery/sciencediscovery` 与测试看板仓 `ScienceDiscovery/github-status-board-test` 不再连接任何 Bot，测试看板也没有可兑换凭据的 OIDC 端点。正式范围之外的 Webhook 仍完整归档，不触发看板。看板仓本身产生的事件也仅归档，避免更新回环。未配置目标时使用 NoopBoard，占位行为不变。
 
 ## 配置和启动
 
@@ -21,7 +20,7 @@ docker compose -f docker-compose.yml -f docker-compose.board.yml up -d --build
 
 Compose 看板扩展默认使用 `github_actions`。宿主环境变量未指定执行方式时仍使用兼容的 `local`；该方式才需要同级看板源码与 Python。Actions 模式不检查或调用本地 `publish.py`，不在 Bot 内下载测试产物或生成站点。
 
-正式与测试目标仓通过 [OIDC 临时凭据](actions-oidc.md)分别向对应 Worker 领取短期源仓读令牌和看板写令牌。看板仓只配置 `SDBOT_TOKEN_BROKER_URL`、`SDBOT_TOKEN_AUDIENCE` 两个 Actions Variables，不保存 App 私钥；采集 job 声明 `id-token: write`。
+正式看板仓通过 [OIDC 临时凭据](actions-oidc.md)向正式 Worker 领取短期源仓读令牌和看板写令牌。看板仓只配置 `SDBOT_TOKEN_BROKER_URL`、`SDBOT_TOKEN_AUDIENCE` 两个 Actions Variables，不保存 App 私钥；采集 job 声明 `id-token: write`。
 
 App 安装到源仓及目标仓。Bot 触发时只申请目标仓 Metadata read / Actions write 的短期令牌。Actions 采集时分别申请源仓 Contents / Issues / Pull requests / Actions / Checks / Commit statuses read，和目标仓 Contents write。不同组织分别取安装令牌；不复用个人 gh 凭据。Pages 部署使用 Actions 的 `GITHUB_TOKEN`（contents read / pages write / id-token write）。
 
@@ -45,7 +44,7 @@ Workers 使用持久 Alarm 和事务 outbox 调用同一个 Actions 入口，详
 
 Issue / PR 和 run / attempt 指标分片长期保留；不复制测试日志、截图、trace 或逐用例明细。已有指标不会因产物过期清零。浏览器“历史数据”页可查询全部已采集记录；同步尚未补齐会显示状态。详细契约见[看板采集文档](https://github.com/ScienceDiscovery/github-status-board/blob/main/docs/incremental-history.md)。
 
-`pages.yml` 只上传 `site/`；`.sync/` 不部署到 Pages，但看板仓公开，故它也只能包含公开进度和指标。正式与测试 main 各有数据，维护共享代码时保留双方的 `.sync/` 与 `site/`，不得互相覆盖。
+`pages.yml` 只上传 `site/`；`.sync/` 不部署到 Pages，但看板仓公开，故它也只能包含公开进度和指标。看板仓之间同步共享代码时保留各仓的 `.sync/` 与 `site/`，不得互相覆盖。
 
 ## 验证
 

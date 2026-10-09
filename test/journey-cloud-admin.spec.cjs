@@ -97,6 +97,26 @@ test('the admin page reads once on load and again only when someone asks', async
   await expect(page.locator('#free-days tr').last().locator('td').last()).toHaveText('未超出');
   await expect(page.locator('#free-scope')).toContainText('数字只含本实例的 archive-v1');
   await expect(page.locator('#free-days')).not.toContainText('$');
+  // Every figure with a limit carries a bar and a written percentage; past 100 % the bar stops, the number does not.
+  const bar = cell => cell.locator('.meter-bar > span');
+  const paidRow = item => page.locator('#usage-estimate tr', { has: page.locator('td', { hasText: new RegExp('^' + item + '$') }) });
+  await expect(paidRow('SQLite 行写').locator('.meter')).toHaveClass(/over/);
+  await expect(paidRow('SQLite 行写').locator('.meter-text')).toHaveText('120.0%（超出）');
+  await expect(bar(paidRow('SQLite 行写'))).toHaveAttribute('style', 'width:100.00%');
+  await expect(paidRow('R2 Class B').locator('.meter-text')).toHaveText('20.0%');
+  await expect(bar(paidRow('R2 Class B'))).toHaveAttribute('style', 'width:20.00%');
+  await expect(page.locator('#usage-estimate .meter')).toHaveCount(8);
+  const written = date => dayRow(date).locator('td').nth(4);
+  await expect(written(today).locator('.meter-text')).toHaveText('59,950%（超出）');
+  await expect(written(today).locator('.meter-text')).toBeVisible();
+  await expect(bar(written(today))).toHaveAttribute('style', 'width:100.00%');
+  if (first !== today) {
+    await expect(written(first).locator('.meter-text')).toHaveText('50.0%');
+    await expect(bar(written(first))).toHaveAttribute('style', 'width:50.00%');
+  }
+  await expect(page.locator('#free-days tr').last().locator('.meter')).toHaveCount(1);
+  await expect(page.locator('#usage-cards .card', { hasText: 'R2 存储' }).locator('.meter-text')).toHaveText('每月免费 10 GB 120.0%（超出）');
+  await expect(page.locator('#usage-cards .card', { hasText: '今日（UTC）' }).locator('.meter')).toHaveCount(2);
   expect(counts).toEqual({ status: 5, events: 4, listeners: 1, usage: 2 });
   // Reading the table sends nothing more as time passes.
   await page.clock.runFor(15 * 60_000);
@@ -121,6 +141,27 @@ test('the admin page reads once on load and again only when someone asks', async
   await page.getByRole('button', { name: '刷新用量' }).click();
   await expect(page.locator('#usage-state')).toContainText('读取于');
   expect(counts.usage).toBe(4);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('usage-meters-mobile.png'), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+
+  // An unknown figure draws no bar and is never 0 %.
+  await page.route('**/admin/api/usage', async route => {
+    const real = await (await route.fetch()).json();
+    real.estimate.lines.find(line => line.item === 'SQLite 行读').used = null;
+    Object.assign(real.free_plan.days[0], { rows_read: null, unknown: ['rows_read'] });
+    real.analytics.r2.storage_bytes = null;
+    await route.fulfill({ json: real });
+  });
+  await page.getByRole('button', { name: '刷新用量' }).click();
+  await expect(paidRow('SQLite 行读').locator('td').nth(3)).toHaveText('读取失败');
+  await expect(paidRow('SQLite 行读').locator('.meter')).toHaveCount(0);
+  await expect(dayRow(today).locator('td').nth(3)).toHaveText('读取失败');
+  await expect(dayRow(today).locator('td').nth(3).locator('.meter')).toHaveCount(0);
+  await expect(page.locator('#usage-cards .card', { hasText: 'R2 存储' })).toContainText('读取失败');
+  await expect(page.locator('#usage-cards .card', { hasText: 'R2 存储' }).locator('.meter')).toHaveCount(0);
+  await page.unrouteAll();
 
   // Without SDBOT_ANALYTICS_TOKEN the Worker returns local size and counters only (see worker-usage.test.mjs).
   await page.route('**/admin/api/usage', async route => {
