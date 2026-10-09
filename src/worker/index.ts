@@ -11,6 +11,8 @@ import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
 import { authorizeAdmin } from './access.js';
 import { exchangeActionsToken, readGitCodeSync } from './actions-auth.js';
 import { WorkerGitCodeSync } from './gitcode-sync.js';
+import { AnalyticsCache } from './usage.js';
+import { usageDocument } from '../core/usage.js';
 import panel from '../../static/index.html';
 
 export class BotObject extends DurableObject<WorkerEnv> {
@@ -19,6 +21,7 @@ export class BotObject extends DurableObject<WorkerEnv> {
   private readonly board: WorkerBoard;
   private readonly sync: WorkerGitCodeSync;
   private readonly archive: WorkerArchive;
+  private analytics?: AnalyticsCache;
   constructor(ctx: DurableObjectState, env: WorkerEnv) {
     super(ctx, env);
     const cfg = workerConfig(env);
@@ -65,6 +68,21 @@ export class BotObject extends DurableObject<WorkerEnv> {
       return true;
     });
   }
+  /**
+   * Access-authenticated resource usage. Reads the database size and the maintained counters;
+   * Cloudflare account analytics come from a one-row cache refreshed at most every six hours.
+   * Never called by webhooks, alarms, health checks or token exchange.
+   */
+  async usage(): Promise<Record<string, unknown>> {
+    const env = this.env, token = typeof env.SDBOT_ANALYTICS_TOKEN === 'string' ? env.SDBOT_ANALYTICS_TOKEN.trim() : '';
+    const account = String(env.SDBOT_CLOUDFLARE_ACCOUNT_ID || '').trim(), bucket = String(env.SDBOT_ARCHIVE_BUCKET || '').trim();
+    const local = this.archive.usage();
+    let analytics: Record<string, unknown>;
+    if (!token) analytics = { status: 'unconfigured', message: '未配置 Analytics token，不能估算操作量' };
+    else if (!/^[0-9a-f]{32}$/.test(account) || !bucket) analytics = { status: 'unconfigured', message: '缺少 SDBOT_CLOUDFLARE_ACCOUNT_ID 或 SDBOT_ARCHIVE_BUCKET，不能查询云端计量' };
+    else analytics = await (this.analytics ||= new AnalyticsCache(this.ctx.storage.sql)).read({ token, account, bucket, objectId: this.ctx.id.toString() });
+    return usageDocument('cloudflare', local, analytics);
+  }
   // Read-only RPC for the OIDC-authenticated dashboard collector.
   gitcodeSync(): Promise<Record<string, unknown>> { return this.sync.snapshot(); }
   async wake(): Promise<void> { await this.mutex.run(() => this.schedule()); }
@@ -104,6 +122,8 @@ export default {
           'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
         } });
         const path = url.pathname.slice('/admin'.length);
+        // Usage has its own RPC: it is requested by the usage section only, never by the 10-second refresh.
+        if (path === '/api/usage') return jsonResponse({ ...object(await env.BOT.getByName(OBJECT_NAME).usage()), environment: env.SDBOT_ENVIRONMENT || 'unconfigured' });
         if (!['/api/status', '/api/listeners', '/api/events', '/api/gitcode-sync'].includes(path) && !path.startsWith('/api/events/')) return jsonResponse({ ok: false, error: 'not found' }, 404);
         const response = await env.BOT.getByName(OBJECT_NAME).query(path + url.search);
         if (path !== '/api/status' || !response.ok) return response;

@@ -1,0 +1,92 @@
+import type { Doc } from './types.js';
+
+/**
+ * Published Cloudflare list prices behind the admin usage estimate. The estimate
+ * is not an invoice: billing periods, plan, rounding and account-wide usage of
+ * other Workers can differ from what this instance sees.
+ */
+export const PRICING = {
+  durable_objects: {
+    source: 'https://developers.cloudflare.com/durable-objects/platform/pricing/', as_of: '2026-09-30',
+    // Paid plan: monthly allowance, then the overage price per unit below.
+    paid: [
+      { key: 'requests', label: '请求', included: 1_000_000, unit: 1_000_000, price: 0.15, per: '百万次' },
+      { key: 'duration_gb_s', label: '时长（GB-s）', included: 400_000, unit: 1_000_000, price: 12.5, per: '百万 GB-s' },
+      { key: 'rows_read', label: 'SQLite 行读', included: 25_000_000_000, unit: 1_000_000, price: 0.001, per: '百万行' },
+      { key: 'rows_written', label: 'SQLite 行写', included: 50_000_000, unit: 1_000_000, price: 1, per: '百万行' },
+      { key: 'storage_gb_month', label: 'SQLite 存储', included: 5, unit: 1, price: 0.2, per: 'GB-month' },
+    ],
+    // Free plan: daily limits reset at 00:00 UTC; spent limits make storage calls fail.
+    free_daily: { rows_read: 5_000_000, rows_written: 100_000 },
+    // Duration bills the 128 MB each active object is allocated.
+    gb_per_object: 0.128,
+  },
+  r2: {
+    source: 'https://developers.cloudflare.com/r2/pricing/', as_of: '2026-10-01', storage_class: 'Standard',
+    monthly: [
+      { key: 'storage_gb_month', label: 'R2 存储', included: 10, unit: 1, price: 0.015, per: 'GB-month' },
+      { key: 'class_a', label: 'R2 Class A', included: 1_000_000, unit: 1_000_000, price: 4.5, per: '百万次' },
+      { key: 'class_b', label: 'R2 Class B', included: 10_000_000, unit: 1_000_000, price: 0.36, per: '百万次' },
+    ],
+  },
+} as const;
+
+// R2 operation classes as listed on the pricing page; deletes and aborts are free.
+const CLASS_A = new Set(['ListBuckets', 'PutBucket', 'ListObjects', 'PutObject', 'CopyObject', 'CompleteMultipartUpload', 'CreateMultipartUpload',
+  'LifecycleStorageTierTransition', 'ListMultipartUploads', 'UploadPart', 'UploadPartCopy', 'ListParts', 'PutBucketEncryption', 'PutBucketCors',
+  'PutBucketLifecycleConfiguration']);
+const CLASS_B = new Set(['HeadBucket', 'HeadObject', 'GetObject', 'UsageSummary', 'GetBucketEncryption', 'GetBucketLocation', 'GetBucketCors',
+  'GetBucketLifecycleConfiguration']);
+const FREE = new Set(['DeleteObject', 'DeleteObjects', 'DeleteBucket', 'AbortMultipartUpload']);
+
+export const GB = 1_000_000_000;
+
+/** Sums R2 requests by pricing class; unknown action types stay visible instead of being guessed. */
+export function r2Classes(rows: { action: string; requests: number }[]): { class_a: number; class_b: number; free: number; unclassified: Record<string, number> } {
+  const out = { class_a: 0, class_b: 0, free: 0, unclassified: {} as Record<string, number> };
+  for (const { action, requests } of rows) {
+    if (CLASS_A.has(action)) out.class_a += requests;
+    else if (CLASS_B.has(action)) out.class_b += requests;
+    else if (FREE.has(action)) out.free += requests;
+    else out.unclassified[action] = (out.unclassified[action] || 0) + requests;
+  }
+  return out;
+}
+
+type Line = { key: string; label: string; included: number; unit: number; price: number; per: string };
+const charge = (line: Line, used: number | null): Doc => used === null
+  ? { item: line.label, used: null, included: line.included, unit_price: line.price, per: line.per, cost: null }
+  : { item: line.label, used, included: line.included, unit_price: line.price, per: line.per,
+      cost: Math.round(Math.max(0, used - line.included) / line.unit * line.price * 100) / 100 };
+
+/**
+ * Month-to-date overage at list prices. Operation counts are the month so far;
+ * storage is the current size held for a whole month. Missing metrics stay null.
+ */
+export function estimate(metrics: { durable_objects?: Doc | null; r2?: Doc | null }, databaseBytes: number | null): Doc {
+  const d = metrics.durable_objects || null, r = metrics.r2 || null;
+  const num = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const doUsed: Record<string, number | null> = {
+    requests: num(d?.requests), duration_gb_s: num(d?.duration_gb_s), rows_read: num(d?.rows_read), rows_written: num(d?.rows_written),
+    storage_gb_month: databaseBytes === null ? null : databaseBytes / GB,
+  };
+  const r2Used: Record<string, number | null> = {
+    storage_gb_month: num(r?.storage_bytes) === null ? null : (r?.storage_bytes as number) / GB, class_a: num(r?.class_a), class_b: num(r?.class_b),
+  };
+  const lines = [...PRICING.durable_objects.paid.map(line => charge(line, doUsed[line.key])), ...PRICING.r2.monthly.map(line => charge(line, r2Used[line.key]))];
+  const known = lines.every(line => line.cost !== null);
+  return { lines, total: known ? Math.round(lines.reduce((sum, line) => sum + (line.cost as number), 0) * 100) / 100 : null };
+}
+
+/**
+ * The /api/usage document: local counters always; Cloudflare metrics and the
+ * estimate only when account analytics were read. Nothing is filled with zero.
+ */
+export function usageDocument(runtime: string, local: Doc, analytics: Doc): Doc {
+  const bytes = typeof local.database_bytes === 'number' ? local.database_bytes : null;
+  const measured = analytics.status === 'ok' || analytics.status === 'partial';
+  return { ok: true, runtime, generated_at: new Date().toISOString(), database: { bytes },
+    archive: { counts: local.counts ?? null, remembered_deliveries: local.remembered_deliveries ?? null },
+    analytics, estimate: measured ? estimate({ durable_objects: analytics.durable_objects as Doc | null, r2: analytics.r2 as Doc | null }, bytes) : null,
+    pricing: PRICING };
+}

@@ -14,6 +14,9 @@
   // Production dispatches collection to the formal dashboard only.
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
+    // Account analytics for the admin usage section; the read-only token is the SDBOT_ANALYTICS_TOKEN secret.
+    "SDBOT_CLOUDFLARE_ACCOUNT_ID": "bca0917f4ae3bc29439e2e5007abd5a9",
+    "SDBOT_ARCHIVE_BUCKET": "sciencediscovery-bot-archive",
     "SDBOT_ENVIRONMENT": "production",
     "SDBOT_ACTIONS_AUDIENCE": "sdbot:actions:production",
     "SDBOT_ACTIONS_REPOSITORY_ID": "1379305235",

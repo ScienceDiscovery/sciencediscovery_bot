@@ -25,7 +25,7 @@ test('cloud management validates Access and is read-only on the public Worker', 
     exp: Math.floor(Date.now() / 1000) + 300, iss: issuer, aud: audience, ...claims }).setProtectedHeader({ alg: 'RS256', kid: key.kid }).sign(signingKey);
   const auth = { 'cf-access-jwt-assertion': await token() };
   const get = async path => (await mf.dispatchFetch('http://localhost' + path, { headers: auth })).json();
-  for (const path of ['/admin', '/admin/', '/admin/api/status', '/admin/api/events', '/admin/api/listeners', '/admin/api/events/missing']) {
+  for (const path of ['/admin', '/admin/', '/admin/api/status', '/admin/api/events', '/admin/api/listeners', '/admin/api/events/missing', '/admin/api/usage']) {
     assert.equal((await mf.dispatchFetch('http://localhost' + path)).status, 401);
     assert.equal((await mf.dispatchFetch('http://localhost' + path, { headers: { 'cf-access-authenticated-user-email': 'admin@example.test', 'x-admin': '1', authorization: 'Bearer invented' } })).status, 401);
   }
@@ -39,7 +39,7 @@ test('cloud management validates Access and is read-only on the public Worker', 
   const shell = await mf.dispatchFetch('http://localhost/admin/', { headers: auth });
   assert.equal(shell.status, 200); assert.equal(shell.headers.get('cache-control'), 'no-store');
   const html = await shell.text(); assert.match(html, /Webhook 投递详情/); assert.doesNotMatch(html, /button\.replay|\/api\/replay/);
-  for (const path of ['/api/status', '/api/events', '/api/listeners', '/api/replay/x', '/administrator/api/status', '/admin%2fapi/status']) {
+  for (const path of ['/api/status', '/api/events', '/api/listeners', '/api/usage', '/api/replay/x', '/administrator/api/status', '/admin%2fapi/status']) {
     assert.equal((await mf.dispatchFetch('http://localhost' + path, { headers: auth })).status, 404);
   }
   const body = JSON.stringify({ action: 'opened', repository: { full_name: 'ScienceDiscovery/sciencediscovery' }, issue: { number: 3, title: '<script>never execute</script>' } });
@@ -55,7 +55,12 @@ test('cloud management validates Access and is read-only on the public Worker', 
   const before = await get('/admin/api/status');
   assert.equal(before.environment, 'test'); assert.equal(before.runtime, 'cloudflare');
   assert.equal(before.config.data_dir, undefined); assert.equal(before.config.webhook, undefined);
-  for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) for (const path of ['/admin/api/status', '/admin/api/replay/' + events.events[0].record_id]) {
+  // Usage sits behind the same Access check; without a token it shows local size and counters only.
+  const usage = await get('/admin/api/usage');
+  assert.equal(usage.environment, 'test'); assert.equal(usage.runtime, 'cloudflare');
+  assert.equal(usage.analytics.message, '未配置 Analytics token，不能估算操作量'); assert.equal(usage.estimate, null);
+  assert.ok(usage.database.bytes > 0); assert.equal(usage.archive.counts.accepted, 1);
+  for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) for (const path of ['/admin/api/status', '/admin/api/usage', '/admin/api/replay/' + events.events[0].record_id]) {
     assert.equal((await mf.dispatchFetch('http://localhost' + path, { method, headers: auth })).status, 405);
   }
   assert.deepEqual((await get('/admin/api/status')).counts, before.counts);

@@ -212,10 +212,18 @@ export class WorkerArchive implements Archive {
     if (!remaining) this.setCounter('archive_orphan_day', dayNumber(target));
     return { status: 'orphans', day: target, objects };
   }
-  async status(): Promise<Doc> {
+  /** totals and routes hold one row per status and per route, independent of how many deliveries exist. */
+  private counts(): Doc {
     const counts: Doc = { accepted: 0, ignored: 0, rejected: 0, duplicate: 0 };
     for (const row of this.sql.exec<{ name: string; value: number }>('SELECT * FROM totals').toArray()) counts[row.name] = row.value;
     counts.by_route = Object.fromEntries(this.sql.exec<{ name: string; value: number }>('SELECT * FROM routes').toArray().map(row => [row.name, row.value]));
-    return { counts, last: (await this.recent(1))[0] || null, remembered_deliveries: this.remembered() };
+    return counts;
+  }
+  async status(): Promise<Doc> {
+    return { counts: this.counts(), last: (await this.recent(1))[0] || null, remembered_deliveries: this.remembered() };
+  }
+  /** Resource usage reads the maintained counters and the database size, never deliveries, seen or R2. */
+  usage(): Doc {
+    return { database_bytes: this.sql.databaseSize, counts: this.counts(), remembered_deliveries: this.remembered() };
   }
 }

@@ -21,7 +21,7 @@ npm run workers:check
 
 23 组旧版样例的归一化字段和路由结果固定在 `tests-ts/fixtures/expected-events.json`，作为迁移兼容基线；测试不依赖 Python。`workers.test.ts` 在真实 workerd 中执行共享核心，不开启 Node 兼容标记；测试内存归档和辅助查询路径不能用于生产。
 
-`worker-adapter.test.mjs` 直接打包 `src/worker/index.ts`，使用本地持久 SQLite／R2。它验证并发重复投递、记录筛选与移除重放后的无副作用检查、进程重建后的去重与历史、App 最小权限、双仓持久 Alarm 调度以及远端触发失败后的重试；不会访问真实 GitHub 或执行真实发布。`actions-auth.test.mjs` 验证真实 workerd 中的 OIDC 签名、固定仓库／组织 ID、main 与工作流身份（包括直接任务的 job_workflow_ref）、跨环境拒绝、读写最小权限、持久签发限制和凭据不归档。Actions 配置另在看板仓执行 `python3 -m unittest discover -s tests -v`；远端 runner／Pages 结果仍需上线阶段验收。`worker-storage-cost.test.mjs` 在同一 workerd 环境中统计 SQLite 读写行数，要求已接受投递和令牌兑换的读写行数不随去重窗口或有效兑换记录增长，并核对窗口淘汰与改动前一致。
+`worker-adapter.test.mjs` 直接打包 `src/worker/index.ts`，使用本地持久 SQLite／R2。它验证并发重复投递、记录筛选与移除重放后的无副作用检查、进程重建后的去重与历史、App 最小权限、双仓持久 Alarm 调度以及远端触发失败后的重试；不会访问真实 GitHub 或执行真实发布。`actions-auth.test.mjs` 验证真实 workerd 中的 OIDC 签名、固定仓库／组织 ID、main 与工作流身份（包括直接任务的 job_workflow_ref）、跨环境拒绝、读写最小权限、持久签发限制和凭据不归档。Actions 配置另在看板仓执行 `python3 -m unittest discover -s tests -v`；远端 runner／Pages 结果仍需上线阶段验收。`worker-storage-cost.test.mjs` 在同一 workerd 环境中统计 SQLite 读写行数，要求已接受投递和令牌兑换的读写行数不随去重窗口或有效兑换记录增长，并核对窗口淘汰与改动前一致。同一文件还要求管理页资源用量的一次读取行数不随投递和 `seen` 行数增长、不写入，并在 6 小时缓存过期前不重复查询云端计量；`worker-usage.test.mjs` 用本地 GraphQL 替身验证费用估算、按桶和对象过滤、单个数据集失败、拒绝重定向、令牌不进入响应与存储，以及缺少令牌时的显示。
 
 GitCode 同步由 `npm test` 中的三组测试覆盖：`gitcode-sync.test.ts` 用 fixture 和内存版 GitHub／GitCode 接口验证 PR 五类事件、重复与过期投递、失败重试、脱敏、分叉与 CodeCheck 判定；`git-http.test.ts` 用本机 `git http-backend` 搭建的两个裸仓验证真实 git 协议下 SHA 不变；`worker-gitcode-sync.test.mjs` 在 workerd 中跑生产 Worker 包的完整队列链路和 `/actions/gitcode-sync` 的 OIDC 保护。三者都不访问真实 GitHub、GitCode 或 OpenLibing，也需要本机已安装 git。
 

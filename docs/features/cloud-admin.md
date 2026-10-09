@@ -2,7 +2,7 @@
 
 ## 功能与入口
 
-接收与管理共用一个 Worker。`/admin`、`/admin/` 是管理页面，`/admin/api/status`、`/admin/api/listeners`、`/admin/api/events` 及 `/admin/api/events/<record_id>` 是只读接口。页面复用事件详情、筛选、分页、浏览器时区和实际监听点列表；顶栏标明运行环境与云端记录。
+接收与管理共用一个 Worker。`/admin`、`/admin/` 是管理页面，`/admin/api/status`、`/admin/api/listeners`、`/admin/api/events`、`/admin/api/events/<record_id>` 及 `/admin/api/usage` 是只读接口。页面复用事件详情、筛选、分页、浏览器时区和实际监听点列表；顶栏标明运行环境与云端记录。
 
 所有管理页面与 API 均要求 Cloudflare Access 身份。根路径 `/api/status` 等不提供别名，Webhook 与健康路径不要求交互登录。Node 的本机管理端继续使用原有 Bearer／loopback／Cf-* 拒绝规则，本地管理桥不进入云端部署产物。
 

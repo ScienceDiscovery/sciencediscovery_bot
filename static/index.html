@@ -29,6 +29,11 @@
   .subscription .scope { color: var(--muted); font-size: 12px; }
   #subscription-count { color: var(--muted); margin-top: 12px; }
   #subscription-search { max-width: 100%; box-sizing: border-box; }
+  #usage-page h2 { margin: 0; font-size: 18px; }
+  #usage-page h3 { margin: 20px 0 8px; font-size: 15px; }
+  #usage-page p, #usage-page li { overflow-wrap: anywhere; }
+  .usage-notes { color: var(--muted); font-size: 12px; margin: 8px 0 0; padding-left: 18px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 12px; }
   .card { min-width: 0; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; background: var(--bg); }
@@ -66,7 +71,7 @@
 <body>
 <header>
   <h1>sciencediscovery-bot</h1>
-  <nav aria-label="管理页面"><a href="#events" data-view="events">事件记录</a><a href="#subscriptions" data-view="subscriptions">监听点</a></nav>
+  <nav aria-label="管理页面"><a href="#events" data-view="events">事件记录</a><a href="#subscriptions" data-view="subscriptions">监听点</a><a href="#usage" data-view="usage">资源用量</a></nav>
   <span id="listeners" class="muted"></span>
   <span id="timezone" class="muted"></span>
   <span id="clock" class="muted"></span>
@@ -108,6 +113,21 @@
     <div id="subscription-count" role="status"></div>
     <div id="subscription-list" class="subscription-grid"></div>
   </section>
+  <section id="usage-page" aria-label="资源用量" hidden>
+    <h2>资源用量</h2>
+    <div class="filters">
+      <button id="reload-usage">刷新用量</button>
+      <span id="usage-state" class="muted" role="status">打开本页时读取一次，不随事件页每 10 s 刷新</span>
+    </div>
+    <div id="usage-cards" class="cards"></div>
+    <h3>费用估算（不是发票）</h3>
+    <p id="usage-period" class="muted"></p>
+    <div class="table-scroll"><table>
+      <thead><tr><th>项目</th><th class="num">本月用量</th><th class="num">每月含量</th><th class="num">超出单价</th><th class="num">估算费用</th></tr></thead>
+      <tbody id="usage-estimate"></tbody>
+    </table></div>
+    <ul class="usage-notes" id="usage-notes"></ul>
+  </section>
 </main>
 <dialog id="delivery-detail" aria-labelledby="detail-title">
   <div class="detail-title"><h2 id="detail-title">Webhook 投递详情</h2><button id="close-detail">关闭</button></div>
@@ -131,11 +151,17 @@ if (token) history.replaceState(null, "", location.pathname);
 const headers = token ? { Authorization: "Bearer " + token } : {};
 let offset = 0, pageSize = 100, listRequest = 0, detailRequest = 0, currentDetail = null;
 let subscriptions = [], refreshRequest = 0;
-const currentView = () => location.hash === "#subscriptions" ? "subscriptions" : "events";
+// Usage is never part of the 10 s refresh; a failed read retries no sooner than 15 minutes.
+const USAGE_RETRY_MS = 15 * 60 * 1000;
+let usageLoaded = false, usageRequest = 0, usageRetry = null;
+const currentView = () => location.hash === "#subscriptions" ? "subscriptions" : location.hash === "#usage" ? "usage" : "events";
 function selectView() {
   const view = currentView();
   $("#events-page").hidden = view !== "events";
   $("#subscriptions-page").hidden = view !== "subscriptions";
+  $("#usage-page").hidden = view !== "usage";
+  // Usage is read once per page load when its view first opens; afterwards only on demand.
+  if (view === "usage" && !usageLoaded) { usageLoaded = true; loadUsage(); }
   for (const link of document.querySelectorAll("[data-view]")) {
     if (link.dataset.view === view) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
@@ -210,6 +236,58 @@ async function loadStatus() {
       $("#cards").innerHTML += card("静态看板", b.running ? (actions ? "触发采集中" : "发布中") : b.pending ? "等待更新" : actions ? (b.last_dispatch ? "已触发采集" : "等待首次采集") : b.last_success ? "已提交发布" : "等待首次发布",
         `${b.source || ''} → ${b.repository} · ${actions ? '最近触发' : '最近成功'} ${eventTime(actions ? b.last_dispatch : b.last_success)}${b.error ? " · 重试中：" + b.error : ""}`, b.error ? "warn" : "ok");
     }
+  }
+}
+
+const bytes = (n) => n == null ? "—" : n < 1000 ? n + " B" : n < 1e6 ? (n / 1e3).toFixed(1) + " KB" : n < 1e9 ? (n / 1e6).toFixed(1) + " MB" : (n / 1e9).toFixed(2) + " GB";
+const count = (n) => n == null ? "—" : Number(n).toLocaleString("zh-CN");
+// Storage lines are GB-month; show them as sizes so small databases do not read as zero.
+const amount = (line, n) => line.per === "GB-month" ? bytes(Math.round(n * 1e9)) : count(Math.round(n * 1000) / 1000);
+const usd = (n) => n == null ? "—" : "$" + Number(n).toFixed(2);
+function renderUsage(doc) {
+  const a = doc.analytics || {}, r2 = a.r2 || {}, d = a.durable_objects || {}, p = doc.pricing, c = doc.archive.counts || {};
+  const measured = a.status === "ok" || a.status === "partial";
+  const free = p.durable_objects.free_daily, today = d.today;
+  const share = (used, limit) => used == null ? "" : `（${(used / limit * 100).toFixed(1)}%）`;
+  $("#usage-cards").innerHTML = card("SQLite 数据库", bytes(doc.database.bytes), doc.database.bytes == null ? "本机运行没有 databaseSize" : "SqlStorage.databaseSize，本对象当前大小", "")
+    + card("投递计数", count(c.accepted), `rejected ${count(c.rejected)} · ignored ${count(c.ignored)} · duplicate ${count(c.duplicate)}`, "")
+    + card("去重窗口", count(doc.archive.remembered_deliveries), "counters 中的 seen 计数", "")
+    + (measured ? card("R2 存储", bytes(r2.storage_bytes), r2.object_count == null ? "读取失败" : `${count(r2.object_count)} 个对象 · 采样 ${eventTime(r2.sampled_at)}`, "")
+      + card("R2 操作（本月）", `A ${count(r2.class_a)} / B ${count(r2.class_b)}`, `免费操作 ${count(r2.free)}${Object.keys(r2.unclassified || {}).length ? " · 未归类 " + Object.entries(r2.unclassified).map(([k, v]) => k + " " + v).join("、") : ""}`, "")
+      + card("Durable Object 行读 / 行写（本月）", `${count(d.rows_read)} / ${count(d.rows_written)}`, `请求 ${count(d.requests)} · 时长 ${count(d.duration_gb_s)} GB-s`, "")
+      + card("今日（UTC）行读 / 行写", today ? `${count(today.rows_read)} / ${count(today.rows_written)}` : "—",
+        today ? `Free 计划每日上限 ${count(free.rows_read)} / ${count(free.rows_written)}：读${share(today.rows_read, free.rows_read)} 写${share(today.rows_written, free.rows_written)}` : "读取失败",
+        today && (today.rows_read > free.rows_read * .8 || today.rows_written > free.rows_written * .8) ? "warn" : "")
+      : card("云端计量", a.status === "unavailable" ? "不可用" : "未读取", a.message || "", "warn"));
+  const errors = Object.entries(a.errors || {}).map(([k, v]) => `${k}：${v}`).join("；");
+  $("#usage-period").textContent = measured
+    ? `操作量为 ${a.period.start} 起本自然月（UTC）至 ${eventTime(a.period.end)} 的累计；存储按当前大小持续一个月计算。云端计量读取于 ${eventTime(a.fetched_at)}，6 小时内复用，${eventTime(a.next_fetch_at)} 后打开或刷新才会重新查询。${errors ? "部分数据读取失败：" + errors : ""}`
+    : "";
+  $("#usage-estimate").innerHTML = measured
+    ? doc.estimate.lines.map(l => `<tr><td>${esc(l.item)}</td><td class="num">${esc(l.used == null ? "读取失败" : amount(l, l.used))}</td><td class="num">${esc(amount(l, l.included))}</td><td class="num">${esc("$" + l.unit_price + " / " + l.per)}</td><td class="num">${esc(usd(l.cost))}</td></tr>`).join("")
+      + `<tr><td><strong>合计（Paid 计划超出部分）</strong></td><td></td><td></td><td></td><td class="num"><strong>${esc(doc.estimate.total == null ? "部分未知" : usd(doc.estimate.total))}</strong></td></tr>`
+    : `<tr><td colspan="5" class="warn">${esc(a.message || "云端计量不可用，不能估算操作量")}</td></tr>`;
+  $("#usage-notes").innerHTML = [
+    "估算，不是发票：只按公开单价计算超出每月含量的部分，不含套餐月费；账单周期、四舍五入和同账号其他 Worker 的用量都可能使实际金额不同。",
+    `单价来源：<a href="${esc(p.durable_objects.source)}" target="_blank" rel="noopener">Durable Objects pricing</a>（${esc(p.durable_objects.as_of)}）、<a href="${esc(p.r2.source)}" target="_blank" rel="noopener">R2 pricing</a>（${esc(p.r2.as_of)}，${esc(p.r2.storage_class)}）。`,
+    `未查询账号套餐。若为 Free 计划：Durable Objects 不按量计费，但每天 ${free.rows_read / 1e4} 万行读、${free.rows_written / 1e4} 万行写，用尽后存储调用失败，Webhook、令牌兑换和健康检查都返回 503，每天 00:00 UTC 重置。若为 Paid 计划：按上表含量与单价估算。`,
+    "R2 每月含 10 GB 存储、100 万次 Class A、1000 万次 Class B，与 Workers 套餐无关。",
+    "本页只读维护好的计数和数据库大小，不扫描投递记录，也不列举或读取 R2 对象。",
+  ].map(text => `<li>${text}</li>`).join("");
+}
+async function loadUsage() {
+  const requestId = ++usageRequest;
+  clearTimeout(usageRetry);
+  $("#usage-state").textContent = "正在读取…";
+  try {
+    const doc = await api("/api/usage");
+    if (requestId !== usageRequest) return;
+    renderUsage(doc);
+    $("#usage-state").textContent = "读取于 " + new Date().toLocaleTimeString() + "；不随事件页每 10 s 刷新";
+  } catch (err) {
+    if (requestId !== usageRequest) return;
+    $("#usage-state").textContent = "读取失败：" + err.message + "；15 分钟后自动重试，也可手动刷新";
+    usageRetry = setTimeout(loadUsage, USAGE_RETRY_MS);
   }
 }
 
@@ -295,7 +373,8 @@ document.addEventListener("click", (ev) => {
 async function refresh() {
   const requestId = ++refreshRequest;
   try {
-    await Promise.all([loadStatus(), currentView() === "subscriptions" ? loadSubscriptions() : loadEvents()]);
+    const view = currentView();
+    await Promise.all([loadStatus(), view === "subscriptions" ? loadSubscriptions() : view === "events" ? loadEvents() : null]);
     if (requestId !== refreshRequest) return;
     $("#banner").style.display = "none";
     $("#clock").textContent = "更新于 " + new Date().toLocaleTimeString();
@@ -308,6 +387,7 @@ async function refresh() {
 
 $("#reload").addEventListener("click", refresh);
 $("#reload-subscriptions").addEventListener("click", refresh);
+$("#reload-usage").addEventListener("click", loadUsage);
 for (const id of ["#subscription-business", "#subscription-mode"]) $(id).addEventListener("change", renderSubscriptions);
 $("#subscription-search").addEventListener("input", renderSubscriptions);
 window.addEventListener("hashchange", () => { selectView(); refresh(); });
@@ -316,8 +396,10 @@ $("#previous-page").addEventListener("click", () => { offset = Math.max(0, offse
 $("#next-page").addEventListener("click", () => { offset += pageSize; refresh(); });
 selectView();
 refresh();
-setInterval(() => { if ((currentView() === "subscriptions" || !offset) && !document.hidden) refresh(); }, 10000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden && (currentView() === "subscriptions" || !offset)) refresh(); });
+// The usage view has no timer: its data changes slowly and every read costs storage rows.
+const autoRefresh = () => currentView() === "subscriptions" || (currentView() === "events" && !offset);
+setInterval(() => { if (autoRefresh() && !document.hidden) refresh(); }, 10000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && autoRefresh()) refresh(); });
 </script>
 </body>
 </html>
