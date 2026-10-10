@@ -1,5 +1,5 @@
 /** Read-only GitHub lookups for mirroring a merge onto GitCode, made with the sync installation token. */
-import { object, string, type Doc } from './types.js';
+import { number, object, string, type Doc } from './types.js';
 
 type Fetcher = typeof fetch;
 export class GitHubRepoError extends Error {
@@ -37,4 +37,10 @@ export async function githubCompare(repository: string, base: string, head: stri
   if (!SHA.test(base) || !SHA.test(head)) return 'unknown';
   const doc = await get(`/repos/${repository}/compare/${base}...${head}`, token, fetcher, 'commit comparison');
   return doc ? string(doc.status) || 'unknown' : 'unknown';
+}
+/** How many commits `head` has that `base` lacks, per GitHub; null when GitHub does not have one of them. */
+export async function githubAheadBy(repository: string, base: string, head: string, token: string, fetcher: Fetcher): Promise<number | null> {
+  if (!SHA.test(base) || !SHA.test(head)) return null;
+  const doc = await get(`/repos/${repository}/compare/${base}...${head}`, token, fetcher, 'commit comparison');
+  return doc ? number(doc.ahead_by) : null;
 }

@@ -16,7 +16,7 @@ import { GitCodeApi, GitCodeApiError, type GitCodeComment, type GitCodePull } fr
 import { GitTransferError, basicAuthorization, deleteRef, pushCommit, remoteRef, type DeleteResult, type GitRemote, type PushResult } from './git-http.js';
 import { GitHubApp, GitHubAppAuthError } from './github-app.js';
 import { GitHubCheckError, upsertCheck, type CheckConclusion } from './github-checks.js';
-import { GitHubRepoError, githubBranchTip, githubCompare, githubDefaultBranch } from './github-repo.js';
+import { GitHubRepoError, githubAheadBy, githubBranchTip, githubCompare, githubDefaultBranch } from './github-repo.js';
 import { scrub } from './redact.js';
 import { array, id, number, object, string, type BotEvent, type Doc, type PullRequestSync, type SyncDisabledReason } from './types.js';
 
@@ -173,12 +173,14 @@ export interface SyncContext {
   deleteRef: (options: Parameters<typeof deleteRef>[0]) => Promise<DeleteResult>;
   /** The SHA GitCode's merge request ref (`refs/merge-requests/<n>/head`) points at; the pipeline checks this ref out. */
   mergeRequestHead: (mr: number) => Promise<string | null>;
+  /** Any ref of the GitCode target repository as git sees it, e.g. `refs/heads/main`. */
+  targetRef: (ref: string) => Promise<string | null>;
 }
 export function syncContext(cfg: Config, fetcher: typeof fetch = (...args) => fetch(...args), now = () => Date.now()): SyncContext {
   const sync = cfg.gitcode_sync, app = new GitHubApp(cfg.github_app_id, cfg.github_app_private_key, fetcher);
   let token: Promise<string> | null = null;
   const target: GitRemote = { url: `${sync.web_url.replace(/\/+$/, '')}/${sync.target}.git`, authorization: basicAuthorization(sync.username, sync.token) };
-  return { cfg: sync, fetcher, now, push: pushCommit, deleteRef, mergeRequestHead: mr => remoteRef(target, `refs/merge-requests/${mr}/head`, fetcher),
+  return { cfg: sync, fetcher, now, push: pushCommit, deleteRef, mergeRequestHead: mr => remoteRef(target, `refs/merge-requests/${mr}/head`, fetcher), targetRef: ref => remoteRef(target, ref, fetcher),
     api: new GitCodeApi({ api_url: sync.api_url, web_url: sync.web_url, token: sync.token, auth_mode: sync.auth_mode }, fetcher),
     githubToken: () => (token ??= app.tokenForSync(sync.source)) };
 }
@@ -222,6 +224,17 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
   };
   const mrLink = (): string => state.mr ? `[!${state.mr.number}](${state.mr.url})` : 'the GitCode merge request';
   const divergence = (): string => state.diverged ? `\n\n> **Warning:** the GitCode merge request lists ${state.diverged.gitcode} commits but this pull request has ${state.diverged.github}. GitHub and GitCode histories differ, so the GitCode diff may include commits outside this pull request.` : '';
+  /**
+   * The commits the GitCode merge request really carries, by git: GitHub counts what the head has beyond the
+   * GitCode target branch tip. undefined when that cannot be established (e.g. GitHub lacks the GitCode tip).
+   */
+  const gitDivergence = async (): Promise<{ gitcode: number; github: number } | null | undefined> => {
+    if (state.commits === null) return undefined;
+    const base = await ctx.targetRef(`refs/heads/${state.base}`);
+    const ahead = base ? await githubAheadBy(cfg.source, base, state.head_sha, await ctx.githubToken(), ctx.fetcher) : null;
+    if (ahead === null) return undefined;
+    return ahead > state.commits ? { gitcode: ahead, github: state.commits } : null;
+  };
   const pendingSummary = (reason: string): string => `GitCode has no CodeCheck verdict yet for this head.\n\n| | |\n| --- | --- |\n| GitHub head | \`${state.head_sha}\` |\n| GitCode merge request | ${mrLink()} |\n| Synced at | ${state.pushed_at ? iso(state.pushed_at) : 'not yet'} |${state.deadline ? `\n| Verdict deadline | ${iso(state.deadline)} |` : ''}\n| Status | ${reason} |${divergence()}`;
 
   if (state.generation > state.done && state.next_try <= now) {
@@ -270,8 +283,14 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
         state.mr = { number: pull.number, url: pull.url };
         state.diverged = null;
         if (state.commits !== null) {
-          try { const count = await ctx.api.pullCommitCount(cfg.target, pull.number); if (count > state.commits) state.diverged = { gitcode: count, github: state.commits }; }
-          catch { /* the count only adds a warning */ }
+          try {
+            const count = await ctx.api.pullCommitCount(cfg.target, pull.number);
+            if (count > state.commits) {
+              // After a force push GitCode's merge request API can keep listing the old commits; git decides when it can.
+              const actual = await gitDivergence().catch(() => undefined);
+              state.diverged = actual === undefined ? { gitcode: count, github: state.commits } : actual;
+            }
+          } catch { /* the count only adds a warning */ }
         }
         // No periodic read: GitCode webhooks wake the verdict read; this deadline read is the only scheduled one.
         state.done = state.generation; state.attempts = 0; state.poll_errors = 0; state.rechecked = false;
@@ -379,6 +398,15 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
       const wait = READ_BACKOFF[state.poll_errors - 1];
       return wait !== undefined ? Math.min(now + wait * 1000, overdue ? Infinity : deadline) : overdue ? null : deadline;
     };
+    // A divergence warning taken from GitCode's merge request API is checked against git again on every read.
+    if (state.diverged) {
+      const actual = await gitDivergence().catch(() => undefined);
+      if (actual === null) {
+        state.diverged = null;
+        if (state.sync_status === 'diverged') { state.sync_status = 'synced'; state.error_code = null; state.error = null; }
+        record(state.action, 'success', `按 git 复核：GitCode MR !${state.mr.number} 只含本 PR 的提交，撤销历史分叉提示`);
+      } else if (actual) state.diverged = actual;
+    }
     let verdict: CodeCheckVerdict;
     try {
       const pull = await ctx.api.getPull(cfg.target, state.mr.number);

@@ -78,7 +78,9 @@ class World {
       if (method === 'GET' && url.pathname === `/repos/${SOURCE}`) return this.json({ default_branch: 'main' });
       if (method === 'GET' && url.pathname === `/repos/${SOURCE}/branches/main`) return this.json({ name: 'main', commit: { sha: this.mainTip } });
       const compared = /^\/repos\/[^/]+\/[^/]+\/compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})$/.exec(url.pathname);
-      if (method === 'GET' && compared) { assert.equal(compared[2], this.mainTip); return this.json({ status: this.compare }); }
+      // GitHub main against GitCode main (merging), or a pull request head against GitCode's target tip (divergence).
+      if (method === 'GET' && compared && compared[2] === this.mainTip) return this.json({ status: this.compare });
+      if (method === 'GET' && compared) return this.gitAhead === null ? this.json({ message: 'Not Found' }, 404) : this.json({ status: 'diverged', ahead_by: this.gitAhead });
       const output = object(body.output);
       if (method === 'POST' && url.pathname === `/repos/${SOURCE}/check-runs`) {
         const check: Check = { id: this.nextCheck++, head_sha: String(body.head_sha), name: String(body.name), status: String(body.status), conclusion: body.conclusion as string | undefined,
@@ -151,6 +153,9 @@ class World {
     return { status: 'deleted' as const, old, ref: options.ref };
   };
   mergeRequestHead = async (mr: number): Promise<string | null> => { this.mrRefReads++; return this.mrRefs.get(mr) ?? null; };
+  /** Commits a pull request head has beyond GitCode main, as GitHub counts them; null when GitHub does not know GitCode's tip. */
+  gitAhead: number | null = null;
+  targetRef = async (ref: string): Promise<string | null> => this.branches.get(ref) ?? null;
   checksFor(sha: string): Check[] { return [...this.checks.values()].filter(c => c.head_sha === sha); }
   /** How often the merge request comments were read: the observable cost of a verdict read. */
   reads(): number { return this.calls.filter(call => call.endsWith('/comments')).length; }
@@ -168,7 +173,7 @@ async function setup(extra: Environment = {}) {
   assert.deepEqual(validateConfig(cfg), []);
   const world = new World();
   let clock = Date.now();
-  const sync = await NodeGitCodeSync.open(cfg, () => ({ ...syncContext(cfg, world.fetcher, () => clock), push: world.push as never, deleteRef: world.deleteRef as never, mergeRequestHead: world.mergeRequestHead }));
+  const sync = await NodeGitCodeSync.open(cfg, () => ({ ...syncContext(cfg, world.fetcher, () => clock), push: world.push as never, deleteRef: world.deleteRef as never, mergeRequestHead: world.mergeRequestHead, targetRef: world.targetRef }));
   const archive = await FileArchive.open(directory, cfg.dedupe_window);
   const app = new BotApplication(new Pipeline(cfg, archive, new Router(undefined, sync)), async () => '');
   const send = async (name: string, deliveryId = randomUUID()): Promise<Doc> => {
@@ -495,6 +500,46 @@ test('error bodies that echo credentials are scrubbed before they are stored', a
   const admin = await h.app.admin(new Request('http://localhost/api/gitcode-sync'));
   const text = await admin.text();
   assert.equal(admin.status, 200); assert.ok(!text.includes(GITCODE_TOKEN) && !text.includes(INSTALLATION_TOKEN));
+});
+
+test('GitCode\'s merge request commit list is checked against git before history is called diverged', async t => {
+  // GitCode lists 9 commits (e.g. the commits from before a force push) but git says the head has only this pull request's 3.
+  const h = await setup(); t.after(h.cleanup);
+  await h.send('github_pull_request_opened.json'); await h.tick();
+  h.world.pulls.get(11)!.commits = 9; h.world.gitAhead = 3;
+  await h.send('github_pull_request_synchronize.json'); await h.tick();
+  let [record] = await h.records();
+  assert.equal(record.status, 'success', record.summary); assert.equal(record.error_code, null);
+  assert.doesNotMatch(h.world.checksFor(B)[0].summary, /may include commits outside/);
+  assert.equal(((await h.sync.snapshot()).pulls as Doc[])[0].sync_status, 'synced');
+  // When git agrees that the head carries more than the pull request, the warning stands, with git's count.
+  const g = await setup(); t.after(g.cleanup);
+  await g.send('github_pull_request_opened.json'); await g.tick();
+  g.world.pulls.get(11)!.commits = 9; g.world.gitAhead = 7;
+  await g.send('github_pull_request_synchronize.json'); await g.tick();
+  [record] = await g.records();
+  assert.equal(record.error_code, 'history_diverged'); assert.match(String(record.error), /lists 7 commits but GitHub PR #120 has 3/);
+});
+
+test('a divergence warning raised from GitCode\'s API is re-checked against git and cleared on the next read', async t => {
+  const h = await setup(); t.after(h.cleanup);
+  await h.send('github_pull_request_opened.json'); await h.tick();
+  // At sync time git cannot settle it (GitHub does not know GitCode's tip), so the API's count is reported.
+  h.world.pulls.get(11)!.commits = 9;
+  await h.send('github_pull_request_synchronize.json'); await h.tick();
+  assert.equal((await h.records())[0].error_code, 'history_diverged');
+  // Later git can tell: only this pull request's commits. The next read (here a CI note) clears the warning.
+  h.world.gitAhead = 3;
+  const pull = h.world.pulls.get(11)!;
+  pull.labels = ['ci-successful']; h.world.comment(11, 'passed', h.now() + 1000);
+  await h.gitcode('Note Hook', note(11)); await h.tick();
+  const [verdict, review] = await h.records();
+  assert.equal(review.status, 'success'); assert.match(review.summary, /按 git 复核：GitCode MR !11 只含本 PR 的提交，撤销历史分叉提示/);
+  assert.equal(verdict.action, 'codecheck'); assert.equal(verdict.status, 'success');
+  const [check] = h.world.checksFor(B);
+  assert.equal(check.conclusion, 'success'); assert.doesNotMatch(check.summary, /may include commits outside/);
+  const [row] = (await h.sync.snapshot()).pulls as Doc[];
+  assert.equal(row.sync_status, 'synced'); assert.equal(row.error_code, null);
 });
 
 test('diverged history still pushes the original SHA and records that the GitCode diff may include other commits', async t => {
