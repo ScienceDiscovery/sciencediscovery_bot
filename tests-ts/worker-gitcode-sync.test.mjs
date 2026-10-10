@@ -133,6 +133,19 @@ test('Worker: PR events sync through the durable queue with the original SHA; a 
   doc = await snapshot();
   assert.equal(doc.records[0].action, 'codecheck'); assert.equal(doc.records[0].status, 'success'); assert.equal(doc.pulls[0].check, 'success');
 
+  // "Re-run all checks" on GitHub: the App receives check_suite.rerequested without pull request numbers; the head is
+  // found by its SHA and read again in a new check run, without another push.
+  const receivePacks = outbound.filter(line => line.endsWith('/git-receive-pack')).length;
+  const suite = JSON.stringify({ action: 'rerequested', repository: { full_name: SOURCE }, check_suite: { id: 5, head_sha: w.ids.head, pull_requests: [] } });
+  webhookPhase = true;
+  try {
+    const response = await mf.dispatchFetch('http://localhost/webhook/github', { method: 'POST', body: suite, headers: { 'content-type': 'application/json', 'x-github-event': 'check_suite',
+      'x-github-delivery': randomUUID(), 'x-hub-signature-256': 'sha256=' + createHmac('sha256', secret).update(suite).digest('hex') } });
+    assert.equal(response.status, 200);
+  } finally { webhookPhase = false; }
+  await until(async () => checks.size === 2 && [...checks.values()][1].conclusion === 'success');
+  assert.equal(outbound.filter(line => line.endsWith('/git-receive-pack')).length, receivePacks, 'nothing is pushed again');
+
   // Before the merge GitCode main matches an older GitHub main; the merge fast-forwards it to GitHub main's tip.
   w.git(w.gitcode, 'update-ref', 'refs/heads/main', w.ids.common);
   const merged = await fixture('github_pull_request_merged.json');
@@ -145,7 +158,7 @@ test('Worker: PR events sync through the durable queue with the original SHA; a 
   assert.equal(w.git(w.gitcode, 'rev-parse', 'refs/heads/main'), w.ids.githubOnly, 'GitCode main is GitHub main, not the PR head');
   assert.throws(() => w.git(w.gitcode, 'rev-parse', '--verify', '-q', 'refs/heads/github-pr/120'), 'the sync branch is deleted');
   w.git(w.gitcode, 'fsck', '--connectivity-only', '--no-dangling');
-  assert.equal(checks.size, 1); assert.equal([...checks.values()][0].conclusion, 'success', 'a written verdict is not cancelled by the merge');
+  assert.equal(checks.size, 2); assert.ok([...checks.values()].every(check => check.conclusion === 'success'), 'written verdicts are not cancelled by the merge');
 
   // The dashboard reads records with its collect.yml OIDC identity only.
   const now = Math.floor(Date.now() / 1000);
@@ -157,7 +170,7 @@ test('Worker: PR events sync through the durable queue with the original SHA; a 
   const records = await mf.dispatchFetch('http://localhost/actions/gitcode-sync', { method: 'POST', headers: { authorization: 'Bearer ' + jwt } });
   assert.equal(records.status, 200); assert.equal(records.headers.get('cache-control'), 'no-store');
   const published = await records.text(), body = JSON.parse(published);
-  assert.equal(body.enabled, true); assert.equal(body.source, SOURCE); assert.equal(body.records.length, 3);
+  assert.equal(body.enabled, true); assert.equal(body.source, SOURCE); assert.equal(body.records.length, 4);
   for (const leaked of [GIT_FIXTURE.gitcodeToken, GIT_FIXTURE.githubToken, GIT_FIXTURE.gitcodeUser, 'Authorization']) assert.ok(!published.includes(leaked), leaked);
   // Credentials stay out of the delivery archive as well.
   const events = await (await admin.fetch('http://localhost/api/events', { headers })).json();

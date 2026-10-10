@@ -48,6 +48,11 @@ class World {
   compare = 'ahead';
   /** GitCode refusing a non-fast-forward update of main on its side. */
   rejectMain = false;
+  /** GitCode's merge request API keeping the old head after a push, while the git refs move on. */
+  freezeApiHead = false;
+  /** refs/merge-requests/<n>/head as git sees it, and how often the bot asked. */
+  readonly mrRefs = new Map<number, string>();
+  mrRefReads = 0;
   /** Body GitCode answers a merge request update with, when it is not the merge request itself. */
   patchResponse: Doc | null = null;
   failApi: { method: string; path: RegExp; status: number } | null = null;
@@ -132,7 +137,10 @@ class World {
     if (this.rejectMain && options.ref === 'refs/heads/main') throw new GitTransferError('not_fast_forward', 'GitCode rejected refs/heads/main: non-fast-forward');
     this.pushes.push({ sha: options.sha, ref: options.ref });
     this.branches.set(options.ref, options.sha);
-    for (const pull of this.pulls.values()) if (`refs/heads/${pull.head_ref}` === options.ref) pull.head_sha = options.sha;
+    for (const pull of this.pulls.values()) if (`refs/heads/${pull.head_ref}` === options.ref) {
+      this.mrRefs.set(pull.number, options.sha);
+      if (!this.freezeApiHead) pull.head_sha = options.sha;
+    }
     return { status: old === options.sha ? 'unchanged' : 'pushed', old, new: options.sha, ref: options.ref };
   };
   deleteRef = async (options: { ref: string; target: { url: string; authorization: string } }) => {
@@ -142,6 +150,7 @@ class World {
     this.updates.push({ ref: options.ref, old, new: ZERO }); this.deletes.push(options.ref); this.branches.delete(options.ref);
     return { status: 'deleted' as const, old, ref: options.ref };
   };
+  mergeRequestHead = async (mr: number): Promise<string | null> => { this.mrRefReads++; return this.mrRefs.get(mr) ?? null; };
   checksFor(sha: string): Check[] { return [...this.checks.values()].filter(c => c.head_sha === sha); }
   /** How often the merge request comments were read: the observable cost of a verdict read. */
   reads(): number { return this.calls.filter(call => call.endsWith('/comments')).length; }
@@ -159,7 +168,7 @@ async function setup(extra: Environment = {}) {
   assert.deepEqual(validateConfig(cfg), []);
   const world = new World();
   let clock = Date.now();
-  const sync = await NodeGitCodeSync.open(cfg, () => ({ ...syncContext(cfg, world.fetcher, () => clock), push: world.push as never, deleteRef: world.deleteRef as never }));
+  const sync = await NodeGitCodeSync.open(cfg, () => ({ ...syncContext(cfg, world.fetcher, () => clock), push: world.push as never, deleteRef: world.deleteRef as never, mergeRequestHead: world.mergeRequestHead }));
   const archive = await FileArchive.open(directory, cfg.dedupe_window);
   const app = new BotApplication(new Pipeline(cfg, archive, new Router(undefined, sync)), async () => '');
   const send = async (name: string, deliveryId = randomUUID()): Promise<Doc> => {
@@ -177,10 +186,19 @@ async function setup(extra: Environment = {}) {
     const record = (await archive.recent(1))[0];
     return { status: response.status, record, woken: listener(record, 'gitcode_sync.on_codecheck_event') };
   };
+  /** GitHub "Re-run" (check_run) or "Re-run all checks" (check_suite) as the App receives it: fork PRs carry no pull_requests. */
+  const rerun = async (kind: 'check_run' | 'check_suite', sha: string, options: { pr?: number; name?: string } = {}): Promise<string> => {
+    const payload = kind === 'check_run'
+      ? { action: 'rerequested', repository: { full_name: SOURCE }, check_run: { id: 1, name: options.name ?? 'CodeCheck (GitCode)', head_sha: sha, external_id: `gitcode-sync:${options.pr ?? 120}:${sha}`, pull_requests: [] } }
+      : { action: 'rerequested', repository: { full_name: SOURCE }, check_suite: { id: 2, head_sha: sha, pull_requests: [] } };
+    const response = await app.webhook((await delivery(kind, payload, { path: '/webhook/github' })).request());
+    assert.equal(response.status, 200);
+    return listener((await archive.recent(1))[0], 'gitcode_sync.on_check_rerun');
+  };
   /** Advance the queue clock and drain everything due at that time. */
   const tick = async (ms = 0): Promise<void> => { clock = Math.max(clock, Date.now()) + ms; while (await sync.tick(clock)) { /* drain */ } };
   const records = async (): Promise<SyncRecord[]> => (await sync.snapshot()).records as SyncRecord[];
-  return { cfg, world, sync, app, send, gitcode, listener, tick, records, now: () => clock, cleanup: () => rm(directory, { recursive: true, force: true }) };
+  return { cfg, world, sync, app, send, gitcode, rerun, listener, tick, records, now: () => clock, cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
 /** GitCode Note Hook for a comment on merge request `mr` (new and edited notes look the same). */
 const note = (mr: number, author = 'openJiuwen-bot', extra: { repo?: string; noteable?: string; branch?: string } = {}): Doc => ({
@@ -497,6 +515,83 @@ test('diverged history still pushes the original SHA and records that the GitCod
   assert.equal(pulls[0].sync_status, 'diverged');
 });
 
+test('a force push that leaves GitCode\'s API head behind is confirmed through refs/merge-requests/<n>/head', async t => {
+  const h = await setup(); t.after(h.cleanup);
+  await h.send('github_pull_request_opened.json'); await h.tick();
+  h.world.freezeApiHead = true;
+  await h.send('github_pull_request_synchronize.json'); await h.tick();
+  const pull = h.world.pulls.get(11)!;
+  assert.equal(pull.head_sha, A, 'the merge request API still reports the previous head');
+  pull.labels = ['ci-successful']; h.world.comment(11, 'passed', h.now() + 1000);
+  // The ref has not moved either: not this head's result.
+  h.world.mrRefs.set(11, A);
+  await h.gitcode('Note Hook', note(11)); await h.tick();
+  let [check] = h.world.checksFor(B);
+  assert.equal(check.status, 'in_progress'); assert.match(check.summary, /GitCode merge request head is aaaaaaa, waiting for bbbbbbb/);
+  // The ref the pipeline checks out is B: the verdict belongs to this head.
+  h.world.mrRefs.set(11, B);
+  await h.gitcode('Note Hook', note(11)); await h.tick();
+  [check] = h.world.checksFor(B);
+  assert.equal(check.conclusion, 'success'); assert.equal(h.world.mrRefReads, 2);
+});
+
+test('Re-run on GitHub reads an already synced head again in a new check run, without syncing again', async t => {
+  const h = await setup({ SDBOT_GITCODE_VERDICT_TIMEOUT: '600' }); t.after(h.cleanup);
+  await h.send('github_pull_request_opened.json'); await h.tick();
+  await h.tick(601000);
+  assert.equal(h.world.checksFor(A)[0].conclusion, 'timed_out');
+  // The result was there in time, but the deadline read missed it.
+  const pull = h.world.pulls.get(11)!;
+  pull.labels = ['ci-successful']; h.world.comment(11, 'passed', h.now());
+  const pushes = h.world.pushes.length, reads = h.world.reads();
+  assert.equal(await h.rerun('check_run', A), 'rechecking');
+  await h.tick();
+  const runs = h.world.checksFor(A);
+  assert.equal(runs.length, 2, 'a new check run; the timed-out one is not reopened');
+  assert.equal(runs[0].conclusion, 'timed_out'); assert.equal(runs[1].conclusion, 'success');
+  assert.equal(h.world.pushes.length, pushes, 'nothing is synced again'); assert.equal(h.world.reads(), reads + 1);
+  assert.equal((await h.records())[0].action, 'codecheck');
+  // "Re-run all checks" arrives as a check suite and is matched by its head SHA.
+  assert.equal(await h.rerun('check_suite', A), 'rechecking');
+  await h.tick();
+  assert.equal(h.world.checksFor(A).length, 3); assert.equal(h.world.checksFor(A)[2].conclusion, 'success');
+  // Without a result the re-run waits again, with a fresh deadline.
+  pull.labels = []; h.world.comments.set(11, []);
+  assert.equal(await h.rerun('check_run', A), 'rechecking');
+  await h.tick(); await h.tick(300000);
+  assert.equal(h.world.checksFor(A)[3].status, 'in_progress');
+  await h.tick(301000);
+  assert.equal(h.world.checksFor(A)[3].conclusion, 'timed_out');
+  // Other checks, older heads, unknown pull requests: nothing happens.
+  const before = h.world.calls.length;
+  assert.equal(await h.rerun('check_run', A, { name: 'build' }), 'ignored');
+  assert.equal(await h.rerun('check_run', B), 'stale');
+  assert.equal(await h.rerun('check_run', A, { pr: 999 }), 'unknown');
+  assert.equal(await h.rerun('check_suite', 'f'.repeat(40)), 'unknown');
+  await h.tick();
+  assert.equal(h.world.calls.length, before);
+});
+
+test('Re-run after a failed sync syncs the head again and waits for GitCode', async t => {
+  const h = await setup(); t.after(h.cleanup);
+  h.world.failPush = new GitTransferError('permission_denied', 'GitCode receive-pack returned HTTP 403: credentials rejected or missing permission', 403);
+  await h.send('github_pull_request_opened.json'); await h.tick();
+  assert.equal(h.world.checksFor(A)[0].title, 'Sync to GitCode failed'); assert.equal(h.world.pushes.length, 0);
+  h.world.failPush = null;
+  assert.equal(await h.rerun('check_run', A), 'resyncing');
+  await h.tick();
+  assert.deepEqual(h.world.pushes, [{ sha: A, ref: 'refs/heads/github-pr/120' }]);
+  const runs = h.world.checksFor(A);
+  assert.equal(runs.length, 2); assert.equal(runs[1].status, 'in_progress');
+  h.world.pulls.get(11)!.labels = ['ci-successful']; h.world.comment(11, 'passed', h.now() + 1000);
+  await h.gitcode('Note Hook', note(11)); await h.tick();
+  assert.equal(h.world.checksFor(A)[1].conclusion, 'success');
+  // A closed pull request is not re-run.
+  await h.send('github_pull_request_synchronize.json'); await h.tick();
+  await h.send('github_pull_request_closed.json'); await h.tick();
+  assert.equal(await h.rerun('check_run', B), 'closed');
+});
+
 test('the default 30-minute deadline is one read: no verdict times the Check out, never success', async t => {
   const h = await setup(); t.after(h.cleanup);
   assert.equal(h.cfg.gitcode_sync.verdict_timeout_seconds, 1800);
@@ -637,6 +732,8 @@ test('defaults: with a token and neither target nor username set, sync is enable
   const verdicts = new Router(undefined, sync).bus.inventory().find(l => l.id === 'gitcode_sync.on_codecheck_event')!;
   assert.equal(verdicts.mode, 'active'); assert.deepEqual(verdicts.providers, ['gitcode']); assert.deepEqual(verdicts.repositories, ['openjiuwen/sciencediscovery']);
   assert.deepEqual(verdicts.routes, ['issue_comment.created', 'pull_request.edited']);
+  const reruns = new Router(undefined, sync).bus.inventory().find(l => l.id === 'gitcode_sync.on_check_rerun')!;
+  assert.equal(reruns.mode, 'active'); assert.deepEqual(reruns.providers, ['github']); assert.deepEqual(reruns.routes, ['check_run.rerequested', 'check_suite.rerequested']);
   const { payload } = await fixture('github_pull_request_opened.json');
   const event = normalize('github', new Headers({ 'x-github-event': 'pull_request', 'x-github-delivery': 'defaults' }), object(payload));
   assert.equal((await sync.handle(event)).status, 'queued');

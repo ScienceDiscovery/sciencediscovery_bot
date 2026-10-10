@@ -72,6 +72,7 @@ export class NoopSync implements PullRequestSync {
   constructor(reasons: readonly SyncDisabledReason[] = ['no_token']) { this.disabledReasons = reasons.length ? [...reasons] : ['no_token']; }
   async handle(_event: BotEvent): Promise<Doc> { return { hook: 'gitcode_sync', method: 'on_pull_request', status: 'noop' }; }
   async wake(_event: BotEvent): Promise<Doc> { return { hook: 'gitcode_sync', method: 'on_codecheck_event', status: 'noop' }; }
+  async rerun(_event: BotEvent): Promise<Doc> { return { hook: 'gitcode_sync', method: 'on_check_rerun', status: 'noop' }; }
   status(): Doc { return disabledSync(this.disabledReasons); }
   async snapshot(): Promise<Doc> { return { ok: true, ...disabledSync(this.disabledReasons), records: [], pulls: [] }; }
 }
@@ -87,6 +88,8 @@ export const syncDisabledText = (reasons: readonly SyncDisabledReason[]): string
 export const SYNC_ROUTES = ['opened', 'synchronize', 'reopened', 'closed', 'merged'].map(a => `pull_request.${a}`);
 /** GitCode merge request comments (new or edited both arrive as created) and merge request updates such as label changes. */
 export const CODECHECK_ROUTES = ['issue_comment.created', 'pull_request.edited'];
+/** GitHub "Re-run" on the check, and "Re-run all checks"; sent only to the App that owns the check. */
+export const RERUN_ROUTES = ['check_run.rerequested', 'check_suite.rerequested'];
 export function registerBuiltin(bus: EventBus, board: Board, sync: PullRequestSync = new NoopSync()): void {
   const analyze: [string, string[], string][] = [
     ['on_issue', ['issue.opened', 'issue.edited', 'issue.reopened'], 'Issue 新建、编辑和重新打开的分析入口；当前仅记录调用。'],
@@ -118,6 +121,9 @@ export function registerBuiltin(bus: EventBus, board: Board, sync: PullRequestSy
   bus.subscribe({ id: 'gitcode_sync.on_codecheck_event', business: 'GitCode 同步', routes: CODECHECK_ROUTES, mode: sync.mode, enabled: active,
     description: active ? 'CI 账号在同步 MR 上发评论或 MR 标签变化时，立即读取一次该 MR 的 CodeCheck 结论并写 GitHub Check；不轮询。' : syncDisabledText(sync.disabledReasons),
     providers: active ? ['gitcode'] : [], repositories: active ? [sync.target] : [], handler: event => sync.wake(event) });
+  bus.subscribe({ id: 'gitcode_sync.on_check_rerun', business: 'GitCode 同步', routes: RERUN_ROUTES, mode: sync.mode, enabled: active,
+    description: active ? '在 GitHub 上重新运行 CodeCheck (GitCode) 时：已同步到 GitCode 的 head 立即重新读取结论；未同步成功的重新同步并等待 GitCode 构建。' : syncDisabledText(sync.disabledReasons),
+    providers: active ? ['github'] : [], repositories: active ? [sync.source] : [], handler: event => sync.rerun(event) });
 }
 export class Router {
   readonly bus = new EventBus();

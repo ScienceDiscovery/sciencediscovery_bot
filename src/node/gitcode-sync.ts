@@ -45,6 +45,7 @@ export class FileSyncStore implements SyncStore {
   }
   async records(limit: number): Promise<SyncRecord[]> { return structuredClone(this.doc.records.slice(-limit).reverse()); }
   async pulls(limit: number): Promise<PullState[]> { return structuredClone(Object.values(this.doc.pulls).sort((a, b) => b.updated - a.updated).slice(0, limit)); }
+  async byHead(sha: string): Promise<PullState[]> { return structuredClone(Object.values(this.doc.pulls).filter(state => state.head_sha === sha)); }
   async byMergeRequest(mr: number): Promise<PullState[]> { return structuredClone(Object.values(this.doc.pulls).filter(state => state.mr?.number === mr)); }
 }
 
@@ -56,9 +57,11 @@ export class NodeGitCodeSync extends SyncHub {
     return new NodeGitCodeSync(cfg, await FileSyncStore.open(join(cfg.data_dir, 'gitcode-sync', 'state.json')), context);
   }
   protected transaction<T>(fn: () => Promise<T>): Promise<T> { return this.mutex.run(fn); }
+  protected now(): number { return this.context().now(); }
   protected current(pr: number): Promise<PullState | null> { return this.store.get(pr); }
   protected stage(state: PullState): Promise<void> { return this.store.put(state); }
   protected byMergeRequest(mr: number): Promise<PullState[]> { return this.store.byMergeRequest(mr); }
+  protected byHead(sha: string): Promise<PullState[]> { return this.store.byHead(sha); }
   /** Background queue step; overlapping timers are skipped, not queued. */
   async tick(now = Date.now()): Promise<number> {
     if (this.running) return 0;

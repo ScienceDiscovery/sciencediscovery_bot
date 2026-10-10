@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GitTransferError, ZERO_SHA, basicAuthorization, deleteRef, pushCommit, receiveRefs } from '../src/core/git-http.js';
+import { GitTransferError, ZERO_SHA, basicAuthorization, deleteRef, pushCommit, receiveRefs, remoteRef } from '../src/core/git-http.js';
 import { GIT_FIXTURE, gitWorld } from './support/git-world.js';
 
 test('pushCommit copies a GitHub head into GitCode with the same SHA across diverged histories', { timeout: 60000 }, async t => {
@@ -83,4 +83,22 @@ test('deleteRef removes a branch with the advertised old SHA and no pack; an abs
   await pushCommit({ source: w.source, target: w.target, sha: w.ids.head, ref });
   await assert.rejects(deleteRef({ target: wrong, ref }), (error: unknown) => error instanceof GitTransferError && error.code === 'permission_denied');
   assert.equal(w.git(w.gitcode, 'rev-parse', ref), w.ids.head);
+});
+
+test('remoteRef reads one ref such as refs/merge-requests/<n>/head over upload-pack v2, and over v0 when v2 is not offered', { timeout: 60000 }, async t => {
+  const w = await gitWorld(t);
+  w.git(w.gitcode, 'update-ref', 'refs/merge-requests/7/head', w.ids.gitcodeOnly);
+  assert.equal(await remoteRef(w.target, 'refs/merge-requests/7/head'), w.ids.gitcodeOnly);
+  assert.equal(await remoteRef(w.target, 'refs/merge-requests/8/head'), null);
+  const v2 = w.requests.filter(r => r.host === 'gitcode').slice(-2);
+  assert.ok(v2.every(r => r.protocol === 'version=2'), 'protocol v2 ls-refs');
+  // A host that ignores Git-Protocol answers with the v0 advertisement; the ref is read from it.
+  const v0 = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers); headers.delete('git-protocol');
+    return fetch(input, { ...init, headers });
+  }) as typeof fetch;
+  assert.equal(await remoteRef(w.target, 'refs/merge-requests/7/head', v0), w.ids.gitcodeOnly);
+  assert.equal(await remoteRef(w.target, 'refs/heads/main', v0), w.ids.gitcodeOnly);
+  await assert.rejects(remoteRef(w.target, 'refs/../x'), /unsafe ref name/);
+  await assert.rejects(remoteRef({ ...w.target, authorization: basicAuthorization(GIT_FIXTURE.gitcodeUser, 'wrong') }, 'refs/heads/main'), (error: unknown) => error instanceof GitTransferError && error.code === 'permission_denied');
 });

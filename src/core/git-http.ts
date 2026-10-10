@@ -119,6 +119,46 @@ export async function receiveRefs(remote: GitRemote, fetcher: Fetcher = (...args
   return { refs, capabilities };
 }
 
+/**
+ * The SHA a single ref points at, read from upload-pack: protocol v2 `ls-refs` limited to that ref when the
+ * host offers it, otherwise the v0 advertisement. Read-only; null when the ref does not exist.
+ */
+export async function remoteRef(remote: GitRemote, ref: string, fetcher: Fetcher = (...args) => fetch(...args)): Promise<string | null> {
+  if (!/^refs\/[A-Za-z0-9._/-]+$/.test(ref) || ref.includes('..') || ref.endsWith('/')) throw new GitTransferError('invalid_ref', 'unsafe ref name');
+  const advertised = await call(fetcher, 'upload-pack advertisement', repoUrl(remote, '/info/refs?service=git-upload-pack'),
+    { method: 'GET', headers: headers(remote, { Accept: '*/*', 'Git-Protocol': 'version=2' }) }, 30000);
+  const ads = new PacketReader(advertised.body!.getReader());
+  let v2 = false, lsRefs = false;
+  const v0 = new Map<string, string>();
+  try {
+    for (let packet = await afterServiceHeader(ads); packet && packet.kind !== 'flush'; packet = await ads.next()) {
+      if (packet.kind !== 'data') continue;
+      let text = line(packet.payload);
+      if (text.startsWith('ERR ')) throw new GitTransferError('git_remote_error', 'the host refused the advertisement: ' + serverText(text.slice(4)));
+      if (text === 'version 2') { v2 = true; continue; }
+      if (v2) { if (text === 'ls-refs' || text.startsWith('ls-refs=')) lsRefs = true; continue; }
+      const nul = text.indexOf('\0');
+      if (nul >= 0) text = text.slice(0, nul);
+      const [sha, name] = text.split(' ');
+      if (SHA.test(sha) && name) v0.set(name, sha);
+    }
+  } finally { await ads.cancel(); }
+  if (!v2) return v0.get(ref) ?? null;
+  if (!lsRefs) throw new GitTransferError('protocol_unsupported', 'upload-pack v2 does not offer ls-refs');
+  const body = concat([pktLine('command=ls-refs\n'), DELIM, pktLine(`ref-prefix ${ref}\n`), FLUSH]);
+  const response = await call(fetcher, 'upload-pack ls-refs', repoUrl(remote, '/git-upload-pack'), { method: 'POST', body,
+    headers: headers(remote, { 'Content-Type': 'application/x-git-upload-pack-request', Accept: 'application/x-git-upload-pack-result', 'Git-Protocol': 'version=2' }) }, 30000);
+  const reader = new PacketReader(response.body!.getReader());
+  try {
+    for (let packet = await reader.next(); packet && packet.kind !== 'flush'; packet = await reader.next()) {
+      if (packet.kind !== 'data') continue;
+      const [sha, name] = line(packet.payload).split(' ');
+      if (name === ref && SHA.test(sha)) return sha;
+    }
+  } finally { await reader.cancel(); }
+  return null;
+}
+
 /** Ask upload-pack v2 for `want` and return only the raw pack bytes (side-band 1). */
 export async function fetchPack(remote: GitRemote, want: string, haves: readonly string[], fetcher: Fetcher = (...args) => fetch(...args)): Promise<ReadableStream<Uint8Array>> {
   if (!SHA.test(want)) throw new GitTransferError('invalid_sha', 'wanted object is not a full SHA-1');
