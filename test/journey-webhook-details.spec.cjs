@@ -106,3 +106,47 @@ test('browse historical pages and show unavailable legacy fields honestly', asyn
   await expect(page.locator('#request-body')).toContainText('historical_payload');
   await expect(page.locator('#response-body')).toHaveText('未保存');
 });
+
+test('find deliveries by their full platform delivery id, including GitCode ids and redeliveries', async ({ page, request }, testInfo) => {
+  const first = await send(request), other = await send(request);
+  const again = await send(request, { delivery: first.delivery });
+  expect(again.response.status()).toBe(200);
+  // A GitCode Note Hook as GitCode delivers it: token header and a prefixed delivery id.
+  const gitcodeDelivery = '181_' + randomUUID();
+  const note = JSON.stringify({ object_kind: 'note', project: { path_with_namespace: 'openJiuwen/sciencediscovery' }, user: { username: 'openJiuwen-bot' },
+    object_attributes: { id: 1, noteable_type: 'MergeRequest', note: 'pipeline is running' }, merge_request: { iid: 181 } });
+  expect((await request.post(origin + '/webhook/gitcode', { data: note, headers: { 'Content-Type': 'application/json', 'X-GitCode-Event': 'Note Hook',
+    'X-GitCode-Delivery': gitcodeDelivery, 'X-GitCode-Token': process.env.SDBOT_E2E_SECRET } })).status()).toBe(200);
+  await openPanel(page);
+  const search = page.getByLabel('delivery');
+  await search.fill(first.delivery);
+  await search.press('Enter');
+  await expect(page.locator('#rows tr')).toHaveCount(2);
+  await expect(rowFor(page, first.delivery)).toHaveCount(2);
+  await expect(rowFor(page, other.delivery)).toHaveCount(0);
+  await expect(page.locator('#rows tr').filter({ hasText: '(dup)' })).toHaveCount(1);
+  await expect(page.locator('#rows tr').first().locator('code').last()).toHaveAttribute('title', first.delivery);
+  await page.screenshot({ path: testInfo.outputPath('delivery-search-desktop.png') });
+  await search.fill(gitcodeDelivery);
+  await search.press('Enter');
+  await expect(page.locator('#rows tr')).toHaveCount(1);
+  await expect(page.locator('#rows')).toContainText('gitcode');
+  await rowFor(page, gitcodeDelivery).getByRole('button', { name: '查看详情' }).click();
+  await expect(page.locator('#detail-meta')).toContainText('投递 ' + gitcodeDelivery);
+  await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click();
+  // Only the full id matches; a prefix is not a search.
+  await search.fill(gitcodeDelivery.slice(0, 12));
+  await search.press('Enter');
+  await expect(page.locator('#rows')).toContainText('没有匹配的事件');
+  // Clearing the box brings the whole history back.
+  await search.fill('');
+  await search.press('Enter');
+  await expect(rowFor(page, other.delivery)).toHaveCount(1);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await search.fill(first.delivery);
+  await search.press('Enter');
+  await expect(page.locator('#rows tr')).toHaveCount(2);
+  await expect(search).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath('delivery-search-mobile.png'), fullPage: true });
+});

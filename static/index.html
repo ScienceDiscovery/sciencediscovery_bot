@@ -133,6 +133,7 @@
       <label>status <select id="f-status"><option value="">全部</option><option>accepted</option><option>rejected</option><option>ignored</option></select></label>
       <label>route <input id="f-route" placeholder="pull_request.merged" size="22"></label>
       <label>number <input id="f-number" size="6"></label>
+      <label>delivery <input id="f-delivery" type="search" size="38" placeholder="完整投递号（X-GitHub-Delivery / X-GitCode-Delivery）" spellcheck="false" autocomplete="off"></label>
       <label>limit <input id="f-limit" value="100" size="4"></label>
       <button id="reload">刷新</button>
     </div>
@@ -436,7 +437,7 @@ function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&am
 async function loadEvents() {
   const requestId = ++listRequest;
   const q = new URLSearchParams();
-  for (const [k, id] of [["kind", "#f-kind"], ["status", "#f-status"], ["route", "#f-route"], ["number", "#f-number"], ["limit", "#f-limit"]]) {
+  for (const [k, id] of [["kind", "#f-kind"], ["status", "#f-status"], ["route", "#f-route"], ["number", "#f-number"], ["delivery_id", "#f-delivery"], ["limit", "#f-limit"]]) {
     const v = $(id).value.trim(); if (v) q.set(k, v);
   }
   q.set("offset", offset);
@@ -455,7 +456,7 @@ async function loadEvents() {
     const detail = `<button data-id="${esc(id)}" class="detail">查看详情</button>`;
     return `<tr><td title="${esc(e.received_at || "")}">${esc(eventTime(e.received_at))}</td><td class="${cls}">${esc(e.status)}${e.duplicate ? " (dup)" : ""}</td>`
       + `<td>${esc(e.provider)}</td><td><code>${esc(e.route)}</code></td><td>${esc(e.repo)}</td><td>${link}</td><td class="title">${title}</td>`
-      + `<td>${hooks}</td><td>${esc(e.verification || "")}</td><td><code>${esc((e.delivery_id || "").slice(0, 18))}</code></td><td>${detail}</td></tr>`;
+      + `<td>${hooks}</td><td>${esc(e.verification || "")}</td><td><code title="${esc(e.delivery_id || "")}">${esc((e.delivery_id || "").slice(0, 18))}</code></td><td>${detail}</td></tr>`;
   }).join("") || `<tr><td colspan="11" class="muted">没有匹配的事件</td></tr>`;
 }
 
@@ -714,7 +715,9 @@ for (const id of ["#subscription-business", "#subscription-mode"]) $(id).addEven
 $("#subscription-search").addEventListener("input", renderSubscriptions);
 // Usage was read with the page; opening its view reads nothing new.
 window.addEventListener("hashchange", () => { selectView(); if (currentView() !== "usage") refresh(); });
-for (const id of ["#f-kind", "#f-status", "#f-route", "#f-number", "#f-limit"]) $(id).addEventListener("change", () => { offset = 0; refresh(); });
+for (const id of ["#f-kind", "#f-status", "#f-route", "#f-number", "#f-delivery", "#f-limit"]) $(id).addEventListener("change", () => { offset = 0; refresh(); });
+// The search box's clear button empties the field without a change event.
+$("#f-delivery").addEventListener("search", () => { offset = 0; refresh(); });
 $("#previous-page").addEventListener("click", () => { offset = Math.max(0, offset - pageSize); refresh(); });
 $("#next-page").addEventListener("click", () => { offset += pageSize; refresh(); });
 selectView();
