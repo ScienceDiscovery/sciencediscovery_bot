@@ -46,13 +46,25 @@ Webhook 只把对应 PR 的读取时间改成「现在」，由持久队列（Wo
 
 截止时间到达时再读一次：Webhook 丢失但标签和结果评论其实已经在时，照常写 success／failure；仍无结论才记为 timed_out。读取 GitCode 失败时按 1／5／15 分钟有界退避，用尽后只保留截止时间那一次读取。旧版本按 120 秒轮询时保存的状态，在新版本第一次到期时读取一次：已超过新的截止时间就记为 timed_out，否则把下一次读取改到截止时间。
 
+结论必须属于这次 head。GitCode 合并请求接口返回的 `head.sha` 与本次推送的 SHA 不一致时，再经 git upload-pack 读取 `refs/merge-requests/<MR 号>/head`（流水线检出的就是这个引用）：引用已是本次 SHA 就按本次 head 判定，否则仍算进行中。强推之后，GitCode 接口里的 head 和提交列表可能长时间停在旧值，而 git 引用和流水线早已更新；这条核对避免把这种情况误判成「没有结论」而超时。
+
+### 在 GitHub 上重新运行
+
+在 PR 的 Checks 里对 `CodeCheck (GitCode)` 点「Re-run」，或点「Re-run all checks」，GitHub 只向创建该检查的 App 发送 `check_run.rerequested`／`check_suite.rerequested`；拥有 Checks 写权限的 App 自动收到这两个事件，不需要额外订阅，普通仓库 Webhook 收不到。fork PR 的这两个事件不带 PR 号，Bot 用自己写在检查上的 `external_id`（`gitcode-sync:<PR 号>:<SHA>`）或检查组的 head SHA 找到对应 PR，然后：
+
+- 这个 head 已同步到 GitCode（分支已是该 SHA、MR 存在）：不再推送，也不让 GitCode 重新构建，立即读取一次结论，写在一个新的 check run 里；读到 `ci-successful`／`ci-failed` 和本次同步之后的结果评论就直接给出结论，否则从点击时起重新等待 30 分钟（期间仍由 GitCode Webhook 唤醒）。仍在等待中的检查不会另开新的 run，只立即读取一次。
+- 这个 head 没有同步成功（例如推送被拒）：重新排队同步，推送并创建或更新 MR，等 GitCode 构建，从这次推送起计时。
+- PR 已关闭或合并、点的是旧 head 的检查、目标分支不在同步范围：不做处理。
+
+GitHub 在重新运行时会把检查组重置为排队，原来的 check run 保持不变，新结论出现在新的 run 上。
+
 ## 使用方式
 
 **启用条件**：设置了 `GITCODE_TOKEN`，且 `SDBOT_GITCODE_SYNC_TARGET` 不是 `off`。两者都不设置目标和用户名时，同步到 `openJiuwen/sciencediscovery`，以 `openJiuwen-bot` 推送。**停用方式**：把 `SDBOT_GITCODE_SYNC_TARGET` 设为 `off`（不区分大小写），或不提供 `GITCODE_TOKEN`；两种情况监听点都显示「已停用」并写明原因，启动校验不会因此失败。变量未设置或为空白都按「未设置」取默认值，只有 `off` 表示停用。云端只有正式 Worker（`wrangler.jsonc`）；本地或另建的任何非正式实例都必须设 `off`，否则加上令牌就会同步到正式 GitCode 仓。
 
 1. 准备一个对 GitCode 目标仓有推送分支、创建／更新／关闭 MR、读评论权限的账号及其访问令牌；默认使用 `openJiuwen-bot` 账号。
 2. 给 Bot 设置下表变量。令牌只放 Worker Secret 或已忽略的 `.env`，仓库和文档只出现变量名。
-3. GitHub App 增加 **Checks: Read and write**，保留 Contents: Read、Pull requests: Read、Metadata: Read，并订阅 **Pull request** 事件；目标组织需批准新权限。
+3. GitHub App 增加 **Checks: Read and write**，保留 Contents: Read、Pull requests: Read、Metadata: Read，并订阅 **Pull request** 事件；目标组织需批准新权限。重新运行用的 `check_run`／`check_suite` 的 `rerequested` 事件随 Checks 写权限自动送达，不需要再勾选。
 4. 看板仓不需要新变量：采集工作流用已有的 OIDC 身份调用同一 Worker 的 `/actions/gitcode-sync` 读取记录。
 5. 在 GitCode 目标仓（默认 `openJiuwen/sciencediscovery`）的 Webhook 设置中由人工添加一条 Webhook，Bot 不会自己创建：
    - URL：`https://<正式 Worker 域名>/webhook/gitcode`，域名即 `wrangler.jsonc` 中 `routes` 的自定义域名；内容类型 JSON。
@@ -108,9 +120,9 @@ Webhook 只把对应 PR 的读取时间改成「现在」，由持久队列（Wo
 
 ## 验证入口
 
-- `tests-ts/gitcode-sync.test.ts`：opened／synchronize／reopened／closed／merged（合并推 GitHub `main` 尖端而非 PR head、关闭和合并都删除同步分支、非快进不发全零旧 SHA 且仍关闭和删除、只删本 PR 的前缀分支、重复投递不再推送或删除、重试读取当时的尖端、MR 更新响应缺编号时仍关闭并删除同步分支）、同一投递重放与新投递重复、过期事件、GitCode 临时与永久失败、错误正文脱敏、历史分叉、范围外目标分支、结论规则与配置校验；GitCode Note Hook 与标签变化触发读取、同步后不再定时读取、其他作者／其他 MR／其他仓／未验签的投递不读取 GitCode、30 秒补读只有一次、截止读取补上丢失的 Webhook、默认 30 分钟一次跳到 timed_out、读取失败的有界退避、旧轮询状态的迁移。fixture 在 `tests-ts/fixtures/gitcode-sync/`。
+- `tests-ts/gitcode-sync.test.ts`：opened／synchronize／reopened／closed／merged（合并推 GitHub `main` 尖端而非 PR head、关闭和合并都删除同步分支、非快进不发全零旧 SHA 且仍关闭和删除、只删本 PR 的前缀分支、重复投递不再推送或删除、重试读取当时的尖端、MR 更新响应缺编号时仍关闭并删除同步分支）、同一投递重放与新投递重复、过期事件、GitCode 临时与永久失败、错误正文脱敏、历史分叉、范围外目标分支、结论规则与配置校验；GitCode Note Hook 与标签变化触发读取、同步后不再定时读取、其他作者／其他 MR／其他仓／未验签的投递不读取 GitCode、30 秒补读只有一次、截止读取补上丢失的 Webhook、默认 30 分钟一次跳到 timed_out、读取失败的有界退避、旧轮询状态的迁移、接口 head 停在旧值时经 `refs/merge-requests/<n>/head` 确认；GitHub 重新运行：已同步的 head 在新 run 里直接读取且不再推送、检查组按 head SHA 匹配、同步失败的 head 重新同步、其他检查名／旧 head／未知 PR／已关闭 PR 不处理。fixture 在 `tests-ts/fixtures/gitcode-sync/`。
 - `tests-ts/gitcode-api.test.ts`：MR 编号解析（整数、整数字符串、小数／空串／非数字、不用 `id`）、列表中坏条目不影响查找、创建缺编号仍失败、更新缺编号时按编号回读。
-- `tests-ts/git-http.test.ts`：用本机 `git http-backend` 搭建分叉的「GitHub」「GitCode」裸仓，验证 SHA 不变、对象连通、重复推送不传输、非快进更新、错误凭据与不安全分支名，以及只快进推送（拒绝回退和从全零创建、服务端 non-fast-forward 拒绝）和分支删除。
-- `tests-ts/worker-gitcode-sync.test.mjs`：生产 Worker 包在 workerd 中跑完整链路（Webhook → outbox → Alarm → 真实 git 传输 → GitCode Note Hook 唤醒读取并写 success → 合并后快进 GitCode `main`、关闭 MR、删除同步分支），以及 `/actions/gitcode-sync` 的 OIDC 保护和无凭据输出。
+- `tests-ts/git-http.test.ts`：用本机 `git http-backend` 搭建分叉的「GitHub」「GitCode」裸仓，验证 SHA 不变、对象连通、重复推送不传输、非快进更新、错误凭据与不安全分支名，以及只快进推送（拒绝回退和从全零创建、服务端 non-fast-forward 拒绝）、分支删除，以及 `remoteRef` 经 upload-pack v2 `ls-refs`（及 v0 回退）读取单个引用。
+- `tests-ts/worker-gitcode-sync.test.mjs`：生产 Worker 包在 workerd 中跑完整链路（Webhook → outbox → Alarm → 真实 git 传输 → GitCode Note Hook 唤醒读取并写 success → GitHub 检查组重新运行后在新 run 里再次写 success、不再推送 → 合并后快进 GitCode `main`、关闭 MR、删除同步分支），以及 `/actions/gitcode-sync` 的 OIDC 保护和无凭据输出。
 
 以上测试不访问真实 GitHub、GitCode 或 OpenLibing。

@@ -13,7 +13,7 @@
 import type { Config, GitCodeSyncConfig } from './config.js';
 import { publicSyncConfig } from './config.js';
 import { GitCodeApi, GitCodeApiError, type GitCodeComment, type GitCodePull } from './gitcode-api.js';
-import { GitTransferError, basicAuthorization, deleteRef, pushCommit, type DeleteResult, type GitRemote, type PushResult } from './git-http.js';
+import { GitTransferError, basicAuthorization, deleteRef, pushCommit, remoteRef, type DeleteResult, type GitRemote, type PushResult } from './git-http.js';
 import { GitHubApp, GitHubAppAuthError } from './github-app.js';
 import { GitHubCheckError, upsertCheck, type CheckConclusion } from './github-checks.js';
 import { GitHubRepoError, githubBranchTip, githubCompare, githubDefaultBranch } from './github-repo.js';
@@ -103,6 +103,26 @@ export function stagePull(prev: PullState | null, event: BotEvent, cfg: GitCodeS
     generation: (prev?.generation ?? 0) + 1, delivery: event.delivery_id, received_at: now, attempts: 0, next_try: now, sync_status: 'pending' };
   return { state, decision: 'queued', reason: '' };
 }
+/**
+ * "Re-run" on the GitHub check for `sha`. A head that already reached GitCode is read again at once in a new
+ * check run with a fresh deadline; one that did not is synced again, and its clock restarts with that push.
+ */
+export function stageRerun(prev: PullState | null, sha: string, cfg: GitCodeSyncConfig, now: number): { state: PullState | null; decision: string } {
+  if (!prev) return { state: null, decision: 'unknown' };
+  if (prev.head_sha !== sha) return { state: null, decision: 'stale' };
+  if (prev.action === 'closed' || prev.action === 'merged') return { state: null, decision: 'closed' };
+  if (!cfg.bases.includes(prev.base)) return { state: null, decision: 'skipped' };
+  const state = structuredClone(prev);
+  if (state.generation > state.done) { state.next_try = Math.min(state.next_try, now); return { state, decision: 'queued' }; }
+  if (state.check?.state === 'pending' && state.check.sha === sha) { state.poll_due = now; return { state, decision: 'rechecking' }; }
+  if (state.pushed_sha === sha && state.mr && (state.sync_status === 'synced' || state.sync_status === 'diverged')) {
+    state.check = { id: null, sha, state: 'pending', key: '' };
+    state.deadline = now + cfg.verdict_timeout_seconds * 1000; state.poll_due = now; state.rechecked = false; state.poll_errors = 0;
+    return { state, decision: 'rechecking' };
+  }
+  state.generation += 1; state.attempts = 0; state.next_try = now; state.received_at = now; state.sync_status = 'pending'; state.pushed_sha = null;
+  return { state, decision: 'resyncing' };
+}
 export function dueOf(state: PullState): number | null {
   const times: number[] = [];
   if (state.generation > state.done) times.push(state.next_try);
@@ -151,11 +171,14 @@ export interface SyncContext {
   githubToken: () => Promise<string>;
   push: (options: Parameters<typeof pushCommit>[0]) => Promise<PushResult>;
   deleteRef: (options: Parameters<typeof deleteRef>[0]) => Promise<DeleteResult>;
+  /** The SHA GitCode's merge request ref (`refs/merge-requests/<n>/head`) points at; the pipeline checks this ref out. */
+  mergeRequestHead: (mr: number) => Promise<string | null>;
 }
 export function syncContext(cfg: Config, fetcher: typeof fetch = (...args) => fetch(...args), now = () => Date.now()): SyncContext {
   const sync = cfg.gitcode_sync, app = new GitHubApp(cfg.github_app_id, cfg.github_app_private_key, fetcher);
   let token: Promise<string> | null = null;
-  return { cfg: sync, fetcher, now, push: pushCommit, deleteRef,
+  const target: GitRemote = { url: `${sync.web_url.replace(/\/+$/, '')}/${sync.target}.git`, authorization: basicAuthorization(sync.username, sync.token) };
+  return { cfg: sync, fetcher, now, push: pushCommit, deleteRef, mergeRequestHead: mr => remoteRef(target, `refs/merge-requests/${mr}/head`, fetcher),
     api: new GitCodeApi({ api_url: sync.api_url, web_url: sync.web_url, token: sync.token, auth_mode: sync.auth_mode }, fetcher),
     githubToken: () => (token ??= app.tokenForSync(sync.source)) };
 }
@@ -359,8 +382,14 @@ export async function workPull(input: PullState, ctx: SyncContext): Promise<{ st
     let verdict: CodeCheckVerdict;
     try {
       const pull = await ctx.api.getPull(cfg.target, state.mr.number);
+      let mrHead = pull.head_sha;
+      // GitCode's merge request API can keep the previous head after a force push while the git refs
+      // and the pipeline already moved on; the merge request ref is what the pipeline checks out.
+      if (mrHead && mrHead !== state.head_sha) {
+        try { if (await ctx.mergeRequestHead(state.mr.number) === state.head_sha) mrHead = state.head_sha; } catch { /* the API value stands */ }
+      }
       verdict = evaluateCodeCheck({ labels: pull.labels, comments: await ctx.api.comments(cfg.target, state.mr.number), pushedAt: state.pushed_at,
-        mrHeadSha: pull.head_sha, expectedSha: state.head_sha, ciBot: cfg.ci_bot });
+        mrHeadSha: mrHead, expectedSha: state.head_sha, ciBot: cfg.ci_bot });
     } catch (error) {
       const failure = classify(error);
       if (!overdue) {
@@ -455,17 +484,21 @@ export abstract class SyncHub implements PullRequestSync {
     this.target = config.gitcode_sync.enabled ? config.gitcode_sync.target.toLowerCase() : '';
     this.disabledReasons = [...config.gitcode_sync.disabled_reasons];
   }
+  /** Time used when staging; runtimes may share the clock their queue works with. */
+  protected now(): number { return Date.now(); }
   /** Read and stage in one critical section: finished work must not be overwritten by a stale read. */
   protected abstract transaction<T>(fn: () => Promise<T>): Promise<T>;
   protected abstract current(pr: number): Promise<PullState | null>;
   protected abstract stage(state: PullState): Promise<void>;
   /** Every stored (or staged) state whose GitCode merge request has this number, not only recent ones. */
   protected abstract byMergeRequest(mr: number): Promise<PullState[]>;
+  /** Every stored (or staged) state whose current GitHub head is this SHA. */
+  protected abstract byHead(sha: string): Promise<PullState[]>;
   async handle(event: BotEvent): Promise<Doc> {
     if (this.mode !== 'active' || event.provider !== 'github' || event.repo.toLowerCase() !== this.source) return { hook: 'gitcode_sync', method: 'on_pull_request', status: this.mode === 'active' ? 'ignored' : 'noop' };
     const pr = number(object(object(event.payload).pull_request).number);
     const decision = await this.transaction(async () => {
-      const staged = stagePull(pr === null ? null : await this.current(pr), event, this.config.gitcode_sync, Date.now());
+      const staged = stagePull(pr === null ? null : await this.current(pr), event, this.config.gitcode_sync, this.now());
       if (staged.state) await this.stage(staged.state);
       return staged.decision;
     });
@@ -489,9 +522,37 @@ export abstract class SyncHub implements PullRequestSync {
       const waiting = (await this.byMergeRequest(mr)).filter(s => s.mr?.number === mr && s.branch.startsWith(cfg.branch_prefix) && (!head || head === s.branch) &&
         s.generation === s.done && s.check?.state === 'pending' && s.check.sha === s.head_sha);
       if (!waiting.length) return reply('no_match');
-      const now = Date.now();
+      const now = this.now();
       for (const state of waiting) { state.poll_due = Math.min(state.poll_due ?? now, now); await this.stage(state); }
       return reply('woken');
+    });
+  }
+  /**
+   * "Re-run" (check_run.rerequested) or "Re-run all checks" (check_suite.rerequested) on GitHub. Fork pull
+   * requests arrive without pull request numbers, so a check run is matched by the external_id this bot gave
+   * it, and a check suite by its head SHA.
+   */
+  async rerun(event: BotEvent): Promise<Doc> {
+    const reply = (status: string): Doc => ({ hook: 'gitcode_sync', method: 'on_check_rerun', status });
+    const cfg = this.config.gitcode_sync, payload = object(event.payload);
+    if (this.mode !== 'active') return reply('noop');
+    if (event.provider !== 'github' || event.repo.toLowerCase() !== this.source || event.action !== 'rerequested') return reply('ignored');
+    let sha = '', pr: number | null = null;
+    if (event.kind === 'check_run') {
+      const run = object(payload.check_run), external = /^gitcode-sync:(\d+):([0-9a-f]{40})$/.exec(string(run.external_id));
+      if (string(run.name) !== cfg.check_name || !external) return reply('ignored');
+      pr = Number(external[1]); sha = external[2];
+    } else if (event.kind === 'check_suite') sha = string(object(payload.check_suite).head_sha);
+    if (!/^[0-9a-f]{40}$/.test(sha)) return reply('ignored');
+    return this.transaction(async () => {
+      const states = pr !== null ? [await this.current(pr)] : await this.byHead(sha);
+      const decisions: string[] = [];
+      for (const prev of states.length ? states : [null]) {
+        const staged = stageRerun(prev, sha, cfg, this.now());
+        if (staged.state) await this.stage(staged.state);
+        decisions.push(staged.decision);
+      }
+      return reply(decisions.find(d => d === 'rechecking' || d === 'resyncing' || d === 'queued') ?? decisions[0]);
     });
   }
   abstract status(): Doc | Promise<Doc>;

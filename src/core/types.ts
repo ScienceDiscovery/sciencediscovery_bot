@@ -71,6 +71,8 @@ export interface PullRequestSync {
   handle(event: BotEvent): Promise<Doc>;
   /** A GitCode comment or label change on a synced merge request makes its verdict read due now. */
   wake(event: BotEvent): Promise<Doc>;
+  /** "Re-run" on the GitHub check: read the verdict again, or sync again when the head never reached GitCode. */
+  rerun(event: BotEvent): Promise<Doc>;
   status(): Doc | Promise<Doc>;
   snapshot(limit?: number): Promise<Doc>;
 }
