@@ -13,7 +13,7 @@ export class BoardQueue {
   private lastAttempt = -Infinity;
   private constructor(readonly source: string, readonly repository: string, private readonly storage: StateStore, private readonly publish: Publisher,
     private readonly debounce: number, private readonly refresh: number, private readonly clock: () => number, readonly execution: 'local' | 'github_actions') {}
-  static async open(source: string, repository: string, storage: StateStore, publish: Publisher, debounce = 20, refresh = 3600, clock = () => Date.now(), execution: 'local' | 'github_actions' = 'local'): Promise<BoardQueue> {
+  static async open(source: string, repository: string, storage: StateStore, publish: Publisher, debounce = 20, refresh = 28800, clock = () => Date.now(), execution: 'local' | 'github_actions' = 'local'): Promise<BoardQueue> {
     const queue = new BoardQueue(source, repository, storage, publish, debounce * 1000, refresh * 1000, clock, execution);
     Object.assign(queue.state, await storage.load()); queue.due = clock() + debounce * 1000;
     if (!Number.isSafeInteger(queue.state.requested) || !Number.isSafeInteger(queue.state.completed) || queue.state.completed < 0 || queue.state.requested < queue.state.completed) throw new TypeError('invalid publication state');

@@ -24,13 +24,13 @@ Compose 看板扩展默认使用 `github_actions`。宿主环境变量未指定�
 
 App 安装到源仓及目标仓。Bot 触发时只申请目标仓 Metadata read / Actions write 的短期令牌。Actions 采集时分别申请源仓 Contents / Issues / Pull requests / Actions / Checks / Commit statuses read，和目标仓 Contents write。不同组织分别取安装令牌；不复用个人 gh 凭据。Pages 部署使用 Actions 的 `GITHUB_TOKEN`（contents read / pages write / id-token write）。
 
-缺少 App 凭据（包括只在 vars 中有 App ID、没有私钥 Secret）时，看板发布停用而不是让 Bot 拒绝启动：管理状态的 `board` 为 `enabled: false`、`reason: no_github_app`，不调度采集。看板采集不依赖 Webhook secret；未配置时 GitHub 投递以 401 拒收，看板靠空闲定时刷新和看板仓自己的定时采集更新。
+缺少 App 凭据（包括只在 vars 中有 App ID、没有私钥 Secret）时，看板发布停用而不是让 Bot 拒绝启动：管理状态的 `board` 为 `enabled: false`、`reason: no_github_app`，不调度采集。看板采集不依赖 Webhook secret；未配置时 GitHub 投递以 401 拒收，看板靠每 8 小时的空闲刷新和看板仓每天一次的定时采集更新。
 
 旧单目标 `SDBOT_BOARD_REPO` / `SDBOT_BOARD_TRACK_REPO` 兼容，但不能与多目标混用。来源必须在全局跟踪范围，不能是目标仓。静态 `SDBOT_BOARD_GITHUB_TOKEN` 仅用于 `local` 模式，不能与 App 配置混用。
 
 ## 调度和持久状态
 
-`src/core/bus.ts` 声明实际监听。Node 模式的 `MultiBoard` 为每个源仓选择独立 `BoardQueue`，先保存请求代数，再返回 queued；启动及每小时请求兜底刷新。Worker 模式的 `WorkerBoard` 将刷新意图与投递索引一起提交 SQLite，再由持久 Alarm 执行；默认合并 20 秒，最小触发间隔 60 秒，失败按 30～600 秒退避；正式实例配置为合并 600 秒，即每 10 分钟至多触发一次采集（及随后的 Pages 部署），看板最多延迟约 10 分钟。执行中收到的新代数留到下一轮。
+`src/core/bus.ts` 声明实际监听：只有 Issue 新建、关闭和 PR 新建、关闭（含合并）立即请求刷新；CI 运行、评审、发布、重新打开等其余变化由 8 小时一次的空闲刷新补上，减少看板仓 Actions 的运行次数。Node 模式的 `MultiBoard` 为每个源仓选择独立 `BoardQueue`，先保存请求代数，再返回 queued；启动时及距上次触发 8 小时后请求兜底刷新。Worker 模式的 `WorkerBoard` 将刷新意图与投递索引一起提交 SQLite，再由持久 Alarm 执行；默认合并 20 秒，最小触发间隔 60 秒，失败按 30～600 秒退避；正式实例配置为合并 600 秒，即每 10 分钟至多触发一次采集（及随后的 Pages 部署），看板最多延迟约 10 分钟。执行中收到的新代数留到下一轮。
 
 `src/node/board.ts` 在 Actions 模式调用共享 `dispatchCollection`，每站仅保存小型 `board-dispatch.json`（代数、最后触发时间、错误类别）。完整 Webhook 存档独立保留，规则未改变。旧本地采集的 `board-publication.json` 不混用。
 
@@ -40,7 +40,7 @@ Workers 使用持久 Alarm 和事务 outbox 调用同一个 Actions 入口，详
 
 ## 看板仓负责的工作
 
-每次从 main 读取 `.sync/` 和 `site/data/history/`，在请求／时间预算内增量刷新、补历史、重试报告。进度与数据在同一提交内写入；使用准确 checkout 父提交，冲突则失败并从新 main 重试，禁止强推。每小时第 17、47 分钟定时续跑；无站点变化只更新进度，不触发 Pages。
+每次从 main 读取 `.sync/` 和 `site/data/history/`，在请求／时间预算内增量刷新、补历史、重试报告。进度与数据在同一提交内写入；使用准确 checkout 父提交，冲突则失败并从新 main 重试，禁止强推。看板仓自己的定时每天一次，只在 Bot 停止触发时兜底；无站点变化只更新进度，不触发 Pages。
 
 Issue / PR 和 run / attempt 指标分片长期保留；不复制测试日志、截图、trace 或逐用例明细。已有指标不会因产物过期清零。浏览器“历史数据”页可查询全部已采集记录；同步尚未补齐会显示状态。详细契约见[看板采集文档](https://github.com/ScienceDiscovery/github-status-board/blob/main/docs/incremental-history.md)。
 
