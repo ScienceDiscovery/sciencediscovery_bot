@@ -99,12 +99,12 @@ export function registerBuiltin(bus: EventBus, board: Board, sync: PullRequestSy
     ['on_pull_request_merged', ['pull_request.merged'], 'PR 合并后的分析入口；当前仅记录调用。'],
   ];
   for (const [method, routes, description] of analyze) bus.subscribe({ id: `analyze.${method}`, business: '内容分析', description, routes, mode: 'noop', handler: () => ({ hook: 'analyze', method, status: 'noop' }) });
-  // Only opening and closing an Issue or PR (a merge closes a PR) refreshes a dashboard at once.
-  // Everything else - CI runs, reviews, releases, reopening, edits, comments - waits for the
+  // Only opening (reopening counts) and closing an Issue or PR (a merge closes a PR) refreshes a
+  // dashboard at once. Everything else - CI runs, reviews, releases, edits, comments - waits for the
   // periodic refresh (SDBOT_BOARD_REFRESH, eight hours by default).
   const boards: [string, string[], string[]?][] = [
-    ['on_issue', ['issue.opened', 'issue.closed']],
-    ['on_pull_request', ['pull_request.opened', 'pull_request.closed']],
+    ['on_issue', ['issue.opened', 'issue.reopened', 'issue.closed']],
+    ['on_pull_request', ['pull_request.opened', 'pull_request.reopened', 'pull_request.closed']],
     ['on_pull_request_merged', ['pull_request.merged']],
   ];
   for (const [method, routes, exclude] of boards) bus.subscribe({ id: `board.${method}`, business: '看板更新', description: board.mode === 'active' ? '按源仓排队更新对应静态看板。' : '未启用静态发布，当前仅记录调用。',
