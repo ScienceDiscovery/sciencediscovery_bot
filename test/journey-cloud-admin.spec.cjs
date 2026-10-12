@@ -28,7 +28,7 @@ test('authenticated cloud management shows exchanges and listeners without write
   await page.screenshot({ path: testInfo.outputPath('cloud-details-mobile.png') });
   await dialog.getByRole('button', { name: '关闭', exact: true }).click();
   await page.getByRole('link', { name: '监听点', exact: true }).click();
-  await expect(page.locator('#subscription-count')).toContainText('12 / 12');
+  await expect(page.locator('#subscription-count')).toContainText('11 / 11');
   await page.locator('#subscription-search').fill('does-not-match');
   await expect(page.locator('#subscription-list')).toContainText('没有匹配的监听点');
   await page.locator('#subscription-search').clear();

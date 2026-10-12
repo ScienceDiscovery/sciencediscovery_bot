@@ -70,7 +70,7 @@ export function configFromEnv(env: Environment = {}, root = '.'): Config {
     board_repo: str('SDBOT_BOARD_REPO').trim(), board_track_repo: str('SDBOT_BOARD_TRACK_REPO').trim(),
     board_source_dir: str('SDBOT_BOARD_SOURCE_DIR', `${root}/../github_status_board`),
     board_execution: str('SDBOT_BOARD_EXECUTION', 'local') as Config['board_execution'],
-    board_token: str('SDBOT_BOARD_GITHUB_TOKEN').trim(), board_debounce: int('SDBOT_BOARD_DEBOUNCE', 20), board_refresh: int('SDBOT_BOARD_REFRESH', 3600),
+    board_token: str('SDBOT_BOARD_GITHUB_TOKEN').trim(), board_debounce: int('SDBOT_BOARD_DEBOUNCE', 20), board_refresh: int('SDBOT_BOARD_REFRESH', 28800),
     github_app_id: str('SDBOT_GITHUB_APP_ID').trim(), github_app_private_key: str('SDBOT_GITHUB_APP_PRIVATE_KEY').trim(),
     gitcode_sync: gitcodeSync(str, int, str('SDBOT_REPOS').split(',').map(v => v.trim()).filter(Boolean)),
   };

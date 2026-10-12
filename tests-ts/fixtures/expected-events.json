@@ -699,8 +699,7 @@
       "route": "pull_request_review.submitted"
     },
     "hooks": [
-      "analyze.on_pull_request_review",
-      "board.on_pull_request"
+      "analyze.on_pull_request_review"
     ],
     "handled": true
   },
