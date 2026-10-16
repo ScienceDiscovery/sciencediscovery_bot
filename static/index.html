@@ -54,6 +54,20 @@
   .config-form fieldset.header-rows { display: grid; gap: 8px; }
   .header-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
   .header-row .header-value { grid-column: 1 / -1; }
+  /* Token permissions: one row per GitHub App permission, its description, and a 读写 / 只读 / 禁止 choice. */
+  .config-form fieldset.permission-set { display: grid; gap: 0; }
+  .perm-note { margin: 0 0 6px; font-size: 12px; }
+  .perm-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+  .perm-name { font-weight: 600; overflow-wrap: anywhere; }
+  .perm-name code { font-weight: 400; margin-left: 6px; }
+  .perm-desc { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .perm-choice { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; justify-self: start; }
+  .config-form .perm-choice label { padding: 4px 10px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+  .perm-choice label + label { border-left: 1px solid var(--line); }
+  .perm-choice input { margin: 0; }
+  .perm-choice label:has(input:checked) { background: var(--bg); font-weight: 600; }
+  .perm-choice label:has(input:disabled) { color: var(--muted); cursor: not-allowed; opacity: .55; }
+  @media (max-width: 700px) { .perm-row { grid-template-columns: 1fr; } }
   #usage-page h3 { margin: 20px 0 8px; font-size: 15px; }
   #usage-page p, #usage-page li { overflow-wrap: anywhere; }
   .usage-notes { color: var(--muted); font-size: 12px; margin: 8px 0 0; padding-left: 18px; }
@@ -189,7 +203,7 @@
   <section id="callers-page" aria-label="外部调用" hidden>
     <h2>外部调用</h2>
     <div id="caller-help">
-      <p class="muted">先在调用方自己的机器上用 openssl 生成一对 RSA 密钥和自签名证书（也可以用 P-256 EC 密钥）：<code>caller.key</code> 是私钥，只留在调用方，不要上传；把 <code>caller.crt</code> 的全文粘贴到下面「新增客户端」并保存（含私钥的 PEM 会被拒绝；RSA 证书用 RS256，P-256 证书用 ES256），然后复制卡片上的客户端 ID。每次需要令牌时，用私钥签一个新的 JWT：<code>iss</code> 和 <code>sub</code> 都是客户端 ID，<code>aud</code> 是 <code>sdbot:caller</code>，带 <code>iat</code>、<code>exp</code>、<code>jti</code>，<code>exp - iat</code> 不超过 600 秒，每个 <code>jti</code> 只能用一次；把它放进 <code>Authorization: Bearer</code>，加上 <code>Content-Type: application/json</code>，向 <code><span class="caller-origin">https://&lt;管理页主机&gt;</span>/caller/v1/token</code> 发送 <code>POST</code>，正文只有 <code>{"repo":"openJiuwen-ai/sciencediscovery"}</code>，这个地址不经过 Cloudflare Access。成功时得到 <code>{ "token", "expires_at", "repository" }</code>：把 <code>token</code> 放进 <code>Authorization: Bearer</code> 直接请求 <code>https://api.github.com</code>，例如 <code>POST /repos/openJiuwen-ai/sciencediscovery/issues/123/comments</code>、正文 <code>{"body":"..."}</code> 发一条评论；PR 的评论、标签和开关状态也走 Issues 接口，同一个令牌可以处理。令牌只有 <code>metadata: read</code>、<code>issues: write</code>、<code>pull_requests: write</code>，不能改仓库文件；<code>expires_at</code> 是 GitHub 给的到期时间，大约一小时，过期后重新签 JWT 再兑换。仓库必须在 <code>SDBOT_REPOS</code> 中，填了允许列表时还必须在列表里；组织还没批准 GitHub App 的 Issues 与 Pull requests 写权限时返回 503；每个客户端每分钟最多 60 次。完整命令（含 openssl 签 JWT 的脚本）见仓库文档 <code>docs/features/caller-api.md</code>。</p>
+      <p class="muted">先在调用方自己的机器上用 openssl 生成一对 RSA 密钥和自签名证书（也可以用 P-256 EC 密钥）：<code>caller.key</code> 是私钥，只留在调用方，不要上传；把 <code>caller.crt</code> 的全文粘贴到下面「新增客户端」并保存（含私钥的 PEM 会被拒绝；RSA 证书用 RS256，P-256 证书用 ES256），然后复制卡片上的客户端 ID。每次需要令牌时，用私钥签一个新的 JWT：<code>iss</code> 和 <code>sub</code> 都是客户端 ID，<code>aud</code> 是 <code>sdbot:caller</code>，带 <code>iat</code>、<code>exp</code>、<code>jti</code>，<code>exp - iat</code> 不超过 600 秒，每个 <code>jti</code> 只能用一次；把它放进 <code>Authorization: Bearer</code>，加上 <code>Content-Type: application/json</code>，向 <code><span class="caller-origin">https://&lt;管理页主机&gt;</span>/caller/v1/token</code> 发送 <code>POST</code>，正文只有 <code>{"repo":"openJiuwen-ai/sciencediscovery"}</code>，这个地址不经过 Cloudflare Access。成功时得到 <code>{ "token", "expires_at", "repository" }</code>：把 <code>token</code> 放进 <code>Authorization: Bearer</code> 直接请求 <code>https://api.github.com</code>，例如 <code>POST /repos/openJiuwen-ai/sciencediscovery/issues/123/comments</code>、正文 <code>{"body":"..."}</code> 发一条评论；PR 的评论、标签和开关状态也走 Issues 接口，同一个令牌可以处理。令牌带哪些权限由客户端的「令牌权限」决定，响应里的 <code>permissions</code> 会列出来；默认只有 <code>metadata: read</code>、<code>issues: write</code>、<code>pull_requests: write</code>，不能改仓库文件；<code>expires_at</code> 是 GitHub 给的到期时间，大约一小时，过期后重新签 JWT 再兑换。仓库必须在 <code>SDBOT_REPOS</code> 中，填了允许列表时还必须在列表里；所选权限中有 GitHub App 安装还没获批的（例如组织还没批准 Issues 与 Pull requests 写权限）时返回 503；每个客户端每分钟最多 60 次。完整命令（含 openssl 签 JWT 的脚本）见仓库文档 <code>docs/features/caller-api.md</code>。</p>
       <pre class="howto"># 1. 生成密钥对和证书；caller.crt 粘贴到下面
 openssl req -x509 -newkey rsa:2048 -sha256 -nodes -keyout caller.key -out caller.crt -days 365 -subj "/CN=my-caller"
 # 2. 用 caller.key 签 JWT（iss=sub=客户端 ID，aud=sdbot:caller，iat/exp/jti）后兑换
@@ -202,10 +216,26 @@ curl -X POST https://api.github.com/repos/openJiuwen-ai/sciencediscovery/issues/
       <label>名称 <input type="text" name="name" maxlength="80" autocomplete="off"></label>
       <label>公钥证书（PEM，只含 CERTIFICATE；含私钥会被拒绝） <textarea name="certificate" rows="8" placeholder="-----BEGIN CERTIFICATE-----" spellcheck="false"></textarea></label>
       <label>允许的仓库（每行一个 owner/name；留空表示 SDBOT_REPOS 中的全部仓库） <textarea name="repos" rows="3" spellcheck="false"></textarea></label>
+      <fieldset class="permission-set"><legend>令牌权限</legend>
+        <p class="muted perm-note">兑换出的 GitHub 安装令牌只带选为「读写」或「只读」的权限，「禁止」的不会出现在令牌里。GitHub App 安装还没获批的权限，兑换时会返回 503。</p>
+        <div id="caller-permissions"></div>
+        <div class="form-actions"><button type="button" id="reset-caller-permissions">恢复默认权限</button></div>
+      </fieldset>
       <div class="form-actions"><button type="submit">保存客户端</button><button type="button" id="cancel-caller">取消</button></div>
       <p class="form-error" role="alert"></p>
     </form>
     <div id="caller-list" class="subscription-grid"></div>
+    <div id="actions-block">
+      <h3>GitHub Actions 看板采集令牌</h3>
+      <p class="muted">看板仓的 <code>collect.yml</code> 用 OIDC 向本 Worker 兑换两份令牌：读取源仓的「源仓令牌」，以及把进度和站点提交到看板仓的「看板仓令牌」。默认就是看板采集一直使用的权限；收窄后采集可能失败，放宽则看板仓的工作流会拿到更大的权限。</p>
+      <div id="actions-permissions" class="subscription-grid"></div>
+      <form id="actions-permissions-form" class="config-form" hidden novalidate>
+        <fieldset class="permission-set"><legend>源仓令牌（读取源仓）</legend><div id="actions-source-permissions"></div></fieldset>
+        <fieldset class="permission-set"><legend>看板仓令牌（写入看板仓）</legend><div id="actions-target-permissions"></div></fieldset>
+        <div class="form-actions"><button type="submit">保存权限</button><button type="button" id="reset-actions-permissions">恢复默认权限</button><button type="button" id="cancel-actions-permissions">取消</button></div>
+        <p class="form-error" role="alert"></p>
+      </form>
+    </div>
     <h3>已发出的安装令牌</h3>
     <p id="grant-note" class="muted"></p>
     <div class="table-scroll"><table class="usage-table">
@@ -627,8 +657,56 @@ $("#forward-list").addEventListener("click", async ev => {
   }
 });
 
+// ---- Token permissions: each GitHub App permission with what it allows, and 读写 / 只读 / 禁止.
+const LEVEL_NAME = { write: "读写", read: "只读", none: "禁止" };
+let permissionCatalog = [], callerDefaults = {}, actionsDoc = null;
+const permissionSummary = set => permissionCatalog.filter(p => set?.[p.key]).map(p => `${p.key} ${LEVEL_NAME[set[p.key]]}`).join(" · ") || "无";
+// Levels GitHub does not offer for a permission (workflows has no read; metadata is always read) are disabled.
+function permissionRows(box, prefix, set) {
+  box.innerHTML = permissionCatalog.map(p => {
+    const current = p.required ? "read" : set?.[p.key] || "none";
+    const choices = ["write", "read", "none"].map(level => {
+      const allowed = p.required ? level === "read" : level === "none" || p.levels.includes(level);
+      return `<label><input type="radio" name="${prefix}-${esc(p.key)}" value="${level}"${current === level ? " checked" : ""}${allowed ? "" : " disabled"}> ${LEVEL_NAME[level]}</label>`;
+    }).join("");
+    return `<div class="perm-row" data-perm="${esc(p.key)}"><div><div class="perm-name">${esc(p.label)}<code>${esc(p.key)}</code></div><p class="perm-desc">${esc(p.description)}</p></div>`
+      + `<div class="perm-choice" role="radiogroup" aria-label="${esc(p.label)}">${choices}</div></div>`;
+  }).join("");
+}
+const readPermissions = box => Object.fromEntries([...box.querySelectorAll(".perm-row")].map(row => [row.dataset.perm, row.querySelector("input:checked")?.value || "none"]));
+function renderActionsPermissions(doc) {
+  actionsDoc = doc;
+  $("#actions-permissions").innerHTML = `<article class="subscription" data-actions-permissions>
+    <header><h3>GitHub Actions 看板采集</h3><span class="${doc.updated ? "warn" : "ok"}">${doc.updated ? "已调整 · " + esc(eventTime(doc.updated)) : "默认权限"}</span></header>
+    <p class="scope">源仓令牌：${esc(permissionSummary(doc.source))}</p>
+    <p class="scope">看板仓令牌：${esc(permissionSummary(doc.target))}</p>
+    <div class="card-actions"><button type="button" id="edit-actions-permissions">编辑</button></div>
+  </article>`;
+}
+function openActionsPermissions(sets) {
+  const form = $("#actions-permissions-form");
+  form.hidden = false;
+  permissionRows($("#actions-source-permissions"), "actions-source", sets.source);
+  permissionRows($("#actions-target-permissions"), "actions-target", sets.target);
+  form.querySelector(".form-error").textContent = "";
+  form.querySelector("input:checked:not(:disabled)")?.focus();
+}
+$("#actions-permissions").addEventListener("click", ev => { if (ev.target.closest("#edit-actions-permissions")) openActionsPermissions(actionsDoc); });
+$("#reset-actions-permissions").addEventListener("click", () => openActionsPermissions(actionsDoc.defaults));
+$("#cancel-actions-permissions").addEventListener("click", () => { $("#actions-permissions-form").hidden = true; });
+$("#actions-permissions-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  try {
+    await send("/api/actions-permissions", "PUT", { source: readPermissions($("#actions-source-permissions")), target: readPermissions($("#actions-target-permissions")) });
+    ev.target.hidden = true;
+    await loadCallers();
+  } catch (err) { ev.target.querySelector(".form-error").textContent = "保存失败：" + err.message; }
+});
+
 function renderCallers(doc) {
   callers = doc.clients;
+  permissionCatalog = doc.permission_catalog || [];
+  callerDefaults = doc.default_permissions || {};
   // The help text is static; only the exchange address follows the origin this page is served from.
   document.querySelectorAll("#caller-help .caller-origin").forEach(span => { span.textContent = location.origin; });
   $("#caller-count").textContent = `${callers.length} / ${doc.limit} 个客户端`;
@@ -641,6 +719,7 @@ function renderCallers(doc) {
       <p>客户端 ID（iss / sub）：<code>${esc(c.id)}</code></p>
       <p class="scope">${esc(c.alg)} · ${esc(c.subject || "无 CN")} · ${esc(eventTime(c.not_before))} 至 ${esc(eventTime(c.not_after))}<br>SHA-256 <code>${esc(c.fingerprint)}</code></p>
       <p class="scope">仓库：${esc(c.repos.length ? c.repos.join("、") : "SDBOT_REPOS 中的全部仓库")}</p>
+      <p class="scope">令牌权限：${esc(permissionSummary(c.permissions))}</p>
       <div class="card-actions"><button type="button" data-edit-caller="${esc(c.id)}">编辑</button><button type="button" data-delete-caller="${esc(c.id)}">删除</button></div>
     </article>`;
   }).join("") || '<p class="muted">还没有外部调用客户端</p>';
@@ -657,9 +736,10 @@ function renderGrants(doc) {
   }).join("") || '<tr><td colspan="6" class="muted">还没有发出过令牌</td></tr>';
 }
 async function loadCallers() {
-  if (!cloudAdmin) { $("#caller-help").textContent = ""; $("#grant-note").textContent = ""; return cloudOnly($("#caller-list")); }
-  const [clients, grants] = await Promise.all([api("/api/callers"), api("/api/token-grants")]);
+  if (!cloudAdmin) { $("#caller-help").textContent = ""; $("#grant-note").textContent = ""; $("#actions-block").hidden = true; return cloudOnly($("#caller-list")); }
+  const [clients, grants, actions] = await Promise.all([api("/api/callers"), api("/api/token-grants"), api("/api/actions-permissions")]);
   renderCallers(clients);
+  renderActionsPermissions(actions);
   renderGrants(grants);
 }
 function openCaller(client) {
@@ -667,15 +747,17 @@ function openCaller(client) {
   editingCaller = client ? client.id : null;
   form.hidden = false;
   field(form, "name").value = client?.name || ""; field(form, "certificate").value = client?.certificate || ""; field(form, "repos").value = (client?.repos || []).join("\n");
+  permissionRows($("#caller-permissions"), "caller", client?.permissions || callerDefaults);
   form.querySelector(".form-error").textContent = "";
   field(form, "name").focus();
 }
 $("#new-caller").addEventListener("click", () => openCaller(null));
+$("#reset-caller-permissions").addEventListener("click", () => permissionRows($("#caller-permissions"), "caller", callerDefaults));
 $("#cancel-caller").addEventListener("click", () => { $("#caller-form").hidden = true; editingCaller = null; });
 $("#caller-form").addEventListener("submit", async ev => {
   ev.preventDefault();
   const form = ev.target, body = { name: field(form, "name").value, certificate: field(form, "certificate").value,
-    repos: field(form, "repos").value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean) };
+    repos: field(form, "repos").value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean), permissions: readPermissions($("#caller-permissions")) };
   try {
     await send(editingCaller ? "/api/callers/" + editingCaller : "/api/callers", editingCaller ? "PUT" : "POST", body);
     form.hidden = true; editingCaller = null;

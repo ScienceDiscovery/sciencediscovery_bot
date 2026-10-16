@@ -1,8 +1,9 @@
 /// <reference types="@cloudflare/workers-types" />
 import { decodeJwt, importX509, jwtVerify } from 'jose';
-import { CALLER_AUDIENCE, CALLER_CLOCK_TOLERANCE, CALLER_LIMIT, CALLER_MAX_TOKEN_SECONDS, CALLER_RATE_PER_MINUTE, CALLER_TOKEN_PATH,
+import { CALLER_AUDIENCE, CALLER_CLOCK_TOLERANCE, CALLER_LIMIT, CALLER_MAX_TOKEN_SECONDS, CALLER_RATE_PER_MINUTE, CALLER_TOKEN_PATH, DEFAULT_CALLER_PERMISSIONS,
   authorizeRepo, parseClient, parseTokenRequest, publicClient, type CallerClient, type Refusal } from '../core/caller.js';
-import { CALLER_PERMISSIONS, GitHubApp } from '../core/github-app.js';
+import { GitHubApp } from '../core/github-app.js';
+import { permissionCatalog } from '../core/permissions.js';
 import { jsonResponse } from '../core/http.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
 import type { AdminReply } from './forward.js';
@@ -24,7 +25,9 @@ export class WorkerCallers {
         DROP TABLE IF EXISTS caller_audit;`);
       this.cache = this.storage.sql.exec<{ doc: string }>('SELECT doc FROM caller_clients').toArray()
         // Clients saved by the earlier on-behalf API carried an operations list; it no longer applies.
-        .map(row => { const { operations: _operations, ...client } = JSON.parse(row.doc) as CallerClient & { operations?: unknown }; return client; })
+        // Clients saved before permissions were configurable keep the permissions they always had.
+        .map(row => { const { operations: _operations, ...client } = JSON.parse(row.doc) as CallerClient & { operations?: unknown };
+          return { ...client, permissions: client.permissions || { ...DEFAULT_CALLER_PERMISSIONS } }; })
         .sort((a, b) => a.created.localeCompare(b.created));
     }
     return this.storage.sql;
@@ -52,7 +55,8 @@ export class WorkerCallers {
     const clients = this.clients(), index = id ? clients.findIndex(client => client.id === id) : -1;
     if (method === 'GET' && !id) {
       return { status: 200, body: { ok: true, limit: CALLER_LIMIT, audience: CALLER_AUDIENCE, rate_per_minute: CALLER_RATE_PER_MINUTE,
-        max_token_seconds: CALLER_MAX_TOKEN_SECONDS, endpoint: CALLER_TOKEN_PATH, permissions: describePermissions(CALLER_PERMISSIONS), clients: clients.map(publicClient) } };
+        max_token_seconds: CALLER_MAX_TOKEN_SECONDS, endpoint: CALLER_TOKEN_PATH, permission_catalog: permissionCatalog(),
+        default_permissions: DEFAULT_CALLER_PERMISSIONS, clients: clients.map(publicClient) } };
     }
     if (id && index < 0) return { status: 404, body: { ok: false, error: 'client not found' } };
     if (method === 'DELETE' && id) {
@@ -65,7 +69,8 @@ export class WorkerCallers {
       if (!parsed.ok) return { status: 422, body: { ok: false, error: parsed.error } };
       if (!id && clients.length >= CALLER_LIMIT) return { status: 422, body: { ok: false, error: `at most ${CALLER_LIMIT} clients` } };
       const now = new Date().toISOString();
-      const client: CallerClient = id ? { ...clients[index], ...parsed.value, updated: now } : { id: crypto.randomUUID(), ...parsed.value, created: now, updated: now };
+      const client: CallerClient = id ? { ...clients[index], ...parsed.value, updated: now }
+        : { id: crypto.randomUUID(), ...parsed.value, permissions: parsed.value.permissions || { ...DEFAULT_CALLER_PERMISSIONS }, created: now, updated: now };
       this.sql.exec('INSERT INTO caller_clients VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET doc=excluded.doc', client.id, JSON.stringify(client));
       if (id) clients[index] = client; else clients.push(client);
       return { status: id ? 200 : 201, body: { ok: true, client: publicClient(client) } };
@@ -78,8 +83,8 @@ const refuse = (refusal: Refusal, headers?: Headers) => jsonResponse({ ok: false
 const unauthorized = (error = 'unauthorized') => refuse({ status: 401, error }, new Headers({ 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'WWW-Authenticate': 'Bearer' }));
 
 /**
- * POST /caller/v1/token: a GitHub installation token for one repository, with issues and
- * pull_requests write only. Deliberately outside Cloudflare Access and never a webhook: the caller
+ * POST /caller/v1/token: a GitHub installation token for one repository, with the permissions chosen
+ * for this client on the admin page. Deliberately outside Cloudflare Access and never a webhook: the caller
  * proves itself with a JWT signed by the private key behind its registered certificate.
  */
 export async function handleCaller(request: Request, env: WorkerEnv, fetcher: typeof fetch = (...args) => fetch(...args)): Promise<Response> {
@@ -120,13 +125,13 @@ export async function handleCaller(request: Request, env: WorkerEnv, fetcher: ty
   if (denied) return refuse(denied);
   if (!cfg.github_app_id || !cfg.github_app_private_key) return refuse({ status: 503, error: 'GitHub App credentials are not configured' });
   let grant;
-  // GitHub refuses the token until the App's Issues and Pull requests write permissions are approved.
-  try { grant = await new GitHubApp(cfg.github_app_id, cfg.github_app_private_key, fetcher).grantForCaller(call.repo); }
-  catch { return refuse({ status: 503, error: 'GitHub did not issue a token with issues and pull_requests write for this repository' }); }
+  // GitHub refuses the token while the App installation has not been granted every chosen permission.
+  try { grant = await new GitHubApp(cfg.github_app_id, cfg.github_app_private_key, fetcher).grantForCaller(call.repo, client.permissions); }
+  catch { return refuse({ status: 503, error: `GitHub did not issue a token with ${describePermissions(client.permissions)} for this repository` }); }
   // The record carries no token; failing to write it never withholds a token that was issued.
   try {
     await bot.recordTokenGrant({ issued_at: new Date().toISOString(), expires_at: grant.expires_at, source: 'caller', identity: id, repository: call.repo,
-      purpose: null, permissions: describePermissions(CALLER_PERMISSIONS) });
+      purpose: null, permissions: describePermissions(client.permissions) });
   } catch { /* the grant list is informational */ }
-  return jsonResponse({ token: grant.token, expires_at: grant.expires_at, repository: call.repo });
+  return jsonResponse({ token: grant.token, expires_at: grant.expires_at, repository: call.repo, permissions: client.permissions });
 }

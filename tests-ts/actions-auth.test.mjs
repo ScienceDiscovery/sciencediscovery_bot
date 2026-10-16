@@ -85,4 +85,13 @@ test('OIDC exchange binds identity and scope, persists issuance guards and never
   assert.deepEqual(issued.map(g => g.permissions), ['metadata:read, contents:read, issues:read, pull_requests:read, actions:read, checks:read, statuses:read',
     'metadata:read, contents:write', 'metadata:read, contents:read, issues:read, pull_requests:read, actions:read, checks:read, statuses:read']);
   assert.doesNotMatch(JSON.stringify(issued), /scoped-secret/);
+  // The admin page's Actions entry decides the permissions of later exchanges.
+  failure = false;
+  const bot = events.get(events.idFromName('archive-v1'));
+  assert.equal((await bot.actionsPermissionsAdmin('PUT', { source: { contents: 'read', actions: 'read' }, target: { contents: 'write', pages: 'write' } })).status, 200);
+  const before = calls.length, jwt4 = await token({ run_attempt: '4' });
+  assert.equal((await exchange(jwt4, 'source')).status, 200);
+  assert.equal((await exchange(jwt4, 'target')).status, 200);
+  assert.deepEqual(calls.slice(before).filter(c => c.body).map(c => c.body.permissions), [{ metadata: 'read', contents: 'read', actions: 'read' }, { metadata: 'read', contents: 'write', pages: 'write' }]);
+  assert.deepEqual((await bot.tokenGrants()).grants.slice(0, 2).map(g => g.permissions), ['metadata:read, contents:write, pages:write', 'metadata:read, contents:read, actions:read']);
 });

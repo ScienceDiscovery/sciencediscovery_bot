@@ -3,12 +3,12 @@ import { object, utf8, type Doc } from './types.js';
 
 export class GitHubAppAuthError extends Error { constructor() { super('GitHub App authentication failed'); } }
 export interface InstallationGrant { token: string; expires_at: string; }
-/** Collection tokens: the source is read-only; the dashboard target may write contents. */
+/** Collection tokens by default: the source is read-only; the dashboard target may write contents. */
 export function collectionPermissions(write: boolean): Doc {
   return write ? { metadata: 'read', contents: 'write' }
     : { metadata: 'read', contents: 'read', issues: 'read', pull_requests: 'read', actions: 'read', checks: 'read', statuses: 'read' };
 }
-/** Certificate callers: issues and pull requests, never repository contents. */
+/** A certificate caller's permissions until the admin page chooses others: issues and pull requests, no contents. */
 export const CALLER_PERMISSIONS: Readonly<Doc> = Object.freeze({ metadata: 'read', issues: 'write', pull_requests: 'write' });
 const base64url = (bytes: Uint8Array): string => base64(bytes).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
 function der(tag: number, bytes: Uint8Array): Uint8Array<ArrayBuffer> {
@@ -54,6 +54,10 @@ export class GitHubApp {
   async grantForCollection(repository: string, write = false): Promise<InstallationGrant> {
     return this.installationToken(repository, collectionPermissions(write));
   }
+  /** A token with exactly the permissions configured on the admin page, for one repository. */
+  async grantWith(repository: string, permissions: Doc): Promise<InstallationGrant> {
+    return this.installationToken(repository, { ...permissions });
+  }
   async tokenForWorkflow(repository: string): Promise<string> {
     return (await this.installationToken(repository, { metadata: 'read', actions: 'write' })).token;
   }
@@ -61,9 +65,9 @@ export class GitHubApp {
   async tokenForSync(repository: string): Promise<string> {
     return (await this.installationToken(repository, { metadata: 'read', contents: 'read', pull_requests: 'read', checks: 'write' })).token;
   }
-  /** Handed to a certificate caller, which then calls api.github.com itself. */
-  async grantForCaller(repository: string): Promise<InstallationGrant> {
-    return this.installationToken(repository, { ...CALLER_PERMISSIONS });
+  /** Handed to a certificate caller, which then calls api.github.com itself, with that client's permissions. */
+  async grantForCaller(repository: string, permissions: Doc = CALLER_PERMISSIONS): Promise<InstallationGrant> {
+    return this.installationToken(repository, { ...permissions });
   }
   private async installationToken(repository: string, permissions: Doc): Promise<InstallationGrant> {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new TypeError('invalid repository');

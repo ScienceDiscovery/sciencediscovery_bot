@@ -1,7 +1,7 @@
 import { createRemoteJWKSet, customFetch, jwtVerify } from 'jose';
 import { disabledSync, targets } from '../core/config.js';
 import { captureBody, jsonResponse } from '../core/http.js';
-import { GitHubApp, collectionPermissions } from '../core/github-app.js';
+import { GitHubApp } from '../core/github-app.js';
 import { object } from '../core/types.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
 import { describePermissions } from './token-grants.js';
@@ -63,13 +63,16 @@ export async function exchangeActionsToken(request: Request, env: WorkerEnv): Pr
   // A run attempt can mint each scope once. Only nonsecret IDs enter durable storage.
   if (!await env.BOT.getByName(OBJECT_NAME).claimCredential(runKey + ':' + purpose, expires)) return fail('already exchanged', 409);
   const repository = purpose === 'source' ? source : destination;
+  // Permissions come from the admin page's Actions entry: by default source read-only and dashboard contents write.
+  const configured = await env.BOT.getByName(OBJECT_NAME).actionsTokenPermissions();
+  const permissions = purpose === 'source' ? configured.source : configured.target;
   let grant;
-  try { grant = await new GitHubApp(cfg.github_app_id, cfg.github_app_private_key).grantForCollection(repository, purpose === 'target'); }
+  try { grant = await new GitHubApp(cfg.github_app_id, cfg.github_app_private_key).grantWith(repository, permissions); }
   catch { return fail('token unavailable', 502); }
   // The admin page lists issued tokens without the token itself; a failed record never withholds the grant.
   try {
     await env.BOT.getByName(OBJECT_NAME).recordTokenGrant({ issued_at: new Date().toISOString(), expires_at: grant.expires_at, source: 'actions', identity: runKey,
-      repository, purpose, permissions: describePermissions(collectionPermissions(purpose === 'target')) });
+      repository, purpose, permissions: describePermissions(permissions) });
   } catch { /* informational only */ }
   return jsonResponse({ ...grant, repository, purpose });
 }

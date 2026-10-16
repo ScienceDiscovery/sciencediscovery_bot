@@ -1,4 +1,6 @@
 import type { Config } from './config.js';
+import { CALLER_PERMISSIONS } from './github-app.js';
+import { normalizePermissions, parsePermissions, type PermissionSet } from './permissions.js';
 import { CertificateError, parseCertificate, type CertificateInfo } from './x509.js';
 import { array, object, string, type Doc } from './types.js';
 
@@ -18,11 +20,18 @@ const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 export interface CallerClient extends Omit<CertificateInfo, 'pem'> {
   id: string; name: string; certificate: string; repos: string[]; created: string; updated: string;
+  /** What an exchanged token may do; clients saved before this was configurable get the defaults. */
+  permissions: PermissionSet;
 }
+/** Permissions a new client starts with, and those of clients saved before permissions were chosen. */
+export const DEFAULT_CALLER_PERMISSIONS: PermissionSet = normalizePermissions(CALLER_PERMISSIONS as Record<string, string>);
 export type Refusal = { status: 401 | 403 | 422 | 429 | 503; error: string };
 
-/** Admin input for a client; the certificate must be public-only and currently parseable. */
-export async function parseClient(input: unknown): Promise<{ ok: true; value: Omit<CallerClient, 'id' | 'created' | 'updated'> } | { ok: false; error: string }> {
+/**
+ * Admin input for a client; the certificate must be public-only and currently parseable.
+ * Without `permissions` the value carries none, so an update keeps the stored choice.
+ */
+export async function parseClient(input: unknown): Promise<{ ok: true; value: Omit<CallerClient, 'id' | 'created' | 'updated' | 'permissions'> & { permissions?: PermissionSet } } | { ok: false; error: string }> {
   const doc = object(input), name = string(doc.name).trim();
   if (!name || name.length > 80) return { ok: false, error: 'name must be 1-80 characters' };
   let cert: CertificateInfo;
@@ -30,8 +39,14 @@ export async function parseClient(input: unknown): Promise<{ ok: true; value: Om
   catch (error) { return { ok: false, error: error instanceof CertificateError ? error.message : 'could not read the certificate' }; }
   const repos = array(doc.repos).map(r => typeof r === 'string' ? r.trim() : '').filter(Boolean);
   if (repos.length > 50 || repos.some(r => !REPO.test(r))) return { ok: false, error: 'repositories must be owner/name, at most 50' };
+  let permissions: PermissionSet | undefined;
+  if (doc.permissions !== undefined) {
+    const parsed = parsePermissions(doc.permissions);
+    if (!parsed.ok) return parsed;
+    permissions = parsed.value;
+  }
   const { pem, ...info } = cert;
-  return { ok: true, value: { name, certificate: pem, ...info, repos: [...new Set(repos.map(r => r.toLowerCase()))] } };
+  return { ok: true, value: { name, certificate: pem, ...info, repos: [...new Set(repos.map(r => r.toLowerCase()))], ...(permissions ? { permissions } : {}) } };
 }
 
 /** The exchange body is exactly { "repo": "owner/name" } (422 otherwise). */
