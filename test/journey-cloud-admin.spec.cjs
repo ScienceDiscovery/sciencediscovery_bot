@@ -274,7 +274,19 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   // There is no operation list any more: a client exchanges tokens for its repositories.
   await expect(callerForm.locator('input[type=checkbox]')).toHaveCount(0);
   await callerForm.getByLabel(/允许的仓库/).fill('ScienceDiscovery/sciencediscovery');
+  // Each permission has its name, what it allows, and 读写 / 只读 / 禁止; a new client starts with Issues and PR write.
+  const perm = (form, key) => form.locator(`[data-perm="${key}"]`);
+  await expect(callerForm.locator('.perm-row')).toHaveCount(12);
+  await expect(perm(callerForm, 'contents').locator('.perm-desc')).toContainText('推送提交');
+  for (const [key, level] of [['metadata', '只读'], ['contents', '禁止'], ['issues', '读写'], ['pull_requests', '读写'], ['workflows', '禁止']])
+    await expect(perm(callerForm, key).getByLabel(level, { exact: true })).toBeChecked();
+  await expect(perm(callerForm, 'metadata').getByLabel('禁止', { exact: true })).toBeDisabled();
+  await expect(perm(callerForm, 'workflows').getByLabel('只读', { exact: true })).toBeDisabled();
+  await perm(callerForm, 'contents').getByLabel('只读', { exact: true }).check();
+  await perm(callerForm, 'issues').getByLabel('禁止', { exact: true }).check();
+  await perm(callerForm, 'checks').getByLabel('读写', { exact: true }).check();
   expect(await overflow()).toBe(true);
+  await callerForm.screenshot({ path: testInfo.outputPath('caller-permissions-mobile.png') });
   await callerForm.getByRole('button', { name: '保存客户端' }).click();
   await expect(callerForm).toBeHidden();
   const client = page.locator('#caller-list article', { hasText: '评论机器人' });
@@ -282,6 +294,11 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await expect(client).toContainText('证书有效');
   await expect(client).toContainText('sciencediscovery/sciencediscovery');
   await expect(client.locator('code').first()).toHaveText(/^[0-9a-f-]{36}$/);
+  await expect(client).toContainText('令牌权限：metadata 只读 · contents 只读 · pull_requests 读写 · checks 读写');
+  // Editing shows the saved choice again.
+  await client.getByRole('button', { name: '编辑' }).click();
+  await expect(perm(callerForm, 'issues').getByLabel('禁止', { exact: true })).toBeChecked();
+  await callerForm.getByRole('button', { name: '取消' }).click();
   await expect(page.locator('#token-grants')).toContainText('还没有发出过令牌');
   // The client exchanges a JWT for a token; refreshing the page lists it without the token itself.
   const { SignJWT } = await import('jose');
@@ -290,16 +307,49 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
     .setAudience('sdbot:caller').setIssuedAt().setExpirationTime('2m').sign(pair.privateKey);
   const exchanged = await request.post('/caller/v1/token', { data: { repo: 'ScienceDiscovery/sciencediscovery' }, headers: { authorization: 'Bearer ' + assertion } });
   expect(exchanged.status()).toBe(200);
-  expect((await exchanged.json()).token).toBe('ghs_browser-journey');
+  const tokenBody = await exchanged.json();
+  expect(tokenBody.token).toBe('ghs_browser-journey');
+  expect(tokenBody.permissions).toEqual({ metadata: 'read', contents: 'read', pull_requests: 'write', checks: 'write' });
   await page.getByRole('button', { name: '刷新外部调用' }).click();
   const issued = page.locator('#token-grants tr', { hasText: 'ScienceDiscovery/sciencediscovery' });
   await expect(issued).toContainText('caller');
   await expect(issued).toContainText('评论机器人');
   await expect(issued).toContainText('有效');
-  await expect(issued).toContainText('issues:write, pull_requests:write');
+  await expect(issued).toContainText('metadata:read, contents:read, pull_requests:write, checks:write');
   await expect(page.locator('#token-grants')).not.toContainText('ghs_');
   expect(await overflow()).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('callers-mobile.png'), fullPage: true });
+
+  // The dashboard's Actions exchange has its own entry with the permissions collection has always used.
+  const actionsCard = page.locator('[data-actions-permissions]');
+  await expect(actionsCard).toContainText('默认权限');
+  await expect(actionsCard).toContainText('源仓令牌：metadata 只读 · contents 只读 · issues 只读 · pull_requests 只读 · actions 只读 · checks 只读 · statuses 只读');
+  await expect(actionsCard).toContainText('看板仓令牌：metadata 只读 · contents 读写');
+  await actionsCard.getByRole('button', { name: '编辑' }).click();
+  const actionsForm = page.locator('#actions-permissions-form');
+  const sourceRows = actionsForm.locator('#actions-source-permissions'), targetRows = actionsForm.locator('#actions-target-permissions');
+  await expect(sourceRows.locator('.perm-row')).toHaveCount(12);
+  await perm(sourceRows, 'checks').getByLabel('禁止', { exact: true }).check();
+  await perm(targetRows, 'pages').getByLabel('读写', { exact: true }).check();
+  expect(await overflow()).toBe(true);
+  await actionsForm.getByRole('button', { name: '保存权限' }).click();
+  await expect(actionsForm).toBeHidden();
+  await expect(actionsCard).toContainText('已调整');
+  await expect(actionsCard).not.toContainText('checks 只读');
+  await expect(actionsCard).toContainText('看板仓令牌：metadata 只读 · contents 读写 · pages 读写');
+  // "恢复默认权限" puts back what collection needs.
+  await actionsCard.getByRole('button', { name: '编辑' }).click();
+  await actionsForm.getByRole('button', { name: '恢复默认权限' }).click();
+  await expect(perm(sourceRows, 'checks').getByLabel('只读', { exact: true })).toBeChecked();
+  await expect(perm(targetRows, 'pages').getByLabel('禁止', { exact: true })).toBeChecked();
+  await actionsForm.getByRole('button', { name: '保存权限' }).click();
+  await expect(actionsCard).toContainText('源仓令牌：metadata 只读 · contents 只读 · issues 只读 · pull_requests 只读 · actions 只读 · checks 只读 · statuses 只读');
+  await expect(actionsCard).toContainText('看板仓令牌：metadata 只读 · contents 读写');
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await client.getByRole('button', { name: '编辑' }).click();
+  await callerForm.screenshot({ path: testInfo.outputPath('caller-permissions-desktop.png') });
+  await callerForm.getByRole('button', { name: '取消' }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
 
   // Nothing is read on a timer once the page has loaded.
   const before = reads.length;

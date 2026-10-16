@@ -17,6 +17,15 @@ export class BotObject extends Original {
     for (let i = 0; i < count; i++) this.recordTokenGrant({ issued_at: new Date(issued).toISOString(), expires_at: new Date(issued + 3600000).toISOString(), source: 'actions',
       identity: `${prefix}-${i}`, repository: 'example/repo', purpose: 'source', permissions: 'metadata:read' });
   }
+  // Rewrites stored callers as they were saved before permissions were configurable.
+  legacyCallers() {
+    const sql = this.ctx.storage.sql;
+    for (const row of sql.exec('SELECT id, doc FROM caller_clients').toArray()) {
+      const { permissions: _permissions, ...doc } = JSON.parse(row.doc);
+      sql.exec('UPDATE caller_clients SET doc = ? WHERE id = ?', JSON.stringify(doc), row.id);
+    }
+    this.callers.cache = null;
+  }
   grantCount() {
     const sql = this.ctx.storage.sql;
     const count = sql.exec('SELECT COUNT(*) AS n FROM token_grants').one().n, oldest = sql.exec('SELECT doc FROM token_grants ORDER BY seq LIMIT 1').toArray()[0];
@@ -38,6 +47,7 @@ export default {
     if (url.pathname === '/_test/age-usage') return Response.json(await stub.ageUsageCache(Number(url.searchParams.get('ms'))) ?? null);
     if (url.pathname === '/_test/seed-grants') return Response.json(await stub.seedGrants(Number(url.searchParams.get('count')), Number(url.searchParams.get('issued')), url.searchParams.get('prefix')) ?? null);
     if (url.pathname === '/_test/grant-count') return Response.json(await stub.grantCount());
+    if (url.pathname === '/_test/legacy-callers') return Response.json(await stub.legacyCallers() ?? null);
     if (url.pathname === '/_test/claim') return Response.json(await stub.claimCredential(url.searchParams.get('key'), Number(url.searchParams.get('expires'))));
     return worker.fetch(request, env, ctx);
   },

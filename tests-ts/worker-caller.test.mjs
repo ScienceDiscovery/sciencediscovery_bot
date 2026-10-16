@@ -63,12 +63,14 @@ test('certificate callers exchange a JWT for a narrowly scoped GitHub installati
   });
 
   let rsaClient, ecClient;
-  await t.test('a valid certificate gets a token with issues and pull_requests write only', async () => {
+  await t.test('a client saved without a choice gets a token with issues and pull_requests write only', async () => {
     rsaClient = await register(admin, { name: 'RSA', certificate: rsa.certificate });
     assert.equal(rsaClient.operations, undefined);
+    assert.deepEqual(rsaClient.permissions, { metadata: 'read', issues: 'write', pull_requests: 'write' });
     const result = await exchange(mf, await jwt(rsaClient, rsa.privateKey, 'RS256'), { repo: REPO });
     assert.equal(result.status, 200);
-    assert.deepEqual(Object.keys(result.body).sort(), ['expires_at', 'repository', 'token']);
+    assert.deepEqual(Object.keys(result.body).sort(), ['expires_at', 'permissions', 'repository', 'token']);
+    assert.deepEqual(result.body.permissions, { metadata: 'read', issues: 'write', pull_requests: 'write' });
     assert.deepEqual([result.body.expires_at, result.body.repository], [EXPIRES, REPO]);
     assert.match(result.body.token, /^ghs_installation-token-/);
     const grant = calls.find(c => c.url.endsWith('/app/installations/42/access_tokens'));
@@ -125,12 +127,44 @@ test('certificate callers exchange a JWT for a narrowly scoped GitHub installati
     assert.equal(calls.filter(c => c.url.includes('gitcode')).length, 0);
   });
 
-  await t.test('without the organization approving the write permissions the exchange is 503 and unrecorded', async () => {
+  await t.test('the permissions chosen for a client decide its token, and can be changed later', async () => {
+    const pair = makeCertificate(), list = (await admin('/admin/api/callers')).body;
+    assert.deepEqual(list.permission_catalog.map(p => p.key), ['metadata', 'contents', 'issues', 'pull_requests', 'actions', 'checks', 'statuses', 'workflows', 'merge_queues', 'deployments', 'pages', 'discussions']);
+    assert.deepEqual(list.permission_catalog.find(p => p.key === 'workflows').levels, ['write']);
+    assert.ok(list.permission_catalog.every(p => p.label && p.description.length > 30));
+    assert.deepEqual(list.default_permissions, { metadata: 'read', issues: 'write', pull_requests: 'write' });
+    // "none" drops a permission; metadata stays read whatever is sent.
+    const client = await register(admin, { name: 'Reader', certificate: pair.certificate,
+      permissions: { metadata: 'none', contents: 'read', issues: 'none', pull_requests: 'write', checks: 'write', workflows: 'none' } });
+    assert.deepEqual(client.permissions, { metadata: 'read', contents: 'read', pull_requests: 'write', checks: 'write' });
+    const before = calls.length, result = await exchange(mf, await jwt(client, pair.privateKey, 'RS256'), { repo: REPO });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body.permissions, client.permissions);
+    assert.deepEqual(calls.slice(before).find(c => c.url.endsWith('/access_tokens')).body.permissions, { metadata: 'read', contents: 'read', pull_requests: 'write', checks: 'write' });
+    assert.equal((await grants(admin)).grants[0].permissions, 'metadata:read, contents:read, pull_requests:write, checks:write');
+    // An update without permissions keeps them; one with permissions replaces them.
+    const kept = await admin('/admin/api/callers/' + client.id, { method: 'PUT', body: { name: 'Reader 2', certificate: pair.certificate } });
+    assert.deepEqual([kept.status, kept.body.client.name, kept.body.client.permissions], [200, 'Reader 2', client.permissions]);
+    const changed = await admin('/admin/api/callers/' + client.id, { method: 'PUT', body: { name: 'Reader 2', certificate: pair.certificate, permissions: { issues: 'read', workflows: 'write', contents: 'write' } } });
+    assert.deepEqual(changed.body.client.permissions, { metadata: 'read', contents: 'write', issues: 'read', workflows: 'write' });
+    for (const [permissions, error] of [
+      [{ administration: 'write' }, /unknown permission administration/], [{ workflows: 'read' }, /workflows can only be write, none/],
+      [{ issues: 'admin' }, /issues can only be read, write, none/], [{ metadata: 'read' }, /at least one permission besides metadata/],
+      [{ issues: 'none' }, /at least one permission besides metadata/], [['issues'], /must be an object/], ['write', /must be an object/],
+    ]) {
+      const refused = await admin('/admin/api/callers', { method: 'POST', body: { name: 'bad', certificate: makeCertificate().certificate, permissions } });
+      assert.equal(refused.status, 422, JSON.stringify(permissions));
+      assert.match(refused.body.error, error);
+    }
+  });
+
+  await t.test('without the organization approving the chosen permissions the exchange is 503 and unrecorded', async () => {
     const before = (await grants(admin)).grants.length;
     state.approved = false;
     const result = await exchange(mf, await jwt(rsaClient, rsa.privateKey, 'RS256'), { repo: REPO });
     state.approved = true;
     assert.equal(result.status, 503);
+    assert.match(result.body.error, /metadata:read, issues:write, pull_requests:write/);
     assert.equal((await grants(admin)).grants.length, before, 'refused exchanges are not recorded');
   });
 
@@ -166,4 +200,41 @@ test('token records keep 60 days and at most 1000 entries, pruned on insert and 
   await rpc('seed-grants', { count: 1005, issued: now, prefix: 'fresh' });
   const after = await rpc('grant-count');
   assert.deepEqual([after.count, after.oldest], [1000, 'fresh-5']);
+});
+
+test('clients saved before permissions were configurable keep issues and pull_requests write', { timeout: 60000 }, async t => {
+  const { mf, calls, admin } = await runtime(t, {});
+  const pair = makeCertificate(), client = await register(admin, { name: 'Legacy', certificate: pair.certificate, permissions: { contents: 'write' } });
+  await mf.dispatchFetch('http://localhost/_test/legacy-callers');
+  const listed = (await admin('/admin/api/callers')).body.clients.find(c => c.id === client.id);
+  assert.deepEqual(listed.permissions, { metadata: 'read', issues: 'write', pull_requests: 'write' });
+  assert.equal((await exchange(mf, await jwt(client, pair.privateKey, 'RS256'), { repo: REPO })).status, 200);
+  assert.deepEqual(calls.find(c => c.url.endsWith('/access_tokens')).body.permissions, { metadata: 'read', issues: 'write', pull_requests: 'write' });
+});
+
+test('the GitHub Actions entry shows and changes the collection token permissions behind Access', { timeout: 60000 }, async t => {
+  const { mf, admin } = await runtime(t, {});
+  const defaults = { source: { metadata: 'read', contents: 'read', issues: 'read', pull_requests: 'read', actions: 'read', checks: 'read', statuses: 'read' },
+    target: { metadata: 'read', contents: 'write' } };
+  const shown = await admin('/admin/api/actions-permissions');
+  assert.equal(shown.status, 200);
+  assert.deepEqual([shown.body.source, shown.body.target, shown.body.defaults, shown.body.updated], [defaults.source, defaults.target, defaults, null]);
+  assert.equal(shown.body.permission_catalog.length, 12);
+  const saved = await admin('/admin/api/actions-permissions', { method: 'PUT', body: { source: { ...defaults.source, checks: 'none', merge_queues: 'read' }, target: { contents: 'write', pages: 'write' } } });
+  assert.equal(saved.status, 200);
+  const after = (await admin('/admin/api/actions-permissions')).body;
+  assert.deepEqual(after.source, { metadata: 'read', contents: 'read', issues: 'read', pull_requests: 'read', actions: 'read', statuses: 'read', merge_queues: 'read' });
+  assert.deepEqual(after.target, { metadata: 'read', contents: 'write', pages: 'write' });
+  assert.ok(Date.parse(after.updated) > 0);
+  for (const [body, error] of [[{ source: defaults.source }, /target: permissions must be an object/], [{ source: { secrets: 'read' }, target: defaults.target }, /source: unknown permission secrets/]]) {
+    const refused = await admin('/admin/api/actions-permissions', { method: 'PUT', body });
+    assert.deepEqual([refused.status, error.test(refused.body.error)], [422, true], JSON.stringify(body));
+  }
+  for (const method of ['POST', 'DELETE', 'PATCH']) assert.equal((await admin('/admin/api/actions-permissions', { method, body: {} })).status, 405, method);
+  assert.equal((await admin('/admin/api/actions-permissions', { method: 'PUT', body: defaults, headers: { origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await admin('/admin/api/actions-permissions', { method: 'PUT', body: 'x=1', headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status, 415);
+  assert.equal((await mf.dispatchFetch('http://localhost/admin/api/actions-permissions')).status, 401);
+  assert.equal((await mf.dispatchFetch('http://localhost/admin/api/actions-permissions', { method: 'PUT', body: JSON.stringify(defaults), headers: { 'content-type': 'application/json' } })).status, 401);
+  // Nothing was lost by the refused writes.
+  assert.deepEqual((await admin('/admin/api/actions-permissions')).body.target, { metadata: 'read', contents: 'write', pages: 'write' });
 });

@@ -40,12 +40,13 @@ Worker 保留 `SDBOT_GITHUB_APP_ID` 和 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，
 
 ## 接口与授权
 
-`POST /actions/token` 使用 `Authorization: Bearer <GitHub OIDC JWT>`，JSON 请求只能包含 `purpose`，值为 `source` 或 `target`。源仓、目标仓和权限由 Worker 配置决定，客户端不能请求任意仓库或扩大权限。
+`POST /actions/token` 使用 `Authorization: Bearer <GitHub OIDC JWT>`，JSON 请求只能包含 `purpose`，值为 `source` 或 `target`。源仓和目标仓由 Worker 配置决定，权限由管理页的「GitHub Actions 看板采集令牌」条目决定；请求方不能指定仓库或扩大权限。
 
 - 固定 issuer 与 JWKS 地址、RS256、有效期、签发时间、audience；不跟随认证请求重定向。
 - 同时校验仓库名、不可变仓库／组织 ID、`main` 分支、固定 `.github/workflows/collect.yml`、事件类型为 schedule 或 workflow_dispatch。
 - subject 支持 GitHub 的原名称格式与包含不可变 ID 的格式；PR、tag 和其他工作流均不在当前信任范围。GitHub 的直接执行任务也可能包含 `job_workflow_ref`；该字段存在时必须仍指向同一个 collect.yml，引用其他文件的可复用工作流会被拒绝。将来改变工作流结构需显式调整信任策略。
-- 源仓令牌仅包含 Metadata、Contents、Issues、Pull requests、Actions、Checks、Commit statuses read；看板令牌仅包含 Metadata read、Contents write。跨组织分别换取 installation 令牌。
+- 默认源仓令牌仅包含 Metadata、Contents、Issues、Pull requests、Actions、Checks、Commit statuses read；看板令牌仅包含 Metadata read、Contents write，即采集一直使用的权限。跨组织分别换取 installation 令牌。
+- 管理页「外部调用」的「GitHub Actions 看板采集令牌」条目列出这两份令牌的权限，和证书客户端使用同一套「权限名称／说明／读写·只读·禁止」选择器，可以编辑或「恢复默认权限」。保存后，之后每次兑换都按新选择申请；收窄后采集可能失败，放宽会让看板仓的工作流拿到更大的权限，选了 App 安装没有的权限时兑换返回 502。配置存在 Bot 的 Durable Object 里，没有保存过时使用默认值；管理接口是 `GET`／`PUT /admin/api/actions-permissions`，正文为 `{ "source": {…}, "target": {…} }`，校验与证书客户端相同。
 - Durable Object 原子记录仓库／run／attempt／purpose；每次运行尝试每种用途只能兑换一次。记录保留至少一天，过期记录在后续请求中清理；不保存 JWT、安装令牌或私钥。
 - 每次成功签发后，另在发放记录表写一条：来源 `actions`、身份 `repositoryId:run_id:run_attempt`、`purpose`、实际仓库、所申请的权限和 GitHub 返回的令牌到期时间，不含令牌；管理页「外部调用」与证书兑换一起列出，保留 60 天、至多 1000 条。写记录失败时令牌照常返回，响应形状不变。见[外部调用](caller-api.md)。
 
@@ -63,6 +64,6 @@ Worker 保留 `SDBOT_GITHUB_APP_ID` 和 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，
 
 ## 验证
 
-Bot：`npm run check`、`npm test`；`tests-ts/actions-auth.test.mjs` 在真实 workerd 中验证签名、跨环境拒绝、分支／仓库／工作流限制、最小权限、并发重复、重启后签发记录及凭据不归档。看板：`python3 -m unittest discover -s tests -v`，包含凭据隔离、撤销、部分失败、拒绝重定向及错误脱敏。实际上线还需验证 GitHub runner 的真实 OIDC 及 App 提交身份。
+Bot：`npm run check`、`npm test`；`tests-ts/actions-auth.test.mjs` 在真实 workerd 中验证签名、跨环境拒绝、分支／仓库／工作流限制、默认权限、改为管理页所选权限后的申请与记录、并发重复、重启后签发记录及凭据不归档。看板：`python3 -m unittest discover -s tests -v`，包含凭据隔离、撤销、部分失败、拒绝重定向及错误脱敏。实际上线还需验证 GitHub runner 的真实 OIDC 及 App 提交身份。
 
 参考：[GitHub OIDC 身份字段](https://docs.github.com/en/actions/reference/security/oidc)、[安装令牌撤销](https://docs.github.com/en/rest/apps/installations#revoke-an-installation-access-token)。
