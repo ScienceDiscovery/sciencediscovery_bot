@@ -3,6 +3,7 @@ import { disabledSync, targets } from '../core/config.js';
 import { captureBody, jsonResponse } from '../core/http.js';
 import { GitHubApp } from '../core/github-app.js';
 import { object } from '../core/types.js';
+import { PURPOSE, matchActionsRule, type ActionsClaims, type ActionsRule } from '../core/actions-rules.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
 import { describePermissions } from './token-grants.js';
 
@@ -47,34 +48,54 @@ async function verifyCollector(request: Request, env: WorkerEnv, requireApp = tr
   return { cfg, source, destination, runKey, expires };
 }
 
-/** This credential protocol is separate from Webhook ingestion and its archive. */
+/**
+ * POST /actions/token. A GitHub Actions run proves who it is with its OIDC token and receives an
+ * installation token for one purpose of the access rule matching that identity; the rules, their
+ * target repositories and permissions are kept on the admin page. Credentials only: never a
+ * webhook, never archived, and the tokens never reach storage or logs.
+ */
 export async function exchangeActionsToken(request: Request, env: WorkerEnv): Promise<Response> {
-  const verified = await verifyCollector(request, env);
-  if (verified instanceof Response) return verified;
-  const { cfg, source, destination, runKey, expires } = verified;
+  if (request.method !== 'POST') return fail('method not allowed', 405);
+  const cfg = workerConfig(env), audience = String(env.SDBOT_ACTIONS_AUDIENCE || '');
+  if (!audience || !env.SDBOT_ADMIN_HOSTNAME || !cfg.github_app_id || !cfg.github_app_private_key) return fail('exchange unavailable', 503);
+  const token = /^Bearer ([^\s]+)$/.exec(request.headers.get('authorization') || '')?.[1];
+  if (new URL(request.url).hostname !== env.SDBOT_ADMIN_HOSTNAME || !token || token.length > 16384) return fail('unauthorized', 401);
+  let claims: ActionsClaims & { run_id: string; run_attempt: string }, expires: number;
+  try {
+    const { payload: p } = await jwtVerify(token, keys, { issuer, audience, algorithms: ['RS256'],
+      requiredClaims: ['sub', 'exp', 'iat', 'nbf', 'jti'], maxTokenAge: '10m', clockTolerance: 5 });
+    const text = (name: string) => typeof p[name] === 'string' ? p[name] as string : '';
+    claims = { repository: text('repository'), repository_id: text('repository_id'), repository_owner_id: text('repository_owner_id'), ref: text('ref'),
+      ref_type: text('ref_type'), workflow_ref: text('workflow_ref'), event_name: text('event_name'), sub: text('sub'), run_id: text('run_id'), run_attempt: text('run_attempt'),
+      ...(p.job_workflow_ref !== undefined ? { job_workflow_ref: String(p.job_workflow_ref) } : {}) };
+    expires = p.exp!;
+  } catch { return fail('unauthorized', 401); }
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(claims.repository) || ![claims.repository_id, claims.repository_owner_id, claims.run_id, claims.run_attempt].every(v => /^[1-9]\d*$/.test(v))) {
+    return fail('forbidden', 403);
+  }
   const body = await captureBody(request, 256);
   if (body.error) return fail(body.error.message, body.error.status);
   let purpose: string;
   try {
     const value = object(JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(body.body)));
-    if (Object.keys(value).length !== 1 || !['source', 'target'].includes(String(value.purpose))) return fail('bad request', 400);
     purpose = String(value.purpose);
+    if (Object.keys(value).length !== 1 || !PURPOSE.test(purpose)) return fail('bad request', 400);
   } catch { return fail('bad request', 400); }
-  // A run attempt can mint each scope once. Only nonsecret IDs enter durable storage.
-  if (!await env.BOT.getByName(OBJECT_NAME).claimCredential(runKey + ':' + purpose, expires)) return fail('already exchanged', 409);
-  const repository = purpose === 'source' ? source : destination;
-  // Permissions come from the admin page's Actions entry: by default source read-only and dashboard contents write.
-  const configured = await env.BOT.getByName(OBJECT_NAME).actionsTokenPermissions();
-  const permissions = purpose === 'source' ? configured.source : configured.target;
+  const bot = env.BOT.getByName(OBJECT_NAME);
+  const matched = matchActionsRule(await bot.actionsRuleList() as ActionsRule[], claims, purpose);
+  if ('status' in matched) return fail(matched.error, matched.status);
+  const { rule, grant: allowed } = matched;
+  // A run attempt can mint each purpose of a rule once. Only nonsecret IDs enter durable storage.
+  if (!await bot.claimCredential(`${rule.id}:${claims.repository_id}:${claims.run_id}:${claims.run_attempt}:${purpose}`, expires)) return fail('already exchanged', 409);
   let grant;
-  try { grant = await new GitHubApp(cfg.github_app_id, cfg.github_app_private_key).grantWith(repository, permissions); }
+  try { grant = await new GitHubApp(cfg.github_app_id, cfg.github_app_private_key).grantWith(allowed.repository, allowed.permissions); }
   catch { return fail('token unavailable', 502); }
   // The admin page lists issued tokens without the token itself; a failed record never withholds the grant.
   try {
-    await env.BOT.getByName(OBJECT_NAME).recordTokenGrant({ issued_at: new Date().toISOString(), expires_at: grant.expires_at, source: 'actions', identity: runKey,
-      repository, purpose, permissions: describePermissions(permissions) });
+    await bot.recordTokenGrant({ issued_at: new Date().toISOString(), expires_at: grant.expires_at, source: 'actions',
+      identity: `${rule.name} · ${claims.repository} run ${claims.run_id}#${claims.run_attempt}`, repository: allowed.repository, purpose, permissions: describePermissions(allowed.permissions) });
   } catch { /* informational only */ }
-  return jsonResponse({ ...grant, repository, purpose });
+  return jsonResponse({ ...grant, repository: allowed.repository, purpose, permissions: allowed.permissions });
 }
 
 /**

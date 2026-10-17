@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { build } from 'esbuild';
 
 /** Shared local/test runtime. Outbound access is denied unless explicitly supplied. */
-export async function workerRuntime({ directory, bindings, outboundService, port = 0, entry = 'src/worker/index.ts' }) {
+export async function workerRuntime({ directory, bindings, outboundService, port = 0, entry = 'src/worker/index.ts', handleRuntimeStdio }) {
   directory = resolve(directory);
   await mkdir(directory, { recursive: true });
   process.env.TMPDIR = directory;
@@ -14,7 +14,8 @@ export async function workerRuntime({ directory, bindings, outboundService, port
   const common = { compatibilityDate: '2026-07-30', modules: true,
     outboundService: outboundService || (() => new Response(null, { status: 503 })) };
   const namespace = { className: 'BotObject', scriptName: 'bot', useSQLite: true };
-  const mf = new Miniflare({ host: '127.0.0.1', port, durableObjectsPersist: resolve(directory, 'state/do'), r2Persist: resolve(directory, 'state/r2'),
+  // Tests that read the Worker's own log lines pass handleRuntimeStdio; otherwise Miniflare prints them.
+  const mf = new Miniflare({ ...(handleRuntimeStdio ? { handleRuntimeStdio } : {}), host: '127.0.0.1', port, durableObjectsPersist: resolve(directory, 'state/do'), r2Persist: resolve(directory, 'state/r2'),
     workers: [
       { ...common, name: 'bot', scriptPath: resolve(directory, 'index.js'), bindings, durableObjects: { BOT: namespace }, r2Buckets: { ARCHIVE: 'archive' } },
       { ...common, name: 'admin', scriptPath: resolve(directory, 'local-admin.js'), durableObjects: { BOT: namespace }, bindings: { PANEL: await readFile('static/index.html', 'utf8') } },

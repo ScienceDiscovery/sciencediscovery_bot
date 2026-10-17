@@ -2,7 +2,9 @@ import { DurableObject } from 'cloudflare:workers';
 import { BotApplication, jsonResponse } from '../core/http.js';
 import { Pipeline } from '../core/pipeline.js';
 import { Router } from '../core/bus.js';
-import { GitHubApp } from '../core/github-app.js';
+import { GitHubApp, repositoryIdentity } from '../core/github-app.js';
+import { targets } from '../core/config.js';
+import type { ActionsRule } from '../core/actions-rules.js';
 import { dispatchCollection } from '../core/actions.js';
 import { Mutex, object, type Doc } from '../core/types.js';
 import { WorkerArchive, type PruneResult } from './archive.js';
@@ -14,10 +16,11 @@ import { WorkerGitCodeSync } from './gitcode-sync.js';
 import { AnalyticsCache } from './usage.js';
 import { WorkerForwards, type AdminReply } from './forward.js';
 import { WorkerCallers, handleCaller } from './caller.js';
-import { WorkerActionsPermissions, type ActionsPermissions } from './actions-permissions.js';
+import { WorkerActionsRules, type BoardCollection } from './actions-rules.js';
 import type { CallerClient } from '../core/caller.js';
 import { GRANT_LIMIT, GRANT_PAGE, GRANT_RETENTION_DAYS, WorkerTokenGrants, type TokenGrant } from './token-grants.js';
 import { usageDocument } from '../core/usage.js';
+import { unavailable } from './failure.js';
 import panel from '../../static/index.html';
 
 export class BotObject extends DurableObject<WorkerEnv> {
@@ -29,7 +32,7 @@ export class BotObject extends DurableObject<WorkerEnv> {
   private analytics?: AnalyticsCache;
   private readonly forwards: WorkerForwards;
   private readonly callers: WorkerCallers;
-  private readonly actionsPermissions: WorkerActionsPermissions;
+  private readonly actionsRules: WorkerActionsRules;
   private readonly grants: WorkerTokenGrants;
   constructor(ctx: DurableObjectState, env: WorkerEnv) {
     super(ctx, env);
@@ -43,7 +46,12 @@ export class BotObject extends DurableObject<WorkerEnv> {
     const archive = this.archive = new WorkerArchive(ctx.storage, env.ARCHIVE, cfg.dedupe_window, () => { this.board.commitPending(); this.sync.commitPending(); }, cfg.archive_retention_days);
     this.forwards = new WorkerForwards(ctx.storage);
     this.callers = new WorkerCallers(ctx.storage);
-    this.actionsPermissions = new WorkerActionsPermissions(ctx.storage);
+    // The dashboard collection configured for this Worker becomes the first Actions rule.
+    const mappings = Object.entries(targets(cfg)), repositoryId = String(env.SDBOT_ACTIONS_REPOSITORY_ID || ''), ownerId = String(env.SDBOT_ACTIONS_OWNER_ID || '');
+    const board: BoardCollection | null = mappings.length === 1 && /^[1-9]\d*$/.test(repositoryId) && /^[1-9]\d*$/.test(ownerId)
+      ? { source: mappings[0][0], destination: mappings[0][1], repository_id: repositoryId, owner_id: ownerId } : null;
+    this.actionsRules = new WorkerActionsRules(ctx.storage, board, repository => repositoryIdentity(repository,
+      cfg.github_app_id && cfg.github_app_private_key ? new GitHubApp(cfg.github_app_id, cfg.github_app_private_key) : null));
     this.grants = new WorkerTokenGrants(ctx.storage);
     const save = archive.save.bind(archive);
     archive.save = async (reply, headers, body, request) => {
@@ -104,9 +112,9 @@ export class BotObject extends DurableObject<WorkerEnv> {
   forwardsAdmin(method: string, id: string | null, input: unknown): AdminReply { return this.forwards.admin(method, id, input); }
   forwardTest(id: string): Promise<AdminReply> { return this.forwards.test(id); }
   callersAdmin(method: string, id: string | null, input: unknown): Promise<AdminReply> { return this.callers.admin(method, id, input); }
-  actionsPermissionsAdmin(method: string, input: unknown): AdminReply { return this.actionsPermissions.admin(method, input); }
-  /** The permissions the dashboard's Actions exchange requests for each purpose. */
-  actionsTokenPermissions(): ActionsPermissions { const { source, target } = this.actionsPermissions.current(); return { source, target }; }
+  actionsRulesAdmin(method: string, id: string | null, input: unknown): Promise<AdminReply> { return this.actionsRules.admin(method, id, input); }
+  /** The GitHub Actions access rules /actions/token matches an OIDC identity against. */
+  actionsRuleList(): ActionsRule[] { return this.actionsRules.list(); }
   // Certificate-caller RPCs used by /caller/v1 after the outer Worker has parsed the token.
   callerClient(id: string): CallerClient | null { return this.callers.client(id); }
   callerClaim(id: string, jti: string, expires: number): 'ok' | 'replay' | 'rate' { return this.callers.claim(id, jti, expires); }
@@ -137,14 +145,13 @@ export class BotObject extends DurableObject<WorkerEnv> {
 }
 
 const notAllowed = (allow: string) => jsonResponse({ ok: false, error: 'method not allowed' }, 405, new Headers({ Allow: allow, 'Cache-Control': 'no-store', 'Content-Type': 'application/json' }));
-type AdminKind = 'forwards' | 'callers' | 'actions-permissions';
+type AdminKind = 'forwards' | 'callers' | 'actions-rules';
 /**
- * Collections take GET and POST, items PUT and DELETE, a forward's test action POST, and the Actions token
- * permissions GET and PUT. Writes must be same-origin JSON, which a cross-site form cannot send, on top of
- * the Access identity already verified.
+ * Collections take GET and POST, items PUT and DELETE, a forward's test action POST. Writes must be
+ * same-origin JSON, which a cross-site form cannot send, on top of the Access identity already verified.
  */
 async function adminConfig(request: Request, env: WorkerEnv, kind: AdminKind, id: string | null, action: string | null = null): Promise<Response> {
-  const allow = kind === 'actions-permissions' ? 'GET, PUT' : action ? 'POST' : id ? 'PUT, DELETE' : 'GET, POST';
+  const allow = action ? 'POST' : id ? 'PUT, DELETE' : 'GET, POST';
   if (!allow.split(', ').includes(request.method)) return notAllowed(allow);
   let input: unknown = null;
   if (request.method !== 'GET') {
@@ -160,7 +167,7 @@ async function adminConfig(request: Request, env: WorkerEnv, kind: AdminKind, id
   }
   const bot = env.BOT.getByName(OBJECT_NAME);
   const reply = (action === 'test' ? await bot.forwardTest(id!) : kind === 'forwards' ? await bot.forwardsAdmin(request.method, id, input)
-    : kind === 'actions-permissions' ? await bot.actionsPermissionsAdmin(request.method, input) : await bot.callersAdmin(request.method, id, input)) as unknown as AdminReply;
+    : kind === 'actions-rules' ? await bot.actionsRulesAdmin(request.method, id, input) : await bot.callersAdmin(request.method, id, input)) as unknown as AdminReply;
   return jsonResponse(object(reply.body) as Doc, reply.status);
 }
 
@@ -176,10 +183,9 @@ export default {
       if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
         const denied = await authorizeAdmin(request, env);
         if (denied) return denied;
-        // The only management writes: forward subscriptions, certificate callers and the Actions token permissions.
+        // The only management writes: forward subscriptions, certificate callers and GitHub Actions access rules.
         // `/admin/api/forwards/<id>/test` sends a test request to that subscription's target.
-        if (url.pathname === '/admin/api/actions-permissions') return await adminConfig(request, env, 'actions-permissions', null);
-        const writable = /^\/admin\/api\/(?:(forwards)\/([0-9a-f-]{36})\/(test)|(forwards|callers)(?:\/([0-9a-f-]{36}))?)$/.exec(url.pathname);
+        const writable = /^\/admin\/api\/(?:(forwards)\/([0-9a-f-]{36})\/(test)|(forwards|callers|actions-rules)(?:\/([0-9a-f-]{36}))?)$/.exec(url.pathname);
         if (writable) return await adminConfig(request, env, (writable[1] || writable[4]) as AdminKind, writable[2] || writable[5] || null, writable[3] || null);
         if (request.method !== 'GET') return jsonResponse({ ok: false, error: 'method not allowed' }, 405, new Headers({ Allow: 'GET', 'Cache-Control': 'no-store', 'Content-Type': 'application/json' }));
         if (['/admin', '/admin/'].includes(url.pathname)) return new Response(panel, { headers: {
@@ -201,7 +207,7 @@ export default {
       }
       return await env.BOT.getByName(OBJECT_NAME).fetch(request);
     }
-    catch { return jsonResponse({ ok: false, error: 'service unavailable' }, 503); }
+    catch (error) { return unavailable(error, request); }
   },
   async scheduled(controller: ScheduledController, env: WorkerEnv): Promise<void> {
     const bot = env.BOT.getByName(OBJECT_NAME);

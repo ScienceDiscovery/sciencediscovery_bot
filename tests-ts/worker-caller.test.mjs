@@ -25,6 +25,8 @@ async function runtime(t, bindings, options = {}) {
     calls.push({ method: request.method, url: request.url, body: text ? JSON.parse(text) : null });
     if (url.hostname !== 'api.github.com') return new Response(null, { status: 503 });
     if (url.pathname.endsWith('/installation')) return Response.json({ id: 42 });
+    // Rule repositories: readable only when GitHub knows them.
+    if (request.method === 'GET' && url.pathname.toLowerCase() === '/repos/openjiuwen-ai/tools') return Response.json({ id: 700, full_name: 'openJiuwen-ai/tools', owner: { id: 701 } });
     // Until the organization approves issues and pull_requests write, GitHub refuses the token.
     if (url.pathname === '/app/installations/42/access_tokens') return state.approved
       ? Response.json({ token: 'ghs_installation-token-' + calls.length, expires_at: EXPIRES }, { status: 201 })
@@ -212,29 +214,52 @@ test('clients saved before permissions were configurable keep issues and pull_re
   assert.deepEqual(calls.find(c => c.url.endsWith('/access_tokens')).body.permissions, { metadata: 'read', issues: 'write', pull_requests: 'write' });
 });
 
-test('the GitHub Actions entry shows and changes the collection token permissions behind Access', { timeout: 60000 }, async t => {
-  const { mf, admin } = await runtime(t, {});
-  const defaults = { source: { metadata: 'read', contents: 'read', issues: 'read', pull_requests: 'read', actions: 'read', checks: 'read', statuses: 'read' },
-    target: { metadata: 'read', contents: 'write' } };
-  const shown = await admin('/admin/api/actions-permissions');
+test('GitHub Actions access rules are managed behind Access, starting from the dashboard collection', { timeout: 60000 }, async t => {
+  const BOARD = 'ScienceDiscovery/github-status-board';
+  const boardBindings = { SDBOT_BOARD_TARGETS: JSON.stringify({ [REPO]: BOARD }), SDBOT_ACTIONS_REPOSITORY_ID: '200', SDBOT_ACTIONS_OWNER_ID: '100' };
+  const { mf, admin, calls } = await runtime(t, boardBindings);
+  // Permissions saved on the earlier single Actions entry carry over into the seeded rule.
+  await mf.dispatchFetch('http://localhost/_test/legacy-actions-permissions?' + new URLSearchParams({ doc: JSON.stringify({ source: { metadata: 'read', contents: 'read', actions: 'read' }, target: { metadata: 'read', contents: 'write' } }) }));
+  const shown = await admin('/admin/api/actions-rules');
   assert.equal(shown.status, 200);
-  assert.deepEqual([shown.body.source, shown.body.target, shown.body.defaults, shown.body.updated], [defaults.source, defaults.target, defaults, null]);
-  assert.equal(shown.body.permission_catalog.length, 12);
-  const saved = await admin('/admin/api/actions-permissions', { method: 'PUT', body: { source: { ...defaults.source, checks: 'none', merge_queues: 'read' }, target: { contents: 'write', pages: 'write' } } });
-  assert.equal(saved.status, 200);
-  const after = (await admin('/admin/api/actions-permissions')).body;
-  assert.deepEqual(after.source, { metadata: 'read', contents: 'read', issues: 'read', pull_requests: 'read', actions: 'read', statuses: 'read', merge_queues: 'read' });
-  assert.deepEqual(after.target, { metadata: 'read', contents: 'write', pages: 'write' });
-  assert.ok(Date.parse(after.updated) > 0);
-  for (const [body, error] of [[{ source: defaults.source }, /target: permissions must be an object/], [{ source: { secrets: 'read' }, target: defaults.target }, /source: unknown permission secrets/]]) {
-    const refused = await admin('/admin/api/actions-permissions', { method: 'PUT', body });
-    assert.deepEqual([refused.status, error.test(refused.body.error)], [422, true], JSON.stringify(body));
+  assert.deepEqual([shown.body.limit, shown.body.grant_limit, shown.body.permission_catalog.length], [20, 10, 12]);
+  assert.deepEqual(shown.body.events.map(e => e.key), ['schedule', 'workflow_dispatch', 'push', 'release', 'workflow_run', 'repository_dispatch']);
+  const [board] = shown.body.rules;
+  assert.deepEqual({ ...board, id: undefined, created: undefined, updated: undefined }, { id: undefined, created: undefined, updated: undefined, name: '看板采集',
+    repository: BOARD, repository_id: '200', owner_id: '100', workflow: '.github/workflows/collect.yml', branch: 'main', events: ['schedule', 'workflow_dispatch'],
+    grants: [{ purpose: 'source', repository: REPO, permissions: { metadata: 'read', contents: 'read', actions: 'read' } }, { purpose: 'target', repository: BOARD, permissions: { metadata: 'read', contents: 'write' } }] });
+
+  const rule = { name: 'Release', repository: 'openjiuwen-ai/tools', workflow: '.github/workflows/release.yml', branch: 'release', events: ['push', 'push', 'schedule'],
+    grants: [{ purpose: 'publish', repository: OTHER, permissions: { contents: 'write', workflows: 'none' } }, { purpose: 'notes', repository: REPO, permissions: { issues: 'write' } }] };
+  const created = await admin('/admin/api/actions-rules', { method: 'POST', body: rule });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  // The repository is pinned by the IDs GitHub reports, under the name GitHub uses.
+  assert.deepEqual([created.body.rule.repository, created.body.rule.repository_id, created.body.rule.owner_id, created.body.rule.events], ['openJiuwen-ai/tools', '700', '701', ['schedule', 'push']]);
+  assert.ok(calls.some(c => c.method === 'GET' && c.url.endsWith('/repos/openjiuwen-ai/tools')));
+  const id = created.body.rule.id;
+  // Keeping the repository keeps its IDs without asking GitHub again; another repository is looked up.
+  const lookups = () => calls.filter(c => c.method === 'GET' && /\/repos\/[^/]+\/[^/]+$/.test(c.url)).length, before = lookups();
+  assert.equal((await admin('/admin/api/actions-rules/' + id, { method: 'PUT', body: { ...rule, name: 'Release 2', repository: 'openJiuwen-ai/tools' } })).body.rule.repository_id, '700');
+  assert.equal(lookups(), before);
+  const missing = await admin('/admin/api/actions-rules/' + id, { method: 'PUT', body: { ...rule, repository: 'nobody/nothing' } });
+  assert.deepEqual([missing.status, /cannot read nobody\/nothing/.test(missing.body.error)], [422, true]);
+  for (const [change, error] of [
+    [{ name: '' }, /name/], [{ repository: 'no-slash' }, /owner\/name/], [{ workflow: 'collect.yml' }, /\.github\/workflows/], [{ workflow: '.github/workflows/../x.yml' }, /\.github\/workflows/],
+    [{ branch: 'refs/heads/main' }, /branch/], [{ events: ['pull_request_target'] }, /events must be/], [{ events: [] }, /events must be/],
+    [{ grants: [] }, /1-10 tokens/], [{ grants: [{ purpose: 'Bad', repository: REPO, permissions: { issues: 'read' } }] }, /purpose/],
+    [{ grants: [{ purpose: 'a', repository: REPO, permissions: { issues: 'read' } }, { purpose: 'a', repository: OTHER, permissions: { issues: 'read' } }] }, /used twice/],
+    [{ grants: [{ purpose: 'a', repository: REPO, permissions: { secrets: 'read' } }] }, /token a: unknown permission secrets/],
+  ]) {
+    const refused = await admin('/admin/api/actions-rules', { method: 'POST', body: { ...rule, ...change } });
+    assert.deepEqual([refused.status, error.test(refused.body.error)], [422, true], JSON.stringify(change) + ' ' + refused.body.error);
   }
-  for (const method of ['POST', 'DELETE', 'PATCH']) assert.equal((await admin('/admin/api/actions-permissions', { method, body: {} })).status, 405, method);
-  assert.equal((await admin('/admin/api/actions-permissions', { method: 'PUT', body: defaults, headers: { origin: 'https://evil.example' } })).status, 403);
-  assert.equal((await admin('/admin/api/actions-permissions', { method: 'PUT', body: 'x=1', headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status, 415);
-  assert.equal((await mf.dispatchFetch('http://localhost/admin/api/actions-permissions')).status, 401);
-  assert.equal((await mf.dispatchFetch('http://localhost/admin/api/actions-permissions', { method: 'PUT', body: JSON.stringify(defaults), headers: { 'content-type': 'application/json' } })).status, 401);
-  // Nothing was lost by the refused writes.
-  assert.deepEqual((await admin('/admin/api/actions-permissions')).body.target, { metadata: 'read', contents: 'write', pages: 'write' });
+  for (const method of ['PATCH', 'PUT']) assert.equal((await admin('/admin/api/actions-rules', { method, body: rule })).status, 405, method);
+  assert.equal((await admin('/admin/api/actions-rules', { method: 'POST', body: rule, headers: { origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await admin('/admin/api/actions-rules', { method: 'POST', body: 'x=1', headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status, 415);
+  assert.equal((await mf.dispatchFetch('http://localhost/admin/api/actions-rules')).status, 401);
+  assert.equal((await mf.dispatchFetch('http://localhost/admin/api/actions-rules', { method: 'POST', body: JSON.stringify(rule), headers: { 'content-type': 'application/json' } })).status, 401);
+  assert.equal((await admin('/admin/api/actions-permissions')).status, 404, 'the single entry it replaces is gone');
+  assert.equal((await admin('/admin/api/actions-rules/' + id, { method: 'DELETE' })).status, 200);
+  assert.equal((await admin('/admin/api/actions-rules/' + id, { method: 'DELETE' })).status, 404);
+  assert.deepEqual((await admin('/admin/api/actions-rules')).body.rules.map(r => r.name), ['看板采集']);
 });

@@ -9,7 +9,7 @@ export const GRANT_PAGE = 200;
 
 export interface TokenGrant {
   issued_at: string; expires_at: string; source: 'caller' | 'actions'; identity: string; repository: string;
-  /** Actions only: `source` or `target`. */
+  /** Actions only: the purpose of the matched rule's token, such as `source` or `target`. */
   purpose: string | null;
   /** The permissions the installation token was requested with, e.g. `issues:write`. */
   permissions: string;
@@ -36,7 +36,7 @@ export class WorkerTokenGrants {
     if (!Number.isFinite(issued)) throw new TypeError('invalid grant time');
     // Rebuild the document field by field so nothing else (such as a token) can be stored by mistake.
     const doc: TokenGrant = { issued_at: new Date(issued).toISOString(), expires_at: String(grant.expires_at).slice(0, 40), source: grant.source === 'actions' ? 'actions' : 'caller',
-      identity: String(grant.identity).slice(0, 120), repository: String(grant.repository).slice(0, 200), purpose: grant.purpose ? String(grant.purpose).slice(0, 20) : null,
+      identity: String(grant.identity).slice(0, 120), repository: String(grant.repository).slice(0, 200), purpose: grant.purpose ? String(grant.purpose).slice(0, 40) : null,
       permissions: String(grant.permissions).slice(0, 300) };
     const sql = this.sql;
     this.storage.transactionSync(() => {

@@ -16,6 +16,8 @@ const github = request => {
   const url = new URL(request.url);
   if (url.hostname !== 'api.github.com') return null;
   if (url.pathname.endsWith('/installation')) return Response.json({ id: 7 });
+  // Pinning an Actions rule's workflow repository reads its IDs.
+  if (request.method === 'GET' && url.pathname.toLowerCase() === '/repos/sciencediscovery/github-status-board') return Response.json({ id: 900, full_name: 'ScienceDiscovery/github-status-board', owner: { id: 901 } });
   if (url.pathname === '/app/installations/7/access_tokens') return Response.json({ token: 'ghs_browser-journey', expires_at: new Date(Date.now() + 3600000).toISOString() }, { status: 201 });
   return new Response(null, { status: 404 });
 };

@@ -1,6 +1,7 @@
 // Measures SQLite rows read/written around the real Durable Object; test bundle only.
 import worker, { BotObject as Original } from '../../src/worker/index.ts';
 import { OBJECT_NAME } from '../../src/worker/env.ts';
+import { unavailable } from '../../src/worker/failure.ts';
 
 export class BotObject extends Original {
   constructor(ctx, env) {
@@ -26,6 +27,11 @@ export class BotObject extends Original {
     }
     this.callers.cache = null;
   }
+  // The single Actions entry's table as the previous version left it, written before any rule is read.
+  legacyActionsPermissions(doc) {
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS token_permissions (id TEXT PRIMARY KEY, doc TEXT NOT NULL)');
+    this.ctx.storage.sql.exec("INSERT INTO token_permissions VALUES ('actions', ?)", doc);
+  }
   grantCount() {
     const sql = this.ctx.storage.sql;
     const count = sql.exec('SELECT COUNT(*) AS n FROM token_grants').one().n, oldest = sql.exec('SELECT doc FROM token_grants ORDER BY seq LIMIT 1').toArray()[0];
@@ -47,6 +53,10 @@ export default {
     if (url.pathname === '/_test/age-usage') return Response.json(await stub.ageUsageCache(Number(url.searchParams.get('ms'))) ?? null);
     if (url.pathname === '/_test/seed-grants') return Response.json(await stub.seedGrants(Number(url.searchParams.get('count')), Number(url.searchParams.get('issued')), url.searchParams.get('prefix')) ?? null);
     if (url.pathname === '/_test/grant-count') return Response.json(await stub.grantCount());
+    // An object still on the previous code has no new RPC method; the real runtime's error must be recognized.
+    if (url.pathname === '/_test/missing-rpc') { try { await stub.methodFromTheNextVersion(); return new Response('unexpected'); } catch (error) { return unavailable(error, request); } }
+    if (url.pathname === '/_test/broken') return unavailable(new Error('secret=hunter22 went wrong'), request);
+    if (url.pathname === '/_test/legacy-actions-permissions') return Response.json(await stub.legacyActionsPermissions(url.searchParams.get('doc')) ?? null);
     if (url.pathname === '/_test/legacy-callers') return Response.json(await stub.legacyCallers() ?? null);
     if (url.pathname === '/_test/claim') return Response.json(await stub.claimCredential(url.searchParams.get('key'), Number(url.searchParams.get('expires'))));
     return worker.fetch(request, env, ctx);

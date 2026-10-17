@@ -117,7 +117,7 @@ GitHub 只签发 App 安装已获批的权限：选了 App 没有的权限（例
 
 每次成功发出安装令牌，都在同一张表 `token_grants` 记一条，两种来源共用：
 - **证书兑换**：来源 `caller`，身份为客户端 ID，仓库为请求的 `repo`，权限记为实际申请的权限，例如默认的 `metadata:read, issues:write, pull_requests:write`；
-- **看板 Actions 兑换**（`POST /actions/token`）：来源 `actions`，身份为 `repositoryId:run_id:run_attempt`，并记录 `purpose`（`source` 或 `target`）、实际仓库和所申请的权限。Actions 申请的权限见[GitHub Actions OIDC 临时凭据](actions-oidc.md)。
+- **看板 Actions 兑换**（`POST /actions/token`）：来源 `actions`，身份为 `repositoryId:run_id:run_attempt`，身份为「规则名 · 仓库 run 编号#attempt」，并记录 `purpose`、实际仓库和所申请的权限。哪个工作流能换哪些令牌见 [Actions OIDC 临时凭据](actions-oidc.md#访问规则)。
 
 每条记录只包含发出时间、到期时间（GitHub 返回的令牌到期时间，不是 OIDC JWT 的 `exp`）、来源、身份、仓库，以及用途或权限说明。令牌字符串不入库，也不进入管理接口和日志。失败的兑换（401、403、409、422、429、503，以及 Actions 的 502）不记录。写记录失败时，已签发的令牌照常返回。
 
