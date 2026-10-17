@@ -75,25 +75,33 @@ export async function exchangeActionsToken(request: Request, env: WorkerEnv): Pr
   }
   const body = await captureBody(request, 256);
   if (body.error) return fail(body.error.message, body.error.status);
-  let purpose: string;
+  // The body is {"purpose": "<name>"}, or {} (or empty) to ask for the rule's catch-all token.
+  let purpose: string | null = null;
   try {
-    const value = object(JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(body.body)));
-    purpose = String(value.purpose);
-    if (Object.keys(value).length !== 1 || !PURPOSE.test(purpose)) return fail('bad request', 400);
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(body.body).trim();
+    const raw: unknown = text ? JSON.parse(text) : {};
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return fail('bad request', 400);
+    const value = object(raw), keys = Object.keys(value);
+    if (keys.length > 1 || (keys.length === 1 && keys[0] !== 'purpose')) return fail('bad request', 400);
+    if (keys.length) {
+      purpose = String(value.purpose);
+      if (!PURPOSE.test(purpose)) return fail('bad request', 400);
+    }
   } catch { return fail('bad request', 400); }
   const bot = env.BOT.getByName(OBJECT_NAME);
   const matched = matchActionsRule(await bot.actionsRuleList() as ActionsRule[], claims, purpose);
   if ('status' in matched) return fail(matched.error, matched.status);
   const { rule, grant: allowed } = matched;
-  // A run attempt can mint each purpose of a rule once. Only nonsecret IDs enter durable storage.
-  if (!await bot.claimCredential(`${rule.id}:${claims.repository_id}:${claims.run_id}:${claims.run_attempt}:${purpose}`, expires)) return fail('already exchanged', 409);
+  // A run attempt can mint each token of a rule once; the catch-all token counts once whatever purpose
+  // names it, so varying the name cannot mint more. Only nonsecret IDs enter durable storage.
+  if (!await bot.claimCredential(`${rule.id}:${claims.repository_id}:${claims.run_id}:${claims.run_attempt}:${allowed.purpose || '*'}`, expires)) return fail('already exchanged', 409);
   let grant;
   try { grant = await new GitHubApp(cfg.github_app_id, cfg.github_app_private_key).grantWith(allowed.repository, allowed.permissions); }
   catch { return fail('token unavailable', 502); }
   // The admin page lists issued tokens without the token itself; a failed record never withholds the grant.
   try {
     await bot.recordTokenGrant({ issued_at: new Date().toISOString(), expires_at: grant.expires_at, source: 'actions',
-      identity: `${rule.name} · ${claims.repository} run ${claims.run_id}#${claims.run_attempt}`, repository: allowed.repository, purpose, permissions: describePermissions(allowed.permissions) });
+      identity: `${rule.name} · ${claims.repository} run ${claims.run_id}#${claims.run_attempt}`, repository: allowed.repository, purpose: purpose || '*', permissions: describePermissions(allowed.permissions) });
   } catch { /* informational only */ }
   return jsonResponse({ ...grant, repository: allowed.repository, purpose, permissions: allowed.permissions });
 }

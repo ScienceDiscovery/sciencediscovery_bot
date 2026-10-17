@@ -72,6 +72,12 @@
   .grant-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; }
   .config-form .grant-head label { display: grid; gap: 4px; flex: 1 1 220px; min-width: 0; }
   .config-form .grant-head input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+  /* A repository field with its 校验 button and the lookup result underneath. */
+  .repo-check { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: flex-end; min-width: 0; }
+  .config-form .repo-check label { display: grid; gap: 4px; flex: 1 1 240px; min-width: 0; }
+  .config-form .repo-check input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+  .check-result { flex-basis: 100%; font-size: 12px; overflow-wrap: anywhere; }
+  .check-result:empty { display: none; }
   #usage-page h3 { margin: 20px 0 8px; font-size: 15px; }
   #usage-page p, #usage-page li { overflow-wrap: anywhere; }
   .usage-notes { color: var(--muted); font-size: 12px; margin: 8px 0 0; padding-left: 18px; }
@@ -231,11 +237,11 @@ curl -X POST https://api.github.com/repos/openJiuwen-ai/sciencediscovery/issues/
     <div id="caller-list" class="subscription-grid"></div>
     <div id="actions-block">
       <h3>GitHub Actions 访问规则</h3>
-      <p class="muted">GitHub Actions 的工作流可以不保存任何密钥，凭 GitHub 签发的 OIDC 身份向本 Worker 换 GitHub 安装令牌：工作流声明 <code>permissions: id-token: write</code>，用本 Worker 配置的 audience 取 OIDC 令牌，放进 <code>Authorization: Bearer</code>，向 <code><span class="caller-origin">https://&lt;管理页主机&gt;</span>/actions/token</code> 发送 <code>POST</code>，正文只有 <code>{"purpose":"用途名"}</code>。每条规则限定一个工作流：所在仓库（按 GitHub 的不可变 ID 识别，仓库改名后仍有效，同名的新仓库不算）、工作流文件、分支和允许的触发事件；规则里每个令牌有自己的用途名、目标仓库和权限，同一次运行（同一 attempt）每个用途只能换一次。不提供 pull_request 等会运行外部代码的事件，也不接受从别的仓库引用的可复用工作流。第一条「看板采集」来自原来的看板配置，删除或收窄它会让看板采集失败。</p>
+      <p class="muted">GitHub Actions 的工作流可以不保存任何密钥，凭 GitHub 签发的 OIDC 身份向本 Worker 换 GitHub 安装令牌：工作流声明 <code>permissions: id-token: write</code>，用本 Worker 配置的 audience 取 OIDC 令牌，放进 <code>Authorization: Bearer</code>，向 <code><span class="caller-origin">https://&lt;管理页主机&gt;</span>/actions/token</code> 发送 <code>POST</code>，正文只有 <code>{"purpose":"用途名"}</code>；用途名留空的令牌接受任意 purpose，请求也可以不带 purpose（正文为 <code>{}</code>）。每条规则限定一个工作流：所在仓库（按 GitHub 的不可变 ID 识别，仓库改名后仍有效，同名的新仓库不算）、工作流文件、分支和允许的触发事件；规则里每个令牌有自己的用途名、目标仓库和权限，用途名精确匹配的令牌优先；同一次运行（同一 attempt）每个令牌只能换一次，留空的那个也只能换一次。不提供 pull_request 等会运行外部代码的事件，也不接受从别的仓库引用的可复用工作流。第一条「看板采集」来自原来的看板配置，删除或收窄它会让看板采集失败。</p>
       <div class="filters"><button id="new-actions-rule">新增规则</button><span id="actions-count" class="muted" role="status"></span></div>
       <form id="actions-rule-form" class="config-form" hidden novalidate>
         <label>名称 <input type="text" name="name" maxlength="80" autocomplete="off"></label>
-        <label>工作流所在仓库（owner/name；保存时向 GitHub 查询并固定它的 ID） <input type="text" name="repository" placeholder="ScienceDiscovery/github-status-board" autocomplete="off"></label>
+        <div class="repo-check"><label>工作流所在仓库（owner/name；可先点「校验」查询，保存时向 GitHub 查询并固定它的 ID） <input type="text" name="repository" placeholder="ScienceDiscovery/github-status-board" autocomplete="off"></label><button type="button" data-check-repository="workflow">校验</button><span class="check-result" role="status"></span></div>
         <label>工作流文件 <input type="text" name="workflow" placeholder=".github/workflows/collect.yml" autocomplete="off"></label>
         <label>分支 <input type="text" name="branch" placeholder="main" autocomplete="off"></label>
         <fieldset id="actions-rule-events" class="event-choices"><legend>允许的触发事件</legend></fieldset>
@@ -693,7 +699,7 @@ function renderActionsRules(doc) {
   $("#actions-rules").innerHTML = actionsRules.map(r => `<article class="subscription" data-actions-rule="${esc(r.id)}">
     <header><h3>${esc(r.name)}</h3><span class="muted">${esc(r.events.join("、"))}</span></header>
     <p class="scope">工作流：<code>${esc(r.repository)}</code> 的 <code>${esc(r.workflow)}</code>，分支 <code>${esc(r.branch)}</code><br>仓库 ID ${esc(r.repository_id)} · 所有者 ID ${esc(r.owner_id)}</p>
-    ${r.grants.map(g => `<p class="scope">令牌 <code>${esc(g.purpose)}</code> → ${esc(g.repository)}：${esc(permissionSummary(g.permissions))}</p>`).join("")}
+    ${r.grants.map(g => `<p class="scope">令牌${g.purpose ? ` <code>${esc(g.purpose)}</code>` : "（任意 purpose）"} → ${esc(g.repository)}：${esc(permissionSummary(g.permissions))}</p>`).join("")}
     <div class="card-actions"><button type="button" data-edit-actions-rule="${esc(r.id)}">编辑</button><button type="button" data-delete-actions-rule="${esc(r.id)}">删除</button></div>
   </article>`).join("") || '<p class="muted">还没有 GitHub Actions 访问规则，所有 /actions/token 请求都会被拒绝。</p>';
 }
@@ -701,8 +707,9 @@ function renderActionsRules(doc) {
 function grantBlock(grant = { purpose: "", repository: "", permissions: { contents: "read" } }) {
   const block = document.createElement("fieldset");
   block.className = "permission-set actions-grant";
-  block.innerHTML = `<legend>令牌</legend><div class="grant-head"><label>用途名（请求里的 purpose） <input type="text" class="grant-purpose" maxlength="32" placeholder="source" autocomplete="off"></label>`
-    + `<label>目标仓库（令牌只对这个仓库有效） <input type="text" class="grant-repository" placeholder="owner/name" autocomplete="off"></label><button type="button" class="remove-grant">删除这个令牌</button></div><div class="grant-permissions"></div>`;
+  block.innerHTML = `<legend>令牌</legend><div class="grant-head"><label>用途名（请求里的 purpose；留空表示接受任意 purpose，也可以不传） <input type="text" class="grant-purpose" maxlength="32" placeholder="留空 = 任意" autocomplete="off"></label>`
+    + `<div class="repo-check"><label>目标仓库（令牌只对这个仓库有效） <input type="text" class="grant-repository" placeholder="owner/name" autocomplete="off"></label><button type="button" data-check-repository="target">校验</button><span class="check-result" role="status"></span></div>`
+    + `<button type="button" class="remove-grant">删除这个令牌</button></div><div class="grant-permissions"></div>`;
   block.querySelector(".grant-purpose").value = grant.purpose;
   block.querySelector(".grant-repository").value = grant.repository;
   permissionRows(block.querySelector(".grant-permissions"), "grant" + (++grantSeq), grant.permissions);
@@ -714,6 +721,7 @@ function openActionsRule(rule) {
   editingRule = rule ? rule.id : null;
   form.hidden = false;
   field(form, "name").value = rule?.name || ""; field(form, "repository").value = rule?.repository || "";
+  form.querySelectorAll(".check-result").forEach(output => { output.textContent = ""; });
   field(form, "workflow").value = rule?.workflow || ".github/workflows/"; field(form, "branch").value = rule?.branch || "main";
   const events = rule?.events || ["workflow_dispatch"];
   $("#actions-rule-events").innerHTML = "<legend>允许的触发事件</legend>" + actionsDoc.events.map(e =>
@@ -727,6 +735,25 @@ $("#new-actions-rule").addEventListener("click", () => openActionsRule(null));
 $("#cancel-actions-rule").addEventListener("click", () => { $("#actions-rule-form").hidden = true; editingRule = null; });
 $("#add-actions-grant").addEventListener("click", () => grantBlock().querySelector(".grant-purpose").focus());
 $("#actions-rule-grants").addEventListener("click", ev => { const remove = ev.target.closest(".remove-grant"); if (remove) remove.closest(".actions-grant").remove(); });
+// 校验: read the repository's IDs now, the way saving will, and show GitHub's spelling of its name.
+// A token's repository also needs the GitHub App installed there, or exchanging it fails.
+async function checkRepository(button) {
+  const box = button.closest(".repo-check"), input = box.querySelector("input"), output = box.querySelector(".check-result"), target = button.dataset.checkRepository === "target";
+  output.className = "check-result muted"; output.textContent = "正在向 GitHub 查询…";
+  try {
+    const doc = await api("/api/repository-identity?repository=" + encodeURIComponent(input.value.trim()));
+    input.value = doc.repository;
+    output.className = "check-result " + (doc.app_installed || !target ? "ok" : "bad");
+    output.textContent = `✓ ${doc.repository} · 仓库 ID ${doc.repository_id} · 所有者 ID ${doc.owner_id} · `
+      + (doc.app_installed ? "GitHub App 已安装" : target ? "GitHub App 没有安装在这个仓库，兑换这个令牌会失败" : "GitHub App 未安装（按公开信息读取）");
+  } catch (err) {
+    output.className = "check-result bad";
+    output.textContent = "校验失败：" + (err.status === 404 ? "GitHub 上读不到这个仓库，检查拼写；私有仓库要先安装 GitHub App" : err.status === 422 ? "格式应为 owner/name" : err.message);
+  }
+}
+$("#actions-rule-form").addEventListener("click", ev => { const button = ev.target.closest("[data-check-repository]"); if (button) checkRepository(button); });
+// Editing the name makes an earlier result stale.
+$("#actions-rule-form").addEventListener("input", ev => { const box = ev.target.closest(".repo-check"); if (box) box.querySelector(".check-result").textContent = ""; });
 $("#actions-rule-form").addEventListener("submit", async ev => {
   ev.preventDefault();
   const form = ev.target, body = { name: field(form, "name").value, repository: field(form, "repository").value.trim(), workflow: field(form, "workflow").value.trim(),

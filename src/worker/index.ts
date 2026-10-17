@@ -145,6 +145,19 @@ export class BotObject extends DurableObject<WorkerEnv> {
 }
 
 const notAllowed = (allow: string) => jsonResponse({ ok: false, error: 'method not allowed' }, 405, new Headers({ Allow: allow, 'Cache-Control': 'no-store', 'Content-Type': 'application/json' }));
+/**
+ * Reads a repository's immutable IDs the way saving an Actions rule does, without saving anything.
+ * Runs in the outer Worker: no Durable Object call, so it also works while a new version rolls out.
+ */
+async function repositoryLookup(url: URL, env: WorkerEnv): Promise<Response> {
+  const repository = (url.searchParams.get('repository') || '').trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return jsonResponse({ ok: false, error: 'repository must be owner/name' }, 422);
+  const cfg = workerConfig(env);
+  const found = await repositoryIdentity(repository, cfg.github_app_id && cfg.github_app_private_key ? new GitHubApp(cfg.github_app_id, cfg.github_app_private_key) : null);
+  if (!found) return jsonResponse({ ok: false, error: `cannot read ${repository} on GitHub; check the name, or install the GitHub App there if it is private` }, 404);
+  return jsonResponse({ ok: true, repository: found.full_name, repository_id: found.id, owner_id: found.owner_id, app_installed: found.via === 'app' });
+}
+
 type AdminKind = 'forwards' | 'callers' | 'actions-rules';
 /**
  * Collections take GET and POST, items PUT and DELETE, a forward's test action POST. Writes must be
@@ -194,6 +207,8 @@ export default {
           'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
         } });
         const path = url.pathname.slice('/admin'.length);
+        // The rule form's check button: a repository's IDs and whether the App is installed there.
+        if (path === '/api/repository-identity') return await repositoryLookup(url, env);
         // Usage has its own RPC: it is requested by the usage section only, never by the 10-second refresh.
         if (path === '/api/usage') return jsonResponse({ ...object(await env.BOT.getByName(OBJECT_NAME).usage()), environment: env.SDBOT_ENVIRONMENT || 'unconfigured' });
         if (path === '/api/token-grants') return jsonResponse(object(await env.BOT.getByName(OBJECT_NAME).tokenGrants()));
