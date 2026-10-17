@@ -320,31 +320,56 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   expect(await overflow()).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('callers-mobile.png'), fullPage: true });
 
-  // The dashboard's Actions exchange has its own entry with the permissions collection has always used.
-  const actionsCard = page.locator('[data-actions-permissions]');
-  await expect(actionsCard).toContainText('默认权限');
-  await expect(actionsCard).toContainText('源仓令牌：metadata 只读 · contents 只读 · issues 只读 · pull_requests 只读 · actions 只读 · checks 只读 · statuses 只读');
-  await expect(actionsCard).toContainText('看板仓令牌：metadata 只读 · contents 读写');
-  await actionsCard.getByRole('button', { name: '编辑' }).click();
-  const actionsForm = page.locator('#actions-permissions-form');
-  const sourceRows = actionsForm.locator('#actions-source-permissions'), targetRows = actionsForm.locator('#actions-target-permissions');
-  await expect(sourceRows.locator('.perm-row')).toHaveCount(12);
-  await perm(sourceRows, 'checks').getByLabel('禁止', { exact: true }).check();
-  await perm(targetRows, 'pages').getByLabel('读写', { exact: true }).check();
+  // GitHub Actions access rules: none yet, then one workflow with two tokens of its own.
+  const rules = page.locator('#actions-rules');
+  await expect(rules).toContainText('还没有 GitHub Actions 访问规则');
+  await page.getByRole('button', { name: '新增规则' }).click();
+  const ruleForm = page.locator('#actions-rule-form'), grants = ruleForm.locator('.actions-grant');
+  await ruleForm.getByLabel('名称').fill('看板采集');
+  await ruleForm.getByLabel(/工作流所在仓库/).fill('sciencediscovery/github-status-board');
+  await ruleForm.getByLabel('工作流文件', { exact: true }).fill('.github/workflows/collect.yml');
+  await expect(ruleForm.getByLabel('分支')).toHaveValue('main');
+  await expect(ruleForm.getByLabel(/workflow_dispatch/)).toBeChecked();
+  await ruleForm.getByLabel(/定时（schedule）/).check();
+  await expect(ruleForm.locator('#actions-rule-events')).not.toContainText('pull_request');
+  await grants.first().getByLabel(/用途名/).fill('source');
+  await grants.first().getByLabel(/目标仓库/).fill('ScienceDiscovery/sciencediscovery');
+  await perm(grants.first(), 'issues').getByLabel('只读', { exact: true }).check();
+  await ruleForm.getByRole('button', { name: '添加令牌' }).click();
+  await expect(grants).toHaveCount(2);
+  await grants.last().getByLabel(/用途名/).fill('target');
+  await grants.last().getByLabel(/目标仓库/).fill('ScienceDiscovery/github-status-board');
+  await perm(grants.last(), 'contents').getByLabel('读写', { exact: true }).check();
   expect(await overflow()).toBe(true);
-  await actionsForm.getByRole('button', { name: '保存权限' }).click();
-  await expect(actionsForm).toBeHidden();
-  await expect(actionsCard).toContainText('已调整');
-  await expect(actionsCard).not.toContainText('checks 只读');
-  await expect(actionsCard).toContainText('看板仓令牌：metadata 只读 · contents 读写 · pages 读写');
-  // "恢复默认权限" puts back what collection needs.
-  await actionsCard.getByRole('button', { name: '编辑' }).click();
-  await actionsForm.getByRole('button', { name: '恢复默认权限' }).click();
-  await expect(perm(sourceRows, 'checks').getByLabel('只读', { exact: true })).toBeChecked();
-  await expect(perm(targetRows, 'pages').getByLabel('禁止', { exact: true })).toBeChecked();
-  await actionsForm.getByRole('button', { name: '保存权限' }).click();
-  await expect(actionsCard).toContainText('源仓令牌：metadata 只读 · contents 只读 · issues 只读 · pull_requests 只读 · actions 只读 · checks 只读 · statuses 只读');
-  await expect(actionsCard).toContainText('看板仓令牌：metadata 只读 · contents 读写');
+  await ruleForm.screenshot({ path: testInfo.outputPath('actions-rule-mobile.png') });
+  await ruleForm.getByRole('button', { name: '保存规则' }).click();
+  await expect(ruleForm).toBeHidden();
+  // The workflow repository is pinned by the IDs GitHub reports, under GitHub's spelling.
+  const ruleCard = rules.locator('article', { hasText: '看板采集' });
+  await expect(ruleCard).toContainText('工作流：ScienceDiscovery/github-status-board 的 .github/workflows/collect.yml，分支 main');
+  await expect(ruleCard).toContainText('仓库 ID 900 · 所有者 ID 901');
+  await expect(ruleCard).toContainText('schedule、workflow_dispatch');
+  await expect(ruleCard).toContainText('令牌 source → ScienceDiscovery/sciencediscovery：metadata 只读 · contents 只读 · issues 只读');
+  await expect(ruleCard).toContainText('令牌 target → ScienceDiscovery/github-status-board：metadata 只读 · contents 读写');
+  await expect(page.locator('#actions-count')).toHaveText('1 / 20 条规则');
+  // A refused save says why; removing a token then applies.
+  await ruleCard.getByRole('button', { name: '编辑' }).click();
+  await ruleForm.getByLabel('工作流文件', { exact: true }).fill('collect.yml');
+  await ruleForm.getByRole('button', { name: '保存规则' }).click();
+  await expect(ruleForm.locator('.form-error')).toContainText('.github/workflows');
+  await ruleForm.getByLabel('工作流文件', { exact: true }).fill('.github/workflows/collect.yml');
+  await grants.first().getByRole('button', { name: '删除这个令牌' }).click();
+  await expect(grants).toHaveCount(1);
+  await ruleForm.getByRole('button', { name: '保存规则' }).click();
+  await expect(ruleForm).toBeHidden();
+  await expect(ruleCard).not.toContainText('令牌 source');
+  await expect(ruleCard).toContainText('令牌 target');
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await ruleCard.getByRole('button', { name: '编辑' }).click();
+  await ruleForm.screenshot({ path: testInfo.outputPath('actions-rule-desktop.png') });
+  await ruleForm.getByRole('button', { name: '取消' }).click();
+  await ruleCard.getByRole('button', { name: '删除' }).click();
+  await expect(rules).toContainText('还没有 GitHub Actions 访问规则');
   await page.setViewportSize({ width: 1280, height: 900 });
   await client.getByRole('button', { name: '编辑' }).click();
   await callerForm.screenshot({ path: testInfo.outputPath('caller-permissions-desktop.png') });
@@ -362,4 +387,24 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await page.getByRole('link', { name: '转发', exact: true }).click();
   await card.getByRole('button', { name: '删除' }).click();
   await expect(page.locator('#forward-list')).toContainText('还没有转发订阅');
+});
+
+test('a failed read says whether to wait for a new version or to log in again', async ({ page, context }) => {
+  await context.addCookies([{ name: 'test_access', value: 'allowed', url: 'http://127.0.0.1:18893', httpOnly: true }]);
+  const banner = page.locator('#banner');
+  // Right after a deployment: the Worker says retrying soon helps.
+  await page.route('**/admin/api/status', route => route.fulfill({ status: 503, json: { ok: false, error: 'the bot is switching to a new version; retry in a minute', retryable: true } }));
+  await page.goto('/admin/#events');
+  await expect(banner).toHaveText('读取失败：Bot 正在切换到新版本，约一分钟后刷新页面即可');
+  // Any other 503 is temporary too, and not a login problem.
+  await page.unroute('**/admin/api/status');
+  await page.route('**/admin/api/status', route => route.fulfill({ status: 503, json: { ok: false, error: 'service unavailable' } }));
+  await page.reload();
+  await expect(banner).toHaveText('读取失败：服务暂时不可用（service unavailable），可能正在发布新版本，请稍后刷新');
+  await expect(banner).not.toContainText('登录');
+  // Only an Access refusal points to logging in again.
+  await page.unroute('**/admin/api/status');
+  await page.route('**/admin/api/status', route => route.fulfill({ status: 401, json: { ok: false, error: 'unauthorized' } }));
+  await page.reload();
+  await expect(banner).toHaveText('读取失败：unauthorized（登录可能已过期，请刷新页面重新登录）');
 });

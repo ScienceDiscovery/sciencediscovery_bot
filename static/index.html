@@ -68,6 +68,10 @@
   .perm-choice label:has(input:checked) { background: var(--bg); font-weight: 600; }
   .perm-choice label:has(input:disabled) { color: var(--muted); cursor: not-allowed; opacity: .55; }
   @media (max-width: 700px) { .perm-row { grid-template-columns: 1fr; } }
+  .config-form fieldset.actions-grant { gap: 8px; }
+  .grant-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; }
+  .config-form .grant-head label { display: grid; gap: 4px; flex: 1 1 220px; min-width: 0; }
+  .config-form .grant-head input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
   #usage-page h3 { margin: 20px 0 8px; font-size: 15px; }
   #usage-page p, #usage-page li { overflow-wrap: anywhere; }
   .usage-notes { color: var(--muted); font-size: 12px; margin: 8px 0 0; padding-left: 18px; }
@@ -226,15 +230,21 @@ curl -X POST https://api.github.com/repos/openJiuwen-ai/sciencediscovery/issues/
     </form>
     <div id="caller-list" class="subscription-grid"></div>
     <div id="actions-block">
-      <h3>GitHub Actions 看板采集令牌</h3>
-      <p class="muted">看板仓的 <code>collect.yml</code> 用 OIDC 向本 Worker 兑换两份令牌：读取源仓的「源仓令牌」，以及把进度和站点提交到看板仓的「看板仓令牌」。默认就是看板采集一直使用的权限；收窄后采集可能失败，放宽则看板仓的工作流会拿到更大的权限。</p>
-      <div id="actions-permissions" class="subscription-grid"></div>
-      <form id="actions-permissions-form" class="config-form" hidden novalidate>
-        <fieldset class="permission-set"><legend>源仓令牌（读取源仓）</legend><div id="actions-source-permissions"></div></fieldset>
-        <fieldset class="permission-set"><legend>看板仓令牌（写入看板仓）</legend><div id="actions-target-permissions"></div></fieldset>
-        <div class="form-actions"><button type="submit">保存权限</button><button type="button" id="reset-actions-permissions">恢复默认权限</button><button type="button" id="cancel-actions-permissions">取消</button></div>
+      <h3>GitHub Actions 访问规则</h3>
+      <p class="muted">GitHub Actions 的工作流可以不保存任何密钥，凭 GitHub 签发的 OIDC 身份向本 Worker 换 GitHub 安装令牌：工作流声明 <code>permissions: id-token: write</code>，用本 Worker 配置的 audience 取 OIDC 令牌，放进 <code>Authorization: Bearer</code>，向 <code><span class="caller-origin">https://&lt;管理页主机&gt;</span>/actions/token</code> 发送 <code>POST</code>，正文只有 <code>{"purpose":"用途名"}</code>。每条规则限定一个工作流：所在仓库（按 GitHub 的不可变 ID 识别，仓库改名后仍有效，同名的新仓库不算）、工作流文件、分支和允许的触发事件；规则里每个令牌有自己的用途名、目标仓库和权限，同一次运行（同一 attempt）每个用途只能换一次。不提供 pull_request 等会运行外部代码的事件，也不接受从别的仓库引用的可复用工作流。第一条「看板采集」来自原来的看板配置，删除或收窄它会让看板采集失败。</p>
+      <div class="filters"><button id="new-actions-rule">新增规则</button><span id="actions-count" class="muted" role="status"></span></div>
+      <form id="actions-rule-form" class="config-form" hidden novalidate>
+        <label>名称 <input type="text" name="name" maxlength="80" autocomplete="off"></label>
+        <label>工作流所在仓库（owner/name；保存时向 GitHub 查询并固定它的 ID） <input type="text" name="repository" placeholder="ScienceDiscovery/github-status-board" autocomplete="off"></label>
+        <label>工作流文件 <input type="text" name="workflow" placeholder=".github/workflows/collect.yml" autocomplete="off"></label>
+        <label>分支 <input type="text" name="branch" placeholder="main" autocomplete="off"></label>
+        <fieldset id="actions-rule-events" class="event-choices"><legend>允许的触发事件</legend></fieldset>
+        <div id="actions-rule-grants"></div>
+        <div class="form-actions"><button type="button" id="add-actions-grant">添加令牌</button></div>
+        <div class="form-actions"><button type="submit">保存规则</button><button type="button" id="cancel-actions-rule">取消</button></div>
         <p class="form-error" role="alert"></p>
       </form>
+      <div id="actions-rules" class="subscription-grid"></div>
     </div>
     <h3>已发出的安装令牌</h3>
     <p id="grant-note" class="muted"></p>
@@ -346,7 +356,7 @@ async function api(path, opts = {}) {
   try {
     const r = await fetch(apiBase + path, { ...opts, headers: { ...headers, ...(opts.headers || {}) }, signal: ctrl.signal, cache: "no-store" });
     const doc = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(doc.error || ("HTTP " + r.status));
+    if (!r.ok) throw Object.assign(new Error(doc.error || ("HTTP " + r.status)), { status: r.status, retryable: !!doc.retryable });
     return doc;
   } finally { clearTimeout(timer); }
 }
@@ -659,7 +669,7 @@ $("#forward-list").addEventListener("click", async ev => {
 
 // ---- Token permissions: each GitHub App permission with what it allows, and 读写 / 只读 / 禁止.
 const LEVEL_NAME = { write: "读写", read: "只读", none: "禁止" };
-let permissionCatalog = [], callerDefaults = {}, actionsDoc = null;
+let permissionCatalog = [], callerDefaults = {};
 const permissionSummary = set => permissionCatalog.filter(p => set?.[p.key]).map(p => `${p.key} ${LEVEL_NAME[set[p.key]]}`).join(" · ") || "无";
 // Levels GitHub does not offer for a permission (workflows has no read; metadata is always read) are disabled.
 function permissionRows(box, prefix, set) {
@@ -674,33 +684,68 @@ function permissionRows(box, prefix, set) {
   }).join("");
 }
 const readPermissions = box => Object.fromEntries([...box.querySelectorAll(".perm-row")].map(row => [row.dataset.perm, row.querySelector("input:checked")?.value || "none"]));
-function renderActionsPermissions(doc) {
-  actionsDoc = doc;
-  $("#actions-permissions").innerHTML = `<article class="subscription" data-actions-permissions>
-    <header><h3>GitHub Actions 看板采集</h3><span class="${doc.updated ? "warn" : "ok"}">${doc.updated ? "已调整 · " + esc(eventTime(doc.updated)) : "默认权限"}</span></header>
-    <p class="scope">源仓令牌：${esc(permissionSummary(doc.source))}</p>
-    <p class="scope">看板仓令牌：${esc(permissionSummary(doc.target))}</p>
-    <div class="card-actions"><button type="button" id="edit-actions-permissions">编辑</button></div>
-  </article>`;
+// ---- GitHub Actions access rules: which workflow may exchange its OIDC identity for which tokens.
+let actionsDoc = null, actionsRules = [], editingRule = null, grantSeq = 0;
+function renderActionsRules(doc) {
+  actionsDoc = doc; actionsRules = doc.rules;
+  $("#actions-count").textContent = `${actionsRules.length} / ${doc.limit} 条规则`;
+  $("#new-actions-rule").disabled = actionsRules.length >= doc.limit;
+  $("#actions-rules").innerHTML = actionsRules.map(r => `<article class="subscription" data-actions-rule="${esc(r.id)}">
+    <header><h3>${esc(r.name)}</h3><span class="muted">${esc(r.events.join("、"))}</span></header>
+    <p class="scope">工作流：<code>${esc(r.repository)}</code> 的 <code>${esc(r.workflow)}</code>，分支 <code>${esc(r.branch)}</code><br>仓库 ID ${esc(r.repository_id)} · 所有者 ID ${esc(r.owner_id)}</p>
+    ${r.grants.map(g => `<p class="scope">令牌 <code>${esc(g.purpose)}</code> → ${esc(g.repository)}：${esc(permissionSummary(g.permissions))}</p>`).join("")}
+    <div class="card-actions"><button type="button" data-edit-actions-rule="${esc(r.id)}">编辑</button><button type="button" data-delete-actions-rule="${esc(r.id)}">删除</button></div>
+  </article>`).join("") || '<p class="muted">还没有 GitHub Actions 访问规则，所有 /actions/token 请求都会被拒绝。</p>';
 }
-function openActionsPermissions(sets) {
-  const form = $("#actions-permissions-form");
+// One token of a rule: purpose name, target repository and its permission rows.
+function grantBlock(grant = { purpose: "", repository: "", permissions: { contents: "read" } }) {
+  const block = document.createElement("fieldset");
+  block.className = "permission-set actions-grant";
+  block.innerHTML = `<legend>令牌</legend><div class="grant-head"><label>用途名（请求里的 purpose） <input type="text" class="grant-purpose" maxlength="32" placeholder="source" autocomplete="off"></label>`
+    + `<label>目标仓库（令牌只对这个仓库有效） <input type="text" class="grant-repository" placeholder="owner/name" autocomplete="off"></label><button type="button" class="remove-grant">删除这个令牌</button></div><div class="grant-permissions"></div>`;
+  block.querySelector(".grant-purpose").value = grant.purpose;
+  block.querySelector(".grant-repository").value = grant.repository;
+  permissionRows(block.querySelector(".grant-permissions"), "grant" + (++grantSeq), grant.permissions);
+  $("#actions-rule-grants").append(block);
+  return block;
+}
+function openActionsRule(rule) {
+  const form = $("#actions-rule-form");
+  editingRule = rule ? rule.id : null;
   form.hidden = false;
-  permissionRows($("#actions-source-permissions"), "actions-source", sets.source);
-  permissionRows($("#actions-target-permissions"), "actions-target", sets.target);
+  field(form, "name").value = rule?.name || ""; field(form, "repository").value = rule?.repository || "";
+  field(form, "workflow").value = rule?.workflow || ".github/workflows/"; field(form, "branch").value = rule?.branch || "main";
+  const events = rule?.events || ["workflow_dispatch"];
+  $("#actions-rule-events").innerHTML = "<legend>允许的触发事件</legend>" + actionsDoc.events.map(e =>
+    `<label title="${esc(e.description)}"><input type="checkbox" name="events" value="${esc(e.key)}"${events.includes(e.key) ? " checked" : ""}> ${esc(e.label)}</label>`).join("");
+  $("#actions-rule-grants").replaceChildren();
+  for (const grant of rule?.grants || [undefined]) grantBlock(grant);
   form.querySelector(".form-error").textContent = "";
-  form.querySelector("input:checked:not(:disabled)")?.focus();
+  field(form, "name").focus();
 }
-$("#actions-permissions").addEventListener("click", ev => { if (ev.target.closest("#edit-actions-permissions")) openActionsPermissions(actionsDoc); });
-$("#reset-actions-permissions").addEventListener("click", () => openActionsPermissions(actionsDoc.defaults));
-$("#cancel-actions-permissions").addEventListener("click", () => { $("#actions-permissions-form").hidden = true; });
-$("#actions-permissions-form").addEventListener("submit", async ev => {
+$("#new-actions-rule").addEventListener("click", () => openActionsRule(null));
+$("#cancel-actions-rule").addEventListener("click", () => { $("#actions-rule-form").hidden = true; editingRule = null; });
+$("#add-actions-grant").addEventListener("click", () => grantBlock().querySelector(".grant-purpose").focus());
+$("#actions-rule-grants").addEventListener("click", ev => { const remove = ev.target.closest(".remove-grant"); if (remove) remove.closest(".actions-grant").remove(); });
+$("#actions-rule-form").addEventListener("submit", async ev => {
   ev.preventDefault();
+  const form = ev.target, body = { name: field(form, "name").value, repository: field(form, "repository").value.trim(), workflow: field(form, "workflow").value.trim(),
+    branch: field(form, "branch").value.trim(), events: checked(form, "events"),
+    grants: [...form.querySelectorAll(".actions-grant")].map(block => ({ purpose: block.querySelector(".grant-purpose").value.trim(),
+      repository: block.querySelector(".grant-repository").value.trim(), permissions: readPermissions(block.querySelector(".grant-permissions")) })) };
   try {
-    await send("/api/actions-permissions", "PUT", { source: readPermissions($("#actions-source-permissions")), target: readPermissions($("#actions-target-permissions")) });
-    ev.target.hidden = true;
+    await send(editingRule ? "/api/actions-rules/" + editingRule : "/api/actions-rules", editingRule ? "PUT" : "POST", body);
+    form.hidden = true; editingRule = null;
     await loadCallers();
-  } catch (err) { ev.target.querySelector(".form-error").textContent = "保存失败：" + err.message; }
+  } catch (err) { form.querySelector(".form-error").textContent = "保存失败：" + err.message; }
+});
+$("#actions-rules").addEventListener("click", async ev => {
+  const edit = ev.target.closest("[data-edit-actions-rule]"), remove = ev.target.closest("[data-delete-actions-rule]");
+  if (edit) openActionsRule(actionsRules.find(r => r.id === edit.dataset.editActionsRule));
+  if (remove && confirm("删除这条 GitHub Actions 访问规则？之后这个工作流换不到令牌了。")) {
+    try { await send("/api/actions-rules/" + remove.dataset.deleteActionsRule, "DELETE"); await loadCallers(); }
+    catch (err) { $("#actions-count").textContent = "删除失败：" + err.message; }
+  }
 });
 
 function renderCallers(doc) {
@@ -737,9 +782,9 @@ function renderGrants(doc) {
 }
 async function loadCallers() {
   if (!cloudAdmin) { $("#caller-help").textContent = ""; $("#grant-note").textContent = ""; $("#actions-block").hidden = true; return cloudOnly($("#caller-list")); }
-  const [clients, grants, actions] = await Promise.all([api("/api/callers"), api("/api/token-grants"), api("/api/actions-permissions")]);
+  const [clients, grants, actions] = await Promise.all([api("/api/callers"), api("/api/token-grants"), api("/api/actions-rules")]);
   renderCallers(clients);
-  renderActionsPermissions(actions);
+  renderActionsRules(actions);
   renderGrants(grants);
 }
 function openCaller(client) {
@@ -773,6 +818,14 @@ $("#caller-list").addEventListener("click", async ev => {
   }
 });
 
+// What a failed read most likely means. Only an Access refusal (401/403) or a request the browser could not
+// complete (an expired Access session redirects to the login page) suggests logging in again.
+function failureText(err) {
+  if (err.status === 503) return "读取失败：" + (err.retryable ? "Bot 正在切换到新版本，约一分钟后刷新页面即可" : "服务暂时不可用（" + err.message + "），可能正在发布新版本，请稍后刷新");
+  const login = err.status === 401 || err.status === 403 || (!err.status && err.name !== "AbortError");
+  return "读取失败：" + err.message + (cloudAdmin ? (login ? "（登录可能已过期，请刷新页面重新登录）" : "") : token ? "" : "（若设置了 SDBOT_ADMIN_TOKEN，在地址后加 #token=…）");
+}
+
 async function refresh() {
   const requestId = ++refreshRequest;
   try {
@@ -784,7 +837,7 @@ async function refresh() {
     $("#clock").textContent = "更新于 " + new Date().toLocaleTimeString();
   } catch (err) {
     if (requestId !== refreshRequest) return;
-    $("#banner").textContent = "读取失败：" + err.message + (cloudAdmin ? "（登录可能已过期，请刷新页面重新登录）" : token ? "" : "（若设置了 SDBOT_ADMIN_TOKEN，在地址后加 #token=…）");
+    $("#banner").textContent = failureText(err);
     $("#banner").style.display = "block";
   }
 }

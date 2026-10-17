@@ -2,7 +2,7 @@
 
 ## 功能与边界
 
-App 私钥由对应环境的 Worker 管理。看板 Actions 不读取 App 私钥，启动采集后使用 GitHub 签发的 OIDC 身份向 Worker 换取两个安装令牌：源仓只读令牌、看板仓 Contents 写令牌。Bot 触发工作流所用的 Actions 写令牌只用于 dispatch，不作为工作流输入传递。
+App 私钥由对应环境的 Worker 管理。GitHub Actions 的工作流不读取 App 私钥，凭 GitHub 签发的 OIDC 身份向 Worker 换取安装令牌；哪个工作流能换哪些令牌、每个令牌对哪个仓库有什么权限，由管理页的「GitHub Actions 访问规则」决定。看板采集是其中一条规则，换两个令牌：源仓只读令牌、看板仓 Contents 写令牌。Bot 触发工作流所用的 Actions 写令牌只用于 dispatch，不作为工作流输入传递。
 
 云端只有正式 Worker `sciencediscovery-bot`（`wrangler.jsonc`），正式看板仓向它兑换令牌；原测试 Worker 已删除，测试看板不再有兑换端。定时、手动与 Bot 触发均走同一流程；管理 Access 登录与 Actions OIDC 是两套独立认证。
 
@@ -30,29 +30,43 @@ Worker 保留 `SDBOT_GITHUB_APP_ID` 和 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，
 | 变量 | 内容 |
 | --- | --- |
 | `SDBOT_ACTIONS_AUDIENCE` | 本 Worker 的 OIDC audience，与看板仓 `SDBOT_TOKEN_AUDIENCE` 一致 |
-| `SDBOT_ACTIONS_REPOSITORY_ID` | 对应看板仓不可变的数字 ID |
-| `SDBOT_ACTIONS_OWNER_ID` | 对应组织不可变的数字 ID |
+| `SDBOT_ACTIONS_REPOSITORY_ID` | 看板仓不可变的数字 ID；用于生成第一条「看板采集」规则，以及 `/actions/gitcode-sync` 的身份校验 |
+| `SDBOT_ACTIONS_OWNER_ID` | 看板仓所属组织不可变的数字 ID，用途同上 |
 | `SDBOT_ADMIN_HOSTNAME` | 本 Worker 的指定域名，兑换端点也限制此域名 |
 
 信任 ID 为非秘密部署配置，随 Wrangler 配置评审；实际部署标识不复制到公开说明。看板仓设置两个 **Actions Variables**：`SDBOT_TOKEN_BROKER_URL`（对应 Worker HTTPS 地址加 `/actions/token`）、`SDBOT_TOKEN_AUDIENCE`（与 Worker 一致）。采集 job 声明 `id-token: write`，其余默认 `GITHUB_TOKEN` 仍只有 Contents read。
 
 看板仓不再需要 `SDBOT_GITHUB_APP_ID` 或私钥 Secret。完成新链路验证后删除旧私钥 Secret；删除仓库副本不等于撤销 App 私钥，不要误撤销 Worker 正在使用的密钥。先部署支持兑换的 Worker，再更新相应看板工作流，先测试后正式。
 
+## 访问规则
+
+管理页「外部调用」下方的「GitHub Actions 访问规则」列出允许兑换令牌的工作流，最多 20 条。每条规则：
+
+- **名称**；
+- **工作流所在仓库**：填 `owner/name`，保存时 Worker 向 GitHub 查询并固定它不可变的仓库 ID 和所有者 ID（App 安装在该仓库时用 App 读取，私有仓库也可以；否则读公开接口；都读不到时拒绝保存）。之后按 ID 识别：仓库改名或转移后仍匹配，有人用旧名字新建的仓库不匹配；修改规则时仓库不变就沿用原来的 ID；
+- **工作流文件**：`.github/workflows/` 下的文件，例如 `.github/workflows/collect.yml`；
+- **分支**：只接受这个分支上运行的工作流，默认 `main`；
+- **允许的触发事件**：`schedule`、`workflow_dispatch`、`push`、`release`、`workflow_run`、`repository_dispatch` 中的一个或多个。`pull_request`、`pull_request_target`、`merge_group`、评论等会运行外部代码或输入的事件不提供；
+- **令牌**：1 到 10 个，每个有用途名（请求里的 `purpose`，小写字母开头，最多 32 个字符，规则内不重复）、目标仓库和权限。权限用和证书客户端相同的「权限名称／说明／读写·只读·禁止」选择器，见[外部调用](caller-api.md#令牌权限)。不同令牌可以指向不同仓库、给不同权限。
+
+第一次读取规则时，Worker 用看板配置（`SDBOT_BOARD_TARGETS` 的唯一映射和上面两个 ID）生成「看板采集」规则：看板仓的 `collect.yml`、`main` 分支、`schedule` 与 `workflow_dispatch`，令牌 `source`（源仓）和 `target`（看板仓）。权限沿用上一版「GitHub Actions 看板采集令牌」条目保存过的选择，没保存过就用默认值。这只做一次：之后删除这条规则不会被重新生成，删除或收窄它会让看板采集失败。
+
+管理接口与证书客户端相同：`GET`／`POST /admin/api/actions-rules`，`PUT`／`DELETE /admin/api/actions-rules/<id>`，经 Access 校验，只接受同源 JSON 写入，其他方法 405；参数不合法、仓库读不到或超过 20 条时返回 422。`GET` 同时返回可选事件、权限目录和上限。
+
 ## 接口与授权
 
-`POST /actions/token` 使用 `Authorization: Bearer <GitHub OIDC JWT>`，JSON 请求只能包含 `purpose`，值为 `source` 或 `target`。源仓和目标仓由 Worker 配置决定，权限由管理页的「GitHub Actions 看板采集令牌」条目决定；请求方不能指定仓库或扩大权限。
+`POST /actions/token` 使用 `Authorization: Bearer <GitHub OIDC JWT>`，JSON 请求只能包含 `purpose`。仓库和权限都由匹配到的规则决定，请求方不能指定仓库或扩大权限。
 
-- 固定 issuer 与 JWKS 地址、RS256、有效期、签发时间、audience；不跟随认证请求重定向。
-- 同时校验仓库名、不可变仓库／组织 ID、`main` 分支、固定 `.github/workflows/collect.yml`、事件类型为 schedule 或 workflow_dispatch。
-- subject 支持 GitHub 的原名称格式与包含不可变 ID 的格式；PR、tag 和其他工作流均不在当前信任范围。GitHub 的直接执行任务也可能包含 `job_workflow_ref`；该字段存在时必须仍指向同一个 collect.yml，引用其他文件的可复用工作流会被拒绝。将来改变工作流结构需显式调整信任策略。
-- 默认源仓令牌仅包含 Metadata、Contents、Issues、Pull requests、Actions、Checks、Commit statuses read；看板令牌仅包含 Metadata read、Contents write，即采集一直使用的权限。跨组织分别换取 installation 令牌。
-- 管理页「外部调用」的「GitHub Actions 看板采集令牌」条目列出这两份令牌的权限，和证书客户端使用同一套「权限名称／说明／读写·只读·禁止」选择器，可以编辑或「恢复默认权限」。保存后，之后每次兑换都按新选择申请；收窄后采集可能失败，放宽会让看板仓的工作流拿到更大的权限，选了 App 安装没有的权限时兑换返回 502。配置存在 Bot 的 Durable Object 里，没有保存过时使用默认值；管理接口是 `GET`／`PUT /admin/api/actions-permissions`，正文为 `{ "source": {…}, "target": {…} }`，校验与证书客户端相同。
-- Durable Object 原子记录仓库／run／attempt／purpose；每次运行尝试每种用途只能兑换一次。记录保留至少一天，过期记录在后续请求中清理；不保存 JWT、安装令牌或私钥。
-- 每次成功签发后，另在发放记录表写一条：来源 `actions`、身份 `repositoryId:run_id:run_attempt`、`purpose`、实际仓库、所申请的权限和 GitHub 返回的令牌到期时间，不含令牌；管理页「外部调用」与证书兑换一起列出，保留 60 天、至多 1000 条。写记录失败时令牌照常返回，响应形状不变。见[外部调用](caller-api.md)。
+- 固定 issuer 与 JWKS 地址、RS256、有效期、签发时间、`SDBOT_ACTIONS_AUDIENCE`；不跟随认证请求重定向；只接受指定域名。
+- 匹配规则时同时校验：令牌中的仓库 ID 和所有者 ID 与规则一致；`ref` 是规则分支，`ref_type` 为 branch；`workflow_ref` 是该仓库的规则工作流文件；事件类型在规则允许的列表里；subject 为 GitHub 的原名称格式或包含不可变 ID 的格式。GitHub 的直接执行任务也可能包含 `job_workflow_ref`，该字段存在时必须仍指向同一个工作流文件，引用其他仓库或文件的可复用工作流会被拒绝。
+- 身份不匹配任何规则为 403 `forbidden`；规则匹配但没有这个用途的令牌为 403 `purpose not allowed for this workflow`；`purpose` 格式不对或请求还有其他字段为 400。
+- Durable Object 原子记录规则／仓库／run／attempt／purpose；每次运行尝试每个用途只能兑换一次（409）。记录保留至少一天，过期记录在后续请求中清理；不保存 JWT、安装令牌或私钥。跨组织分别换取 installation 令牌。
+- 默认的看板采集权限：源仓令牌 Metadata、Contents、Issues、Pull requests、Actions、Checks、Commit statuses 只读；看板令牌 Metadata 只读、Contents 读写。选了 App 安装没有获批的权限时 GitHub 不签发，兑换返回 502。
+- 每次成功签发后，另在发放记录表写一条：来源 `actions`，身份为「规则名 · 仓库 run 编号#attempt」，`purpose`、实际仓库、所申请的权限和 GitHub 返回的令牌到期时间，不含令牌；管理页「外部调用」与证书兑换一起列出，保留 60 天、至多 1000 条。写记录失败时令牌照常返回。见[外部调用](caller-api.md)。
 
 `POST /actions/gitcode-sync` 使用同一身份校验（不需要请求体，也不受每次运行一次的限制），只返回本看板源仓的 GitCode 同步记录，不签发令牌、不进入 Webhook 档案；同步未启用时返回 `enabled: false`。见 [GitHub PR 同步到 GitCode](gitcode-sync.md)。
 
-成功返回 `token`、`expires_at`、`repository`、`purpose`，响应 `Cache-Control: no-store`。认证失败为 401，身份超出信任范围为 403，重复兑换为 409，配置不完整为 503，上游签发失败为 502。错误只返回短说明，不透传上游响应。该端点及 `/actions/` 保留路径不进入 Webhook 档案；它也不能查询管理信息。
+成功返回 `token`、`expires_at`、`repository`、`purpose`、`permissions`，响应 `Cache-Control: no-store`。认证失败为 401，身份超出信任范围为 403，重复兑换为 409，配置不完整为 503，上游签发失败为 502。发布新版本后的几分钟内，Worker 的后台对象可能还在运行旧代码，这时返回 503 且带 `Retry-After: 60` 和 `retryable: true`，稍后重跑即可。错误只返回短说明，不透传上游响应。该端点及 `/actions/` 保留路径不进入 Webhook 档案；它也不能查询管理信息。
 
 ## 采集器与失败恢复
 
@@ -64,6 +78,6 @@ Worker 保留 `SDBOT_GITHUB_APP_ID` 和 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，
 
 ## 验证
 
-Bot：`npm run check`、`npm test`；`tests-ts/actions-auth.test.mjs` 在真实 workerd 中验证签名、跨环境拒绝、分支／仓库／工作流限制、默认权限、改为管理页所选权限后的申请与记录、并发重复、重启后签发记录及凭据不归档。看板：`python3 -m unittest discover -s tests -v`，包含凭据隔离、撤销、部分失败、拒绝重定向及错误脱敏。实际上线还需验证 GitHub runner 的真实 OIDC 及 App 提交身份。
+Bot：`npm run check`、`npm test`；`tests-ts/actions-auth.test.mjs` 在真实 workerd 中验证签名、跨环境拒绝、由看板配置生成的规则及其默认权限、并发重复、重启后签发记录及凭据不归档；另一条规则的多个令牌各按自己的仓库和权限申请，事件、分支、工作流文件、可复用工作流、仓库 ID 和所有者 ID 不符时 403，仓库改名后按 ID 仍能兑换，删除规则后不再兑换且重启不会重新生成。`tests-ts/worker-caller.test.mjs` 验证规则的管理接口：生成规则时沿用上一版保存的权限、查询并固定仓库 ID、仓库不变时不重新查询、各种非法输入的 422、405、跨站 403、非 JSON 415 与未认证 401。看板：`python3 -m unittest discover -s tests -v`，包含凭据隔离、撤销、部分失败、拒绝重定向及错误脱敏。实际上线还需验证 GitHub runner 的真实 OIDC 及 App 提交身份。
 
 参考：[GitHub OIDC 身份字段](https://docs.github.com/en/actions/reference/security/oidc)、[安装令牌撤销](https://docs.github.com/en/rest/apps/installations#revoke-an-installation-access-token)。
