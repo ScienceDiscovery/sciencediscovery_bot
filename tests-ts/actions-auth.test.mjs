@@ -119,6 +119,23 @@ test('OIDC exchange binds identity and scope, persists issuance guards and never
   const renamed = await tools({ run_id: '508', repository: 'example/tools-renamed', sub: 'repo:example/tools-renamed:ref:refs/heads/release', workflow_ref: 'example/tools-renamed/.github/workflows/release.yml@refs/heads/release' });
   assert.equal((await exchange(renamed, 'publish')).status, 200);
   assert.equal((await bot.tokenGrants()).grants[0].identity, 'Release site · example/tools-renamed run 508#1');
+  // A token with an empty purpose answers any purpose a named token does not, and a request without one.
+  const anyRule = await bot.actionsRulesAdmin('POST', null, { name: 'Any purpose', repository: 'example/tools', workflow: '.github/workflows/any.yml', branch: 'main', events: ['workflow_dispatch'],
+    grants: [{ purpose: 'named', repository: 'example/site', permissions: { pages: 'write' } }, { purpose: '', repository: 'example/site', permissions: { contents: 'read' } }] });
+  assert.equal(anyRule.status, 201, JSON.stringify(anyRule.body));
+  const anyToken = run_id => tools({ run_id, ref: 'refs/heads/main', sub: 'repo:example/tools:ref:refs/heads/main', workflow_ref: 'example/tools/.github/workflows/any.yml@refs/heads/main', event_name: 'workflow_dispatch' });
+  const first = await anyToken('600');
+  const loose = await exchange(first, 'whatever-name');
+  assert.deepEqual([loose.status, (await loose.json()).permissions], [200, { metadata: 'read', contents: 'read' }]);
+  assert.equal((await exchange(first, 'another-name')).status, 409, 'the catch-all token is still issued once per run attempt');
+  const named = await exchange(first, 'named');
+  assert.deepEqual([named.status, (await named.json()).permissions], [200, { metadata: 'read', pages: 'write' }], 'a named token takes precedence');
+  const bare = await exchange(await anyToken('601'), 'ignored', { body: '{}' });
+  assert.deepEqual([bare.status, (await bare.json()).purpose], [200, null]);
+  assert.equal((await exchange(await anyToken('602'), 'ignored', { body: '' })).status, 200, 'an empty body asks for the catch-all token too');
+  assert.deepEqual((await bot.tokenGrants()).grants.slice(0, 3).map(g => g.purpose), ['*', '*', 'named']);
+  // A rule without a catch-all token still needs a named purpose.
+  assert.equal((await exchange(await tools({ run_id: '603' }), 'ignored', { body: '{}' })).status, 403);
   // Deleting a rule ends its exchanges, and a restart does not seed it again.
   const boardRule = (await bot.actionsRulesAdmin('GET', null, null)).body.rules.find(r => r.name === '看板采集');
   assert.equal((await bot.actionsRulesAdmin('DELETE', boardRule.id, null)).status, 200);
@@ -126,5 +143,5 @@ test('OIDC exchange binds identity and scope, persists issuance guards and never
   await mf.dispose(); mf = await workerRuntime({ directory, bindings, outboundService });
   const restarted = await mf.getDurableObjectNamespace('BOT', 'bot');
   const remaining = await restarted.get(restarted.idFromName('archive-v1')).actionsRulesAdmin('GET', null, null);
-  assert.deepEqual(remaining.body.rules.map(r => r.name), ['Release site']);
+  assert.deepEqual(remaining.body.rules.map(r => r.name), ['Release site', 'Any purpose']);
 });

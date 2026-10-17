@@ -248,6 +248,8 @@ test('GitHub Actions access rules are managed behind Access, starting from the d
     [{ branch: 'refs/heads/main' }, /branch/], [{ events: ['pull_request_target'] }, /events must be/], [{ events: [] }, /events must be/],
     [{ grants: [] }, /1-10 tokens/], [{ grants: [{ purpose: 'Bad', repository: REPO, permissions: { issues: 'read' } }] }, /purpose/],
     [{ grants: [{ purpose: 'a', repository: REPO, permissions: { issues: 'read' } }, { purpose: 'a', repository: OTHER, permissions: { issues: 'read' } }] }, /used twice/],
+    [{ grants: [{ purpose: '', repository: REPO, permissions: { issues: 'read' } }, { purpose: ' ', repository: OTHER, permissions: { issues: 'read' } }] }, /only one token may leave its purpose empty/],
+    [{ grants: [{ purpose: '', repository: 'bad', permissions: { issues: 'read' } }] }, /token \(any purpose\): repository must be owner\/name/],
     [{ grants: [{ purpose: 'a', repository: REPO, permissions: { secrets: 'read' } }] }, /token a: unknown permission secrets/],
   ]) {
     const refused = await admin('/admin/api/actions-rules', { method: 'POST', body: { ...rule, ...change } });
@@ -259,6 +261,16 @@ test('GitHub Actions access rules are managed behind Access, starting from the d
   assert.equal((await mf.dispatchFetch('http://localhost/admin/api/actions-rules')).status, 401);
   assert.equal((await mf.dispatchFetch('http://localhost/admin/api/actions-rules', { method: 'POST', body: JSON.stringify(rule), headers: { 'content-type': 'application/json' } })).status, 401);
   assert.equal((await admin('/admin/api/actions-permissions')).status, 404, 'the single entry it replaces is gone');
+  // One token may leave its purpose empty to answer any purpose.
+  const loose = await admin('/admin/api/actions-rules/' + id, { method: 'PUT', body: { ...rule, grants: [...rule.grants, { purpose: '', repository: REPO, permissions: { issues: 'read' } }] } });
+  assert.deepEqual([loose.status, loose.body.rule.grants.map(g => g.purpose)], [200, ['publish', 'notes', '']]);
+  // The form's check button reads a repository's IDs without saving anything.
+  const checked = await admin('/admin/api/repository-identity?repository=openjiuwen-ai/tools');
+  assert.deepEqual(checked, { status: 200, body: { ok: true, repository: 'openJiuwen-ai/tools', repository_id: '700', owner_id: '701', app_installed: true } });
+  assert.equal((await admin('/admin/api/repository-identity?repository=nobody/nothing')).status, 404);
+  assert.equal((await admin('/admin/api/repository-identity?repository=no-slash')).status, 422);
+  assert.equal((await admin('/admin/api/repository-identity?repository=openjiuwen-ai/tools', { method: 'POST', body: {} })).status, 405);
+  assert.equal((await mf.dispatchFetch('http://localhost/admin/api/repository-identity?repository=openjiuwen-ai/tools')).status, 401);
   assert.equal((await admin('/admin/api/actions-rules/' + id, { method: 'DELETE' })).status, 200);
   assert.equal((await admin('/admin/api/actions-rules/' + id, { method: 'DELETE' })).status, 404);
   assert.deepEqual((await admin('/admin/api/actions-rules')).body.rules.map(r => r.name), ['看板采集']);

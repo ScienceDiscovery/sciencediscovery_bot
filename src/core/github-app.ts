@@ -79,24 +79,25 @@ export class GitHubApp {
   }
 }
 
-export interface RepositoryIdentity { full_name: string; id: string; owner_id: string }
+/** `via`: read through the App's installation there, or only through the public API. */
+export interface RepositoryIdentity { full_name: string; id: string; owner_id: string; via: 'app' | 'public' }
 /**
  * A repository's immutable IDs, read through the App when it is installed there (private
  * repositories too) and otherwise from GitHub's public API. Null when neither can read it.
  */
 export async function repositoryIdentity(repository: string, app: GitHubApp | null, fetcher: typeof fetch = (...args) => fetch(...args)): Promise<RepositoryIdentity | null> {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return null;
-  const read = async (authorization?: string): Promise<RepositoryIdentity | null> => {
+  const read = async (via: 'app' | 'public', authorization?: string): Promise<RepositoryIdentity | null> => {
     const response = await fetcher('https://api.github.com/repos/' + repository, { redirect: 'manual', signal: AbortSignal.timeout(15000),
       headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'sciencediscovery-bot', ...(authorization ? { Authorization: authorization } : {}) } });
     if (!response.ok) { await response.body?.cancel(); return null; }
     const doc = object(await response.json()), owner = object(doc.owner);
     return Number.isSafeInteger(doc.id) && Number.isSafeInteger(owner.id) && typeof doc.full_name === 'string'
-      ? { full_name: doc.full_name, id: String(doc.id), owner_id: String(owner.id) } : null;
+      ? { full_name: doc.full_name, id: String(doc.id), owner_id: String(owner.id), via } : null;
   };
   if (app) {
-    try { const found = await read('Bearer ' + (await app.grantWith(repository, { metadata: 'read' })).token); if (found) return found; }
+    try { const found = await read('app', 'Bearer ' + (await app.grantWith(repository, { metadata: 'read' })).token); if (found) return found; }
     catch { /* the App is not installed there: try the public API */ }
   }
-  try { return await read(); } catch { return null; }
+  try { return await read('public'); } catch { return null; }
 }

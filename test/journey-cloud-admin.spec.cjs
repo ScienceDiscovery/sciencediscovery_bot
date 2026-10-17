@@ -327,18 +327,31 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   const ruleForm = page.locator('#actions-rule-form'), grants = ruleForm.locator('.actions-grant');
   await ruleForm.getByLabel('名称').fill('看板采集');
   await ruleForm.getByLabel(/工作流所在仓库/).fill('sciencediscovery/github-status-board');
+  // 校验 reads the IDs right away and puts GitHub's spelling of the name in the field.
+  const workflowCheck = ruleForm.locator('.repo-check').first();
+  await workflowCheck.getByRole('button', { name: '校验' }).click();
+  await expect(workflowCheck.locator('.check-result')).toHaveText('✓ ScienceDiscovery/github-status-board · 仓库 ID 900 · 所有者 ID 901 · GitHub App 已安装');
+  await expect(ruleForm.getByLabel(/工作流所在仓库/)).toHaveValue('ScienceDiscovery/github-status-board');
   await ruleForm.getByLabel('工作流文件', { exact: true }).fill('.github/workflows/collect.yml');
   await expect(ruleForm.getByLabel('分支')).toHaveValue('main');
   await expect(ruleForm.getByLabel(/workflow_dispatch/)).toBeChecked();
   await ruleForm.getByLabel(/定时（schedule）/).check();
   await expect(ruleForm.locator('#actions-rule-events')).not.toContainText('pull_request');
   await grants.first().getByLabel(/用途名/).fill('source');
+  // A misspelled repository is caught before saving.
+  await grants.first().getByLabel(/目标仓库/).fill('ScienceDiscovery/sciencediscovry');
+  await grants.first().getByRole('button', { name: '校验' }).click();
+  await expect(grants.first().locator('.check-result')).toContainText('校验失败：GitHub 上读不到这个仓库');
   await grants.first().getByLabel(/目标仓库/).fill('ScienceDiscovery/sciencediscovery');
+  await expect(grants.first().locator('.check-result')).toBeHidden();
   await perm(grants.first(), 'issues').getByLabel('只读', { exact: true }).check();
   await ruleForm.getByRole('button', { name: '添加令牌' }).click();
   await expect(grants).toHaveCount(2);
-  await grants.last().getByLabel(/用途名/).fill('target');
+  // The second token leaves its purpose empty: it answers any purpose.
+  await expect(grants.last().getByLabel(/用途名/)).toHaveValue('');
   await grants.last().getByLabel(/目标仓库/).fill('ScienceDiscovery/github-status-board');
+  await grants.last().getByRole('button', { name: '校验' }).click();
+  await expect(grants.last().locator('.check-result')).toContainText('GitHub App 已安装');
   await perm(grants.last(), 'contents').getByLabel('读写', { exact: true }).check();
   expect(await overflow()).toBe(true);
   await ruleForm.screenshot({ path: testInfo.outputPath('actions-rule-mobile.png') });
@@ -350,7 +363,7 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await expect(ruleCard).toContainText('仓库 ID 900 · 所有者 ID 901');
   await expect(ruleCard).toContainText('schedule、workflow_dispatch');
   await expect(ruleCard).toContainText('令牌 source → ScienceDiscovery/sciencediscovery：metadata 只读 · contents 只读 · issues 只读');
-  await expect(ruleCard).toContainText('令牌 target → ScienceDiscovery/github-status-board：metadata 只读 · contents 读写');
+  await expect(ruleCard).toContainText('令牌（任意 purpose） → ScienceDiscovery/github-status-board：metadata 只读 · contents 读写');
   await expect(page.locator('#actions-count')).toHaveText('1 / 20 条规则');
   // A refused save says why; removing a token then applies.
   await ruleCard.getByRole('button', { name: '编辑' }).click();
@@ -363,7 +376,7 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await ruleForm.getByRole('button', { name: '保存规则' }).click();
   await expect(ruleForm).toBeHidden();
   await expect(ruleCard).not.toContainText('令牌 source');
-  await expect(ruleCard).toContainText('令牌 target');
+  await expect(ruleCard).toContainText('令牌（任意 purpose）');
   await page.setViewportSize({ width: 1280, height: 900 });
   await ruleCard.getByRole('button', { name: '编辑' }).click();
   await ruleForm.screenshot({ path: testInfo.outputPath('actions-rule-desktop.png') });

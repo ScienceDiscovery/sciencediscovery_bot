@@ -5,9 +5,11 @@ import { array, object, string, type Doc } from './types.js';
  * GitHub Actions access rules for POST /actions/token. A rule names one workflow — its repository
  * (pinned by immutable IDs), file, branch and the events it may run on — and the tokens that
  * workflow may exchange: each has a purpose name, a target repository and its own permissions.
+ * A token with an empty purpose answers any purpose, or none, that no named token of the rule matches.
  */
 export const ACTIONS_RULE_LIMIT = 20;
 export const ACTIONS_GRANT_LIMIT = 10;
+/** `purpose` is empty for the rule's catch-all token. */
 export interface ActionsGrant { purpose: string; repository: string; permissions: PermissionSet }
 export interface ActionsRule {
   id: string; name: string;
@@ -52,12 +54,12 @@ export function parseActionsRule(input: unknown): { ok: true; value: ActionsRule
   const raw = array(doc.grants);
   if (!raw.length || raw.length > ACTIONS_GRANT_LIMIT) return { ok: false, error: `a rule needs 1-${ACTIONS_GRANT_LIMIT} tokens` };
   for (const item of raw) {
-    const grant = object(item), purpose = string(grant.purpose).trim(), target = string(grant.repository).trim();
-    if (!PURPOSE.test(purpose)) return { ok: false, error: 'a token purpose must start with a lowercase letter: a-z, 0-9, - or _, at most 32' };
-    if (grants.some(g => g.purpose === purpose)) return { ok: false, error: `token purpose ${purpose} is used twice` };
-    if (!REPO.test(target)) return { ok: false, error: `token ${purpose}: repository must be owner/name` };
+    const grant = object(item), purpose = string(grant.purpose).trim(), target = string(grant.repository).trim(), label = purpose || '(any purpose)';
+    if (purpose && !PURPOSE.test(purpose)) return { ok: false, error: 'a token purpose must start with a lowercase letter: a-z, 0-9, - or _, at most 32' };
+    if (grants.some(g => g.purpose === purpose)) return { ok: false, error: purpose ? `token purpose ${purpose} is used twice` : 'only one token may leave its purpose empty' };
+    if (!REPO.test(target)) return { ok: false, error: `token ${label}: repository must be owner/name` };
     const permissions = parsePermissions(grant.permissions);
-    if (!permissions.ok) return { ok: false, error: `token ${purpose}: ${permissions.error}` };
+    if (!permissions.ok) return { ok: false, error: `token ${label}: ${permissions.error}` };
     grants.push({ purpose, repository: target, permissions: permissions.value });
   }
   return { ok: true, value: { name, repository, workflow, branch, events: ACTIONS_EVENTS.map(e => e.key).filter(key => events.includes(key)), grants } };
@@ -72,8 +74,9 @@ export interface ActionsClaims {
  * The rule whose identity matches every claim and which grants `purpose`. Identity is the immutable
  * repository and owner IDs; the workflow path is checked against the repository name in the token,
  * so a renamed repository keeps matching while a new repository under the old name never does.
+ * A named token wins; otherwise a catch-all token (empty purpose) answers, also when no purpose is given.
  */
-export function matchActionsRule(rules: readonly ActionsRule[], claims: ActionsClaims, purpose: string): { rule: ActionsRule; grant: ActionsGrant } | { status: 403; error: string } {
+export function matchActionsRule(rules: readonly ActionsRule[], claims: ActionsClaims, purpose: string | null): { rule: ActionsRule; grant: ActionsGrant } | { status: 403; error: string } {
   const [owner, name] = claims.repository.split('/');
   const subjects = [`repo:${claims.repository}:ref:${claims.ref}`, `repo:${owner}@${claims.repository_owner_id}/${name}@${claims.repository_id}:ref:${claims.ref}`];
   const matching = rules.filter(rule => rule.repository_id === claims.repository_id && rule.owner_id === claims.repository_owner_id
@@ -82,9 +85,11 @@ export function matchActionsRule(rules: readonly ActionsRule[], claims: ActionsC
     && (claims.job_workflow_ref === undefined || claims.job_workflow_ref === claims.workflow_ref)
     && rule.events.includes(claims.event_name) && subjects.includes(claims.sub));
   if (!matching.length) return { status: 403, error: 'forbidden' };
-  for (const rule of matching) {
-    const grant = rule.grants.find(g => g.purpose === purpose);
-    if (grant) return { rule, grant };
+  for (const wanted of [purpose, ''].filter(value => value !== null)) {
+    for (const rule of matching) {
+      const grant = rule.grants.find(g => g.purpose === wanted);
+      if (grant) return { rule, grant };
+    }
   }
   return { status: 403, error: 'purpose not allowed for this workflow' };
 }
