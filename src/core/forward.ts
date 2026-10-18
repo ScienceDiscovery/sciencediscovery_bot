@@ -1,5 +1,5 @@
 import { scrub } from './redact.js';
-import { sign } from './signature.js';
+import { base64, fromBase64, sign } from './signature.js';
 import { array, object, string, type Doc } from './types.js';
 
 /**
@@ -23,10 +23,17 @@ export const FORWARD_HEADER_LIMIT = 10;
 /** Results kept per subscription, newest first, including test sends. */
 export const FORWARD_HISTORY = 20;
 
+export type SignatureMode = 'preserve' | 'github-compatible';
+const SIGNATURE_CUTOVER = Date.parse('2026-10-18T09:02:44Z');
+export const signatureMode = (sub: { signature_mode?: SignatureMode; created?: string }): SignatureMode => sub.signature_mode
+  || (Date.parse(sub.created || '') < SIGNATURE_CUTOVER ? 'github-compatible' : 'preserve');
+export const generateForwardSecret = (): string => 'whsec_' + base64(crypto.getRandomValues(new Uint8Array(32)));
+
 export interface ForwardResult {
   at: string; delivery_id: string; status: number | null; error: string | null;
   /** Older results lack these. */
   duration_ms?: number; event?: string; repo?: string; test?: boolean;
+  attempt?: number; retry_at?: string; terminal?: boolean;
 }
 export interface ForwardHeader { name: string; value: string }
 export interface ForwardSubscription {
@@ -35,6 +42,7 @@ export interface ForwardSubscription {
   repos: string[];
   /** Empty or absent keeps all actions; only types with a selection are restricted. */
   actions?: string[];
+  signature_mode?: SignatureMode;
   /** Extra request headers such as Authorization; values are credentials and stay admin-only. */
   headers: ForwardHeader[];
   created: string; updated: string; last: ForwardResult | null;
@@ -100,10 +108,28 @@ const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/;
 // Headers the bot sets itself, or that would change how the request is framed or routed.
 const CONNECTION_HEADERS = ['content-length', 'content-encoding', 'transfer-encoding', 'host', 'connection', 'keep-alive', 'upgrade', 'te', 'trailer', 'expect', 'cookie'];
 const infrastructurePrefix = (name: string): boolean => name.startsWith('x-sdbot-') || name.startsWith('proxy-') || name.startsWith('cf-') || name.startsWith('sec-');
-const OMIT_SOURCE_HEADERS = new Set([...CONNECTION_HEADERS, 'forwarded', 'via', 'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-port', 'x-real-ip', 'true-client-ip', 'cdn-loop']);
+const STANDARD_HEADERS = ['webhook-id', 'webhook-timestamp', 'webhook-signature'];
+const OMIT_SOURCE_HEADERS = new Set([...STANDARD_HEADERS, ...CONNECTION_HEADERS, 'forwarded', 'via', 'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-port', 'x-real-ip', 'true-client-ip', 'cdn-loop']);
 const omitSourceHeader = (name: string): boolean => OMIT_SOURCE_HEADERS.has(name) || infrastructurePrefix(name);
-const RESERVED_HEADERS = new Set([...CONNECTION_HEADERS, 'content-type', 'user-agent', 'x-hub-signature-256', 'x-gitcode-signature-256']);
+const RESERVED_HEADERS = new Set([...STANDARD_HEADERS, ...CONNECTION_HEADERS, 'content-type', 'user-agent', 'x-hub-signature-256', 'x-gitcode-signature-256']);
 const reservedHeader = (name: string): boolean => RESERVED_HEADERS.has(name) || infrastructurePrefix(name);
+export function sourceForwardHeaders(source: Headers): Headers {
+  return new Headers([...source].filter(([name]) => !omitSourceHeader(name.toLowerCase())));
+}
+
+function standardKey(secret: string): Uint8Array {
+  if (!secret.startsWith('whsec_')) return new TextEncoder().encode(secret);
+  const encoded = secret.slice(6), decoded = fromBase64(encoded);
+  if (!decoded.length || base64(decoded) !== encoded) throw new TypeError('invalid whsec_ secret');
+  return decoded;
+}
+async function standardSignature(id: string, timestamp: string, body: Uint8Array, secret: string): Promise<string> {
+  const prefix = new TextEncoder().encode(`${id}.${timestamp}.`), message = new Uint8Array(prefix.length + body.length);
+  message.set(prefix); message.set(body, prefix.length);
+  const key = await crypto.subtle.importKey('raw', new Uint8Array(standardKey(secret)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return 'v1,' + base64(new Uint8Array(await crypto.subtle.sign('HMAC', key, message)));
+}
+
 function parseActions(value: unknown, types: string[]): string[] | string {
   if (value === undefined) return [];
   if (!Array.isArray(value)) return 'actions must be a list of type:action';
@@ -143,8 +169,9 @@ const pick = (values: unknown, allowed: readonly string[]): string[] | null => {
   return [...new Set(list as string[])].sort((a, b) => allowed.indexOf(a) - allowed.indexOf(b));
 };
 /** Validates an admin request body; returns the fields or the reason it was refused. */
-export function parseSubscription(input: unknown): { ok: true; value: Pick<ForwardSubscription, 'name' | 'url' | 'providers' | 'types' | 'secret' | 'repos' | 'headers' | 'actions'> } | { ok: false; error: string } {
-  const doc = object(input), name = string(doc.name).trim(), url = string(doc.url).trim(), secret = string(doc.secret);
+export function parseSubscription(input: unknown): { ok: true; value: Pick<ForwardSubscription, 'name' | 'url' | 'providers' | 'types' | 'secret' | 'repos' | 'headers' | 'actions' | 'signature_mode'> } | { ok: false; error: string } {
+  const doc = object(input), name = string(doc.name).trim(), url = string(doc.url).trim();
+  const secret = string(doc.secret) || generateForwardSecret(), mode = doc.signature_mode ?? 'preserve';
   if (!name || name.length > 80) return { ok: false, error: 'name must be 1-80 characters' };
   const problem = targetProblem(url);
   if (problem) return { ok: false, error: `target URL rejected: ${problem}` };
@@ -152,11 +179,13 @@ export function parseSubscription(input: unknown): { ok: true; value: Pick<Forwa
   if (!providers) return { ok: false, error: 'providers must be a non-empty subset of github, gitcode' };
   if (!types) return { ok: false, error: `types must be a non-empty subset of ${FORWARD_TYPES.join(', ')}` };
   if (doc.secret !== undefined && typeof doc.secret !== 'string' || secret.length > 256) return { ok: false, error: 'secret must be a string of at most 256 characters' };
+  if (mode !== 'preserve' && mode !== 'github-compatible') return { ok: false, error: 'signature_mode must be preserve or github-compatible' };
+  try { standardKey(secret); } catch { return { ok: false, error: 'secret must use valid base64 after whsec_' }; }
   const repos = parseRepos(doc.repos), headers = parseHeaders(doc.headers), actions = parseActions(doc.actions, types);
   if (typeof repos === 'string') return { ok: false, error: repos };
   if (typeof headers === 'string') return { ok: false, error: headers };
   if (typeof actions === 'string') return { ok: false, error: actions };
-  return { ok: true, value: { name, url, providers, types, secret, repos, headers, actions } };
+  return { ok: true, value: { name, url, providers, types, secret, repos, headers, actions, signature_mode: mode } };
 }
 /** The subscription type an archived delivery falls under. */
 export const forwardType = (kind: string): string => NAMED.has(kind) ? kind : 'other';
@@ -195,7 +224,7 @@ async function bodyStart(response: Response, limit = 4096): Promise<string> {
   await reader.cancel().catch(() => undefined);
   return new TextDecoder().decode(bytes.subarray(0, size));
 }
-/** Sends one request to a subscription's target: five seconds, no redirects. Never throws. */
+/** Sends one request: five seconds, no redirects. Network failures become results. */
 async function send(sub: ForwardSubscription, record: Doc, body: Uint8Array, sourceHeaders: Headers, fetcher: typeof fetch, now: () => Date,
   extra: Record<string, string> = {}, readBody = false): Promise<Sent> {
   const delivery = string(record.delivery_id) || string(record.record_id), started = Date.now();
@@ -203,8 +232,7 @@ async function send(sub: ForwardSubscription, record: Doc, body: Uint8Array, sou
     duration_ms: Date.now() - started, event: string(record.kind), repo: string(record.repo), ...(extra['X-Sdbot-Test'] ? { test: true } : {}) });
   const problem = targetProblem(sub.url);
   if (problem) return { result: result(null, `target rejected: ${problem}`), excerpt: null };
-  const headers = new Headers();
-  for (const [name, value] of sourceHeaders) if (!omitSourceHeader(name.toLowerCase())) headers.set(name, value);
+  const headers = sourceForwardHeaders(sourceHeaders);
   // Headers.has is case-insensitive: defaults and configured headers never replace a source value.
   const add = (name: string, value: string) => { if (!headers.has(name)) headers.set(name, value); };
   add('Content-Type', 'application/json'); add('User-Agent', 'sciencediscovery-bot-forward');
@@ -215,8 +243,16 @@ async function send(sub: ForwardSubscription, record: Doc, body: Uint8Array, sou
   if (sub.secret) {
     const signature = await sign(body, sub.secret);
     add('X-Sdbot-Signature-256', signature);
-    add('X-Hub-Signature-256', signature);
+    if (signatureMode(sub) === 'github-compatible') {
+      for (const [platform, original] of [['X-Hub-Signature-256', 'X-Sdbot-Source-Signature-256'], ['X-GitCode-Signature-256', 'X-Sdbot-Source-GitCode-Signature-256']]) {
+        if (headers.has(platform)) headers.set(original, headers.get(platform)!);
+        headers.set(platform, signature);
+      }
+    }
   }
+  const timestamp = String(Math.floor(now().getTime() / 1000));
+  headers.set('webhook-id', delivery); headers.set('webhook-timestamp', timestamp);
+  headers.set('webhook-signature', await standardSignature(delivery, timestamp, body, sub.secret));
   try {
     const response = await fetcher(sub.url, { method: 'POST', headers, body: new Uint8Array(body), redirect: 'manual', signal: AbortSignal.timeout(FORWARD_TIMEOUT_MS) });
     let excerpt: string | null = null;
@@ -239,11 +275,18 @@ export async function deliver(sub: ForwardSubscription, record: Doc, body: Uint8
  * A test request from the admin page: a small JSON body marked with X-Sdbot-Test, sent with the
  * subscription's own URL, headers and signature but without its source, type or repository filter.
  */
-export async function deliverTest(sub: ForwardSubscription, fetcher: typeof fetch = (...args) => fetch(...args), now = () => new Date()): Promise<Sent> {
-  const delivery = 'test-' + crypto.randomUUID();
-  const body = new TextEncoder().encode(JSON.stringify({ test: true, zen: 'sciencediscovery-bot forward test', subscription: { id: sub.id, name: sub.name }, sent_at: now().toISOString() }));
-  return send(sub, { provider: 'test', kind: 'ping', delivery_id: delivery, repo: '' }, body, new Headers(), fetcher, now, { 'X-Sdbot-Test': '1' }, true);
+export interface ForwardTestSample { delivery: string; name: string; at: string }
+export function forwardTestSample(sub: ForwardSubscription, now: () => Date = () => new Date()): ForwardTestSample {
+  return { delivery: 'test-' + crypto.randomUUID(), name: sub.name, at: now().toISOString() };
+}
+export async function deliverTest(sub: ForwardSubscription, fetcher: typeof fetch = (...args) => fetch(...args), now = () => new Date(),
+  sample: ForwardTestSample = forwardTestSample(sub, now)): Promise<Sent> {
+  const body = new TextEncoder().encode(JSON.stringify({ test: true, zen: 'sciencediscovery-bot forward test', subscription: { id: sub.id, name: sample.name }, sent_at: sample.at }));
+  // A fake upstream signature deliberately cannot verify with the subscription secret.
+  const headers = new Headers({ 'User-Agent': 'GitHub-Hookshot/test', 'X-GitHub-Event': 'ping', 'X-GitHub-Delivery': sample.delivery,
+    'X-Hub-Signature-256': 'sha256=' + '0'.repeat(64) });
+  return send(sub, { provider: 'test', kind: 'ping', delivery_id: sample.delivery, repo: '' }, body, headers, fetcher, now, { 'X-Sdbot-Test': '1' }, true);
 }
 /** What the admin page shows; the secret and header values are readable there and nowhere else. */
-export const publicSubscription = (sub: ForwardSubscription): Doc => ({ ...sub, repos: sub.repos || [], headers: sub.headers || [], actions: sub.actions || [],
+export const publicSubscription = (sub: ForwardSubscription): Doc => ({ ...sub, signature_mode: signatureMode(sub), repos: sub.repos || [], headers: sub.headers || [], actions: sub.actions || [],
   recent: sub.recent || (sub.last ? [sub.last] : []), has_secret: !!sub.secret });

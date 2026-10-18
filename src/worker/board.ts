@@ -50,7 +50,11 @@ export class WorkerBoard implements Board {
     // Before committing an archive, arm the alarm as well. The DO serializes
     // alarm claims against the transaction; Cron also repairs a failed alarm write.
     if (this.pending.size) times.push(this.clock() + this.cfg.board_debounce * 1000);
-    if (times.length) await this.storage.setAlarm(Math.max(this.clock() + 100, Math.min(...times)));
+    if (times.length) {
+      const at = Math.max(this.clock() + 100, Math.min(...times)), current = await this.storage.getAlarm();
+      // Another queue may already have earlier work on the shared alarm.
+      if (current === null || at < current) await this.storage.setAlarm(at);
+    }
   }
   claim(): DispatchState[] {
     const ready: DispatchState[] = [];

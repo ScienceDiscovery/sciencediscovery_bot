@@ -44,7 +44,11 @@ export class BotObject extends DurableObject<WorkerEnv> {
     this.sync = new WorkerGitCodeSync(ctx.storage, cfg);
     // Staged board refreshes and sync events commit in the same transaction as the archive index.
     const archive = this.archive = new WorkerArchive(ctx.storage, env.ARCHIVE, cfg.dedupe_window, () => { this.board.commitPending(); this.sync.commitPending(); }, cfg.archive_retention_days);
-    this.forwards = new WorkerForwards(ctx.storage);
+    this.forwards = new WorkerForwards(ctx.storage, (...args) => fetch(...args), record => archive.payload(record),
+      at => this.mutex.run(async () => {
+        const current = await this.ctx.storage.getAlarm();
+        if (current === null || at < current) await this.ctx.storage.setAlarm(at);
+      }));
     this.callers = new WorkerCallers(ctx.storage);
     // The dashboard collection configured for this Worker becomes the first Actions rule.
     const mappings = Object.entries(targets(cfg)), repositoryId = String(env.SDBOT_ACTIONS_REPOSITORY_ID || ''), ownerId = String(env.SDBOT_ACTIONS_OWNER_ID || '');
@@ -111,6 +115,11 @@ export class BotObject extends DurableObject<WorkerEnv> {
   /** Access-authenticated configuration of forward subscriptions and certificate callers. */
   forwardsAdmin(method: string, id: string | null, input: unknown): AdminReply { return this.forwards.admin(method, id, input); }
   forwardTest(id: string): Promise<AdminReply> { return this.forwards.test(id); }
+  async forwardArchived(id: string): Promise<AdminReply> {
+    const source = await this.archive.forwardSource(id);
+    if (!source) return { status: 404, body: { ok: false, error: 'archive body unavailable' } };
+    return this.forwards.manual(source.record, source.headers, source.body, promise => this.ctx.waitUntil(promise));
+  }
   callersAdmin(method: string, id: string | null, input: unknown): Promise<AdminReply> { return this.callers.admin(method, id, input); }
   actionsRulesAdmin(method: string, id: string | null, input: unknown): Promise<AdminReply> { return this.actionsRules.admin(method, id, input); }
   /** The GitHub Actions access rules /actions/token matches an OIDC identity against. */
@@ -124,7 +133,7 @@ export class BotObject extends DurableObject<WorkerEnv> {
   tokenGrants(): Doc { return { ok: true, retention_days: GRANT_RETENTION_DAYS, limit: GRANT_LIMIT, shown: GRANT_PAGE, grants: this.grants.list() }; }
   // Read-only RPC for the OIDC-authenticated dashboard collector.
   gitcodeSync(): Promise<Record<string, unknown>> { return this.sync.snapshot(); }
-  async wake(): Promise<void> { await this.mutex.run(() => this.schedule()); }
+  async wake(): Promise<void> { await this.mutex.run(() => this.schedule()); await this.forwards.schedule(); }
   // Cron-driven retention step; bounded per call and independent of the ingestion mutex.
   pruneArchive(now?: number): Promise<PruneResult> { return this.archive.prune(now); }
   async alarm(): Promise<void> {
@@ -139,7 +148,7 @@ export class BotObject extends DurableObject<WorkerEnv> {
     });
     // Sync work holds the mutex only to claim and to merge results, never across network calls.
     const sync = this.sync.mode === 'active' ? this.sync.run(fn => this.mutex.run(fn)).catch(() => 0) : Promise.resolve(0);
-    await Promise.all([...dispatches, sync]);
+    await Promise.all([...dispatches, sync, this.forwards.run()]);
     await this.mutex.run(() => this.schedule());
   }
 }
@@ -158,7 +167,7 @@ async function repositoryLookup(url: URL, env: WorkerEnv): Promise<Response> {
   return jsonResponse({ ok: true, repository: found.full_name, repository_id: found.id, owner_id: found.owner_id, app_installed: found.via === 'app' });
 }
 
-type AdminKind = 'forwards' | 'callers' | 'actions-rules';
+type AdminKind = 'forwards' | 'callers' | 'actions-rules' | 'events';
 /**
  * Collections take GET and POST, items PUT and DELETE, a forward's test action POST. Writes must be
  * same-origin JSON, which a cross-site form cannot send, on top of the Access identity already verified.
@@ -179,7 +188,7 @@ async function adminConfig(request: Request, env: WorkerEnv, kind: AdminKind, id
     }
   }
   const bot = env.BOT.getByName(OBJECT_NAME);
-  const reply = (action === 'test' ? await bot.forwardTest(id!) : kind === 'forwards' ? await bot.forwardsAdmin(request.method, id, input)
+  const reply = (action === 'forward' ? await bot.forwardArchived(id!) : action === 'test' ? await bot.forwardTest(id!) : kind === 'forwards' ? await bot.forwardsAdmin(request.method, id, input)
     : kind === 'actions-rules' ? await bot.actionsRulesAdmin(request.method, id, input) : await bot.callersAdmin(request.method, id, input)) as unknown as AdminReply;
   return jsonResponse(object(reply.body) as Doc, reply.status);
 }
@@ -196,8 +205,10 @@ export default {
       if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
         const denied = await authorizeAdmin(request, env);
         if (denied) return denied;
-        // The only management writes: forward subscriptions, certificate callers and GitHub Actions access rules.
+        // Management writes: forwarding configuration/delivery, certificate callers and GitHub Actions access rules.
         // `/admin/api/forwards/<id>/test` sends a test request to that subscription's target.
+        const resend = /^\/admin\/api\/events\/([0-9a-f]{32})\/forward$/.exec(url.pathname);
+        if (resend) return await adminConfig(request, env, 'events', resend[1], 'forward');
         const writable = /^\/admin\/api\/(?:(forwards)\/([0-9a-f-]{36})\/(test)|(forwards|callers|actions-rules)(?:\/([0-9a-f-]{36}))?)$/.exec(url.pathname);
         if (writable) return await adminConfig(request, env, (writable[1] || writable[4]) as AdminKind, writable[2] || writable[5] || null, writable[3] || null);
         if (request.method !== 'GET') return jsonResponse({ ok: false, error: 'method not allowed' }, 405, new Headers({ Allow: 'GET', 'Cache-Control': 'no-store', 'Content-Type': 'application/json' }));

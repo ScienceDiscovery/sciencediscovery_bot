@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { workerRuntime } from '../tools/worker-runtime.mjs';
 import { accessFixture } from './support/access.mjs';
-import { deliver as forwardDelivery, matches, forwardAction, parseSubscription, publicSubscription, FORWARD_ACTIONS } from '../src/core/forward.ts';
+import { deliver as forwardDelivery, matches, forwardAction, parseSubscription, publicSubscription, FORWARD_ACTIONS, signatureMode } from '../src/core/forward.ts';
 
 const GITHUB_SECRET = 'forward-github-secret', GITCODE_SECRET = 'forward-gitcode-secret';
 const github = (event, payload, delivery = randomUUID(), secret = GITHUB_SECRET) => {
@@ -164,7 +164,7 @@ test('forwarding sends verified, archived deliveries to matching HTTPS targets o
   await t.test('secrets stay out of status and usage; updates and deletes apply at once', async () => {
     for (const path of ['/admin/api/status', '/admin/api/usage']) assert.doesNotMatch(await (await admin(path)).text(), /forward-target-secret/);
     const updated = await json(await admin('/admin/api/forwards/' + subs.issues, { method: 'PUT', body: { name: 'Issues', url: 'https://a.example/issues', providers: ['github'], types: ['pull_request'] } }));
-    assert.deepEqual([updated.status, updated.body.subscription.types, updated.body.subscription.secret], [200, ['pull_request'], '']);
+    assert.deepEqual([updated.status, updated.body.subscription.types, updated.body.subscription.secret], [200, ['pull_request'], 'forward-target-secret']);
     assert.equal((await admin('/admin/api/forwards/' + subs.slow, { method: 'DELETE' })).status, 200);
     const list = (await json(await admin('/admin/api/forwards'))).body.subscriptions;
     assert.equal(list.length, 5);
@@ -215,7 +215,7 @@ test('subscriptions can be limited to repositories and send configured headers',
       [{ headers: [{ name: 'X-Sdbot-Event', value: 'issue' }] }, /cannot be configured/],
       [{ headers: [{ name: 'X-Hub-Signature-256', value: 'sha256=0' }] }, /cannot be configured/],
       [{ headers: [{ name: 'Host', value: 'a.example' }] }, /cannot be configured/],
-      ...['User-Agent', 'Cookie', 'X-GitCode-Signature-256', 'CF-Test', 'Sec-Test', 'Proxy-Test', 'X-Sdbot-Signature-256'].map(name => [{ headers: [{ name, value: 'fixture' }] }, /cannot be configured/]),
+      ...['webhook-id', 'Webhook-Timestamp', 'WEBHOOK-SIGNATURE', 'User-Agent', 'Cookie', 'X-GitCode-Signature-256', 'CF-Test', 'Sec-Test', 'Proxy-Test', 'X-Sdbot-Signature-256'].map(name => [{ headers: [{ name, value: 'fixture' }] }, /cannot be configured/]),
       [{ headers: [{ name: 'Authorization', value: 'a' }, { name: 'authorization', value: 'b' }] }, /more than once/],
       [{ headers: Array.from({ length: 11 }, (_, i) => ({ name: 'X-H' + i, value: 'v' })) }, /at most 10 headers/],
     ]) {
@@ -291,8 +291,9 @@ test('a test send reaches the target at once and the latest 20 results are kept'
     assert.equal(to('/tested').length, 1, 'sent before the reply');
     assert.deepEqual([sent.headers['x-sdbot-test'], sent.headers['x-sdbot-provider'], sent.headers['x-sdbot-event'], sent.headers['x-sdbot-delivery']], ['1', 'test', 'ping', result.delivery_id]);
     assert.deepEqual([sent.headers.authorization, sent.headers['x-env'], sent.headers['content-type']], ['Bearer crsr_test_value', 'custom-value-123', 'application/json']);
-    assert.equal(sent.headers['x-hub-signature-256'], 'sha256=' + createHmac('sha256', 'forward-target-secret').update(sent.body).digest('hex'));
-    assert.equal(sent.headers['x-sdbot-signature-256'], sent.headers['x-hub-signature-256']);
+    assert.equal(sent.headers['x-hub-signature-256'], 'sha256=' + '0'.repeat(64));
+    assert.equal(sent.headers['x-sdbot-signature-256'], 'sha256=' + createHmac('sha256', 'forward-target-secret').update(sent.body).digest('hex'));
+    assert.equal(sent.headers['user-agent'], 'GitHub-Hookshot/test');
     assert.equal(sent.headers['x-sdbot-action'], '');
     const body = JSON.parse(sent.body.toString());
     assert.deepEqual([body.test, body.subscription], [true, { id: tested, name: 'Tested' }]);
@@ -418,7 +419,7 @@ test('forwarding drops infrastructure headers and only supplies missing header v
   await forwardDelivery(sub, record, body, new Headers(), fetcher);
   assert.equal(sent.headers.get('user-agent'), 'sciencediscovery-bot-forward');
   assert.equal(sent.headers.get('content-type'), 'application/json');
-  assert.equal(sent.headers.get('x-hub-signature-256'), signature, 'legacy signature is supplied only if absent');
+  assert.equal(sent.headers.get('x-hub-signature-256'), null, 'preserve never invents a platform signature');
   const emptySignature = new Headers({ 'X-Hub-Signature-256': '' });
   await forwardDelivery(sub, record, body, emptySignature, fetcher);
   assert.equal(sent.headers.get('x-hub-signature-256'), '', 'an existing empty value is not replaced');
@@ -477,7 +478,260 @@ test('action filters use the archived GitHub and GitCode actions after type matc
       assert.equal(signed.headers['x-gitcode-signature-256'], delivery.init.headers['x-gitcode-signature-256']);
       const signature = 'sha256=' + createHmac('sha256', 'gitcode-forward-secret').update(signed.body).digest('hex');
       assert.equal(signed.headers['x-sdbot-signature-256'], signature);
-      assert.equal(signed.headers['x-hub-signature-256'], signature);
+      assert.equal(signed.headers['x-hub-signature-256'], undefined);
     }
   }
+});
+
+test('signature modes migrate by creation time without rewriting legacy subscriptions', () => {
+  assert.equal(signatureMode({ created: '2026-10-18T09:02:43.999Z' }), 'github-compatible');
+  assert.equal(signatureMode({ created: '2026-10-18T09:02:44Z' }), 'preserve');
+  assert.equal(signatureMode({ created: '2026-10-19T00:00:00Z' }), 'preserve');
+  assert.equal(signatureMode({ created: '2026-10-01', signature_mode: 'preserve' }), 'preserve');
+  assert.equal(parseSubscription({ name: 'x', url: 'https://a.example', providers: ['github'], types: ['issue'], signature_mode: 'unknown' }).ok, false);
+  assert.equal(parseSubscription({ name: 'x', url: 'https://a.example', providers: ['github'], types: ['issue'], secret: 'whsec_invalid!' }).ok, false);
+});
+
+test('official Standard Webhooks verification covers real GitHub, GitCode and representative tests in both modes', { timeout: 60000 }, async t => {
+  const { Webhook } = await import('standardwebhooks');
+  await mkdir('.tmp/tests-ts', { recursive: true });
+  const directory = await mkdtemp(resolve('.tmp/tests-ts/standard-forward-')), access = await accessFixture(), received = [];
+  const mf = await workerRuntime({ directory, bindings: { ...access.bindings, SDBOT_GITHUB_WEBHOOK_SECRET: GITHUB_SECRET, SDBOT_GITCODE_WEBHOOK_SECRET: GITCODE_SECRET },
+    outboundService: async request => {
+      const jwks = access.jwks(request); if (jwks) return jwks;
+      received.push({ path: new URL(request.url).pathname, headers: Object.fromEntries(request.headers), body: Buffer.from(await request.arrayBuffer()) });
+      return new Response('ok', { status: 202 });
+    } });
+  t.after(async () => { await mf.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const subs = [];
+  for (const secret of ['legacy-密钥', 'whsec_' + Buffer.alloc(32, 7).toString('base64')]) for (const mode of ['preserve', 'github-compatible']) {
+    const sub = (await (await access.admin(mf, '/admin/api/forwards', { method: 'POST', body: { name: mode, url: 'https://standard.example/' + subs.length,
+      providers: ['github', 'gitcode'], types: ['issue', 'push'], secret, signature_mode: mode } })).json()).subscription;
+    subs.push(sub);
+  }
+  const gh = github('issues', { action: 'opened', repository, issue: { number: 100, title: '标准签名' } });
+  gh.init.headers['webhook-id'] = 'forged-id'; gh.init.headers['webhook-timestamp'] = '1'; gh.init.headers['webhook-signature'] = 'v1,forged';
+  assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', gh.init)).status, 200);
+  await until(() => received.length === 4);
+  const gcBody = JSON.stringify({ object_kind: 'push', ref: 'refs/heads/main', project: { path_with_namespace: 'other/project' } });
+  const gcSignature = 'sha256=' + createHmac('sha256', GITCODE_SECRET).update(gcBody).digest('hex');
+  assert.equal((await mf.dispatchFetch('http://localhost/webhook/gitcode', { method: 'POST', body: gcBody, headers: {
+    'content-type': 'application/json', 'x-gitcode-event': 'Push Hook', 'x-gitcode-delivery': 'standard-gc', 'x-gitcode-signature-256': gcSignature } })).status, 200);
+  await until(() => received.length === 8);
+  for (const sub of subs) assert.equal((await access.admin(mf, `/admin/api/forwards/${sub.id}/test`, { method: 'POST', body: {} })).status, 200);
+  assert.equal(received.length, 12);
+  for (const sent of received) {
+    const sub = subs[Number(sent.path.slice(1))], h = sent.headers, sample = h['x-sdbot-test'] === '1', githubSource = h['x-sdbot-provider'] === 'github';
+    const verifier = sub.secret.startsWith('whsec_') ? new Webhook(sub.secret) : new Webhook(new TextEncoder().encode(sub.secret), { format: 'raw' });
+    assert.doesNotThrow(() => verifier.verify(sent.body, h));
+    assert.equal(h['webhook-id'], h['x-sdbot-delivery']); assert.notEqual(h['webhook-id'], 'forged-id');
+    assert.notEqual(h['webhook-timestamp'], '1'); assert.match(h['webhook-signature'], /^v1,[A-Za-z0-9+/]+=*$/);
+    const relay = 'sha256=' + createHmac('sha256', sub.secret).update(sent.body).digest('hex');
+    assert.equal(h['x-sdbot-signature-256'], relay);
+    const upstream = sample ? 'sha256=' + '0'.repeat(64) : githubSource ? gh.init.headers['x-hub-signature-256'] : gcSignature;
+    const upstreamHeader = sample || githubSource ? 'x-hub-signature-256' : 'x-gitcode-signature-256';
+    if (sub.signature_mode === 'github-compatible') {
+      assert.equal(h['x-hub-signature-256'], relay); assert.equal(h['x-gitcode-signature-256'], relay);
+      assert.equal(h[sample || githubSource ? 'x-sdbot-source-signature-256' : 'x-sdbot-source-gitcode-signature-256'], upstream);
+    } else {
+      assert.equal(h[upstreamHeader], upstream);
+      assert.equal(h[sample || githubSource ? 'x-gitcode-signature-256' : 'x-hub-signature-256'], undefined);
+    }
+    if (sample) assert.deepEqual([h['user-agent'], h['x-github-event'], h['x-github-delivery']], ['GitHub-Hookshot/test', 'ping', h['webhook-id']]);
+    else assert.equal(sent.body.toString(), githubSource ? gh.body : gcBody);
+  }
+  for (const header of ['webhook-id','Webhook-Timestamp','WEBHOOK-SIGNATURE']) assert.equal(parseSubscription({ name: 'Bad', url: 'https://a.example', providers: ['github'], types: ['issue'], headers: [{ name: header, value: 'forged' }] }).ok, false);
+});
+
+test('retry policy is bounded and does not retry permanent authentication failures', async () => {
+  const { retryableForward, forwardRetryDelay } = await import('../src/worker/forward.ts');
+  for (const status of [408,429,500,503,599]) assert.equal(retryableForward({ status }), true, String(status));
+  for (const status of [200,202,301,400,401,403,404,422,600]) assert.equal(retryableForward({ status }), false, String(status));
+  for (const error of ['network error','timed out after 5 s']) assert.equal(retryableForward({ status: null, error }), true);
+  assert.equal(retryableForward({ status: null, error: 'target rejected: private address' }), false);
+  assert.deepEqual([1,2,3,9,100].map(forwardRetryDelay), [30000,60000,120000,3600000,3600000]);
+});
+
+test('durable retries survive restart, retain identity, respect the shared alarm and never retry 401', { timeout: 60000 }, async t => {
+  const { Webhook } = await import('standardwebhooks');
+  await mkdir('.tmp/tests-ts', { recursive: true });
+  const directory = await mkdtemp(resolve('.tmp/tests-ts/forward-retries-')), access = await accessFixture(), received = [];
+  let mf, releaseSlow;
+  const outboundService = async request => {
+    const jwks = access.jwks(request); if (jwks) return jwks;
+    const path = new URL(request.url).pathname;
+    received.push({ path, headers: Object.fromEntries(request.headers), body: Buffer.from(await request.arrayBuffer()) });
+    const count = received.filter(row => row.path === path).length;
+    if (path === '/auth') return new Response('no', { status: 401 });
+    if (['/flaky','/slow','/missing','/expired','/sample'].includes(path) && count === 1) return new Response('busy', { status: 503 });
+    if (path === '/slow' && count === 2) await new Promise(resolve => { releaseSlow = resolve; });
+    return new Response('ok', { status: 202 });
+  };
+  const start = () => workerRuntime({ directory, entry: 'tests-ts/support/worker-forward-control.mjs', bindings: {
+    ...access.bindings, SDBOT_GITHUB_WEBHOOK_SECRET: GITHUB_SECRET, SDBOT_REPOS: repository.full_name,
+    SDBOT_GITHUB_APP_ID: '1', SDBOT_GITHUB_APP_PRIVATE_KEY: 'isolated-placeholder',
+    SDBOT_BOARD_TARGETS: JSON.stringify({ [repository.full_name]: 'example/board' }), SDBOT_BOARD_DEBOUNCE: '600',
+  }, outboundService });
+  mf = await start();
+  t.after(async () => { releaseSlow?.(); await mf.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const control = async (path, init) => {
+    const response = await mf.dispatchFetch('http://localhost/_test/' + path, init);
+    assert.equal(response.status, 200, path); return response.json();
+  };
+  const admin = (path, options) => access.admin(mf, path, options);
+  const subs = async () => (await (await admin('/admin/api/forwards')).json()).subscriptions;
+  const jobs = () => control('forward-jobs');
+  const to = path => received.filter(row => row.path === path);
+  const create = async path => (await (await admin('/admin/api/forwards', { method: 'POST', body: {
+    name: path, url: 'https://retry.example' + path, providers: ['github'], types: ['issue'], secret: 'retry-secret', signature_mode: 'github-compatible'
+  } })).json()).subscription;
+  const send = async (title = 'Retry', event = 'issues') => {
+    const delivery = github(event, { action: 'opened', repository, issue: { number: 1, title } });
+    assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', delivery.init)).status, 200);
+    return delivery;
+  };
+  const flaky = await create('/flaky'), first = await send();
+  await until(async () => (await subs()).find(sub => sub.id === flaky.id).last?.retry_at);
+  const pending = await jobs(); assert.equal(pending.length, 1);
+  const initialAlarm = await control('alarm'); assert.ok(initialAlarm <= pending[0].due);
+  const earlier = Date.now() + 29000;
+  await control('alarm?at=' + earlier);
+  await send('Unrelated', 'push');
+  assert.equal(await control('alarm'), earlier, 'ingestion cannot push another queue\'s earlier alarm later');
+  // Recreate the actual SQLite/R2-backed object before invoking its alarm handler.
+  await mf.dispose(); mf = await start();
+  assert.equal((await jobs()).length, 1, 'the retry survives a runtime restart');
+  await control('forward-tick?ms=31000');
+  assert.equal(to('/flaky').length, 2);
+  const [before, after] = to('/flaky');
+  assert.equal(after.headers['webhook-id'], before.headers['webhook-id']);
+  assert.equal(after.headers['webhook-id'], first.delivery);
+  assert.ok(Number(after.headers['webhook-timestamp']) > Number(before.headers['webhook-timestamp']));
+  assert.notEqual(after.headers['webhook-signature'], before.headers['webhook-signature']);
+  assert.equal(after.headers['x-sdbot-signature-256'], before.headers['x-sdbot-signature-256']);
+  assert.equal(after.headers['x-hub-signature-256'], before.headers['x-hub-signature-256']);
+  assert.equal(after.headers['x-sdbot-source-signature-256'], first.init.headers['x-hub-signature-256']);
+  assert.deepEqual(after.body, before.body);
+  for (const sent of [before, after]) assert.doesNotThrow(() => new Webhook('retry-secret', { format: 'raw' }).verify(sent.body, sent.headers));
+  assert.equal((await jobs()).length, 0);
+  let history = (await subs()).find(sub => sub.id === flaky.id).recent;
+  assert.deepEqual(history.slice(0, 2).map(row => [row.status,row.attempt]), [[202,2],[503,1]]);
+
+  const auth = await create('/auth'); await send('Permanent failure');
+  await until(async () => (await subs()).find(sub => sub.id === auth.id).last?.status === 401);
+  assert.equal((await jobs()).some(job => job.subscription === auth.id), false);
+  await control('forward-tick?ms=31000'); assert.equal(to('/auth').length, 1);
+
+  const slow = await create('/slow'); await send('Concurrent ingestion');
+  await until(async () => (await jobs()).some(job => job.subscription === slow.id));
+  const running = control('forward-tick?ms=31000');
+  await until(() => releaseSlow);
+  const next = send('Not blocked by outbound retry', 'push');
+  await Promise.race([next, new Promise((_, reject) => setTimeout(() => reject(new Error('retry held the ingestion mutex')), 3000))]);
+  releaseSlow(); await running;
+  assert.equal(to('/slow').length, 2);
+
+  const missing = await create('/missing'), lost = await send('Missing body');
+  await until(async () => (await jobs()).some(job => job.subscription === missing.id));
+  const archived = (await (await admin('/admin/api/events?delivery_id=' + lost.delivery)).json()).events[0];
+  await control('drop-body?id=' + archived.record_id);
+  await control('forward-tick?ms=31000');
+  assert.equal(to('/missing').length, 1, 'missing archived bytes are never sent');
+  assert.equal((await subs()).find(sub => sub.id === missing.id).last.error, 'archive body unavailable');
+  assert.equal((await jobs()).some(job => job.subscription === missing.id), false);
+
+  const expired = await create('/expired'); await send('Expired retry');
+  await until(async () => (await jobs()).some(job => job.subscription === expired.id));
+  await control('expire'); await control('forward-tick?ms=31000');
+  assert.equal(to('/expired').length, 1);
+  assert.equal((await subs()).find(sub => sub.id === expired.id).last.error, 'retry window expired');
+
+  const sample = await create('/sample');
+  assert.equal((await admin(`/admin/api/forwards/${sample.id}/test`, { method:'POST', body:{} })).status, 200);
+  await control('forward-tick?ms=31000');
+  assert.equal(to('/sample').length, 2);
+  assert.deepEqual(to('/sample')[0].body, to('/sample')[1].body, 'test retries reconstruct the same sample without another archived body');
+  assert.equal(to('/sample')[0].headers['webhook-id'], to('/sample')[1].headers['webhook-id']);
+  assert.match(to('/sample')[1].headers['x-sdbot-test'], /1/);
+});
+
+test('archive redelivery is authenticated, distinct from ingestion and uses a new relay identity', { timeout: 30000 }, async t => {
+  await mkdir('.tmp/tests-ts', { recursive: true });
+  const directory = await mkdtemp(resolve('.tmp/tests-ts/forward-manual-')), access = await accessFixture(), received = [];
+  const mf = await workerRuntime({ directory, entry: 'tests-ts/support/worker-forward-control.mjs',
+    bindings: { ...access.bindings, SDBOT_GITHUB_WEBHOOK_SECRET: GITHUB_SECRET },
+    outboundService: async request => {
+      const jwks = access.jwks(request); if (jwks) return jwks;
+      received.push({ headers: Object.fromEntries(request.headers), body: Buffer.from(await request.arrayBuffer()) });
+      return new Response('ok');
+    } });
+  t.after(async () => { await mf.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const admin = (path, options) => access.admin(mf, path, options);
+  const sub = (await (await admin('/admin/api/forwards', { method: 'POST', body: {
+    name: 'Manual', url: 'https://manual.example/hook', providers: ['github'], types: ['issue'], secret: 'manual-secret',
+  } })).json()).subscription;
+  const delivery = github('issues', { action: 'opened', repository, issue: { number: 2, title: 'From archive' } });
+  assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', delivery.init)).status, 200);
+  await until(() => received.length === 1);
+  const original = (await (await admin('/admin/api/events?delivery_id=' + delivery.delivery)).json()).events[0];
+  const path = `/admin/api/events/${original.record_id}/forward`;
+  assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', delivery.init)).status, 200);
+  assert.equal((await mf.dispatchFetch('http://localhost' + path, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } })).status, 401);
+  for (const method of ['GET', 'PUT', 'DELETE'])
+    assert.equal((await admin(path, { method, ...(method === 'PUT' ? { body: {} } : {}) })).status, 405);
+  assert.equal((await admin(path, { method: 'POST', body: {}, headers: { origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await admin(path, { method: 'POST', body: {}, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+  assert.equal((await admin(path, { method: 'POST', body: 'x', headers: { 'content-type': 'text/plain' } })).status, 415);
+  const response = await admin(path, { method: 'POST', body: {} });
+  assert.equal(response.status, 202);
+  const sent = await response.json();
+  assert.match(sent.webhook_id, new RegExp('^manual-' + original.record_id + '-[a-f0-9]{8}$'));
+  await until(() => received.length === 2);
+  assert.equal(received[1].headers['webhook-id'], sent.webhook_id);
+  assert.notEqual(sent.webhook_id, delivery.delivery);
+  assert.equal(received[1].body.toString(), delivery.body);
+  assert.equal(received[1].headers['x-hub-signature-256'], undefined, 'redacted historic source credentials are not invented');
+  const count = (await (await admin('/admin/api/events')).json()).count;
+  assert.equal(count, 2, 'manual forwarding does not create another ingestion record or rerun business listeners');
+  await admin('/admin/api/forwards/' + sub.id, { method: 'PUT', body: { ...sub, types: ['push'] } });
+  assert.equal((await admin(path, { method: 'POST', body: {} })).status, 422);
+  await mf.dispatchFetch('http://localhost/_test/drop-body?id=' + original.record_id);
+  assert.equal((await admin(path, { method: 'POST', body: {} })).status, 404);
+});
+
+test('successful forwarding adds no new SQLite SELECTs and legacy mode reads do not rewrite subscriptions', { timeout: 30000 }, async t => {
+  await mkdir('.tmp/tests-ts', { recursive: true });
+  const directory = await mkdtemp(resolve('.tmp/tests-ts/forward-cost-')), access = await accessFixture();
+  const mf = await workerRuntime({ directory, entry: 'tests-ts/support/worker-forward-control.mjs',
+    bindings: { ...access.bindings, SDBOT_GITHUB_WEBHOOK_SECRET: GITHUB_SECRET },
+    outboundService: request => access.jwks(request) || new Response('ok') });
+  t.after(async () => { await mf.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const admin = (path, options) => access.admin(mf, path, options);
+  const rows = async () => (await mf.dispatchFetch('http://localhost/_test/rows')).json();
+  const sub = (await (await admin('/admin/api/forwards', { method: 'POST', body: {
+    name: 'Cost', url: 'https://cost.example', providers: ['github'], types: ['push'], secret: 'cost-secret',
+  } })).json()).subscription;
+  const send = async () => {
+    const delivery = github('issues', { action: 'opened', repository, issue: { number: 1 } });
+    assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', delivery.init)).status, 200);
+  };
+  await send(); await rows(); await send(); const baseline = await rows();
+  await admin('/admin/api/forwards/' + sub.id, { method: 'PUT', body: { ...sub, types: ['issue'] } });
+  await rows(); await send();
+  await until(async () => (await (await admin('/admin/api/forwards')).json()).subscriptions.find(s => s.id === sub.id).last);
+  const forwarded = await rows();
+  assert.equal(forwarded.select_read, baseline.select_read, 'no new SELECT or retry-queue read on the success path');
+  assert.equal(forwarded.read, baseline.read + 1, 'the existing result UPSERT reads its one subscription row');
+  assert.equal(forwarded.written, baseline.written + 1, 'only the existing result row is updated');
+  const legacy = { ...sub, id: randomUUID(), name: 'Legacy', created: '2026-10-18T09:02:43Z' };
+  delete legacy.signature_mode;
+  await mf.dispatchFetch('http://localhost/_test/seed', { method: 'POST', body: JSON.stringify(legacy) }); await rows();
+  const listed = (await (await admin('/admin/api/forwards')).json()).subscriptions;
+  assert.equal(listed.find(s => s.id === legacy.id).signature_mode, 'github-compatible');
+  assert.equal((await rows()).written, 0, 'legacy signature modes are inferred without a migration write');
+  const generated = (await (await admin('/admin/api/forwards', { method: 'POST', body: {
+    name: 'Generated', url: 'https://cost.example/new', providers: ['github'], types: ['issue'],
+  } })).json()).subscription;
+  assert.match(generated.secret, /^whsec_[A-Za-z0-9+/]{43}=$/);
+  assert.equal(Buffer.from(generated.secret.slice(6), 'base64').length, 32);
 });

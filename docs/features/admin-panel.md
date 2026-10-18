@@ -31,6 +31,7 @@ Workers 本地模拟器使用同一面板，默认管理地址为 `http://127.0.
 | GET／POST /api/forwards，PUT／DELETE /api/forwards/<id>，POST /api/forwards/<id>/test | 仅 Worker（`/admin` 前缀）：转发订阅、最近调用记录和测试发送 |
 | GET／POST /api/callers，PUT／DELETE /api/callers/<id> | 仅 Worker（`/admin` 前缀）：外部调用客户端，含每个客户端的令牌权限 |
 | GET／POST /api/actions-rules，PUT／DELETE /api/actions-rules/<id> | 仅 Worker（`/admin` 前缀）：GitHub Actions 访问规则（工作流、分支、事件，以及各令牌的仓库和权限） |
+| POST /api/events/<record_id>/forward | 仅 Worker（`/admin` 前缀）：独立重新转发归档原文，不重放入库／监听器 |
 | GET /api/token-grants | 仅 Worker（`/admin` 前缀）：证书与 Actions 兑换发出的安装令牌记录（不含令牌），只读 |
 | GET /api/repository-identity?repository=owner/name | 仅 Worker（`/admin` 前缀）：访问规则表单的「校验」，返回仓库规范名称、ID 和 App 是否安装，只读 |
 | GET /api/events | 投递摘要、offset、has_more；limit 默认 50、上限 500 |

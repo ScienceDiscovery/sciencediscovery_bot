@@ -111,6 +111,18 @@ export class WorkerArchive implements Archive {
     const envelope = await this.envelope(row), record = object(envelope.record);
     return withBody(record, envelope, await this.payload(record));
   }
+  /** Manual relay uses retained bytes and non-sensitive headers; never invent redacted upstream credentials. */
+  async forwardSource(identifier: string): Promise<{ record: Doc; headers: Headers; body: Uint8Array } | null> {
+    const row = this.row(identifier); if (!row) return null;
+    const blob = await this.bucket.get(row.body_key);
+    if (!blob) return null;
+    const envelope = await this.envelope(row).catch(() => null);
+    if (!envelope) return null;
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(object(object(envelope.request).headers)))
+      if (typeof value === 'string' && value !== '[REDACTED]') headers.set(name, value);
+    return { record: object(envelope.record), headers, body: new Uint8Array(await blob.arrayBuffer()) };
+  }
   private counter(name: string): number | null {
     return this.sql.exec<{ value: number }>('SELECT value FROM counters WHERE name=?', name).toArray()[0]?.value ?? null;
   }
