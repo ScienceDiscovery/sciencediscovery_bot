@@ -28,8 +28,7 @@ export class WorkerForwards {
     if (!forwardable(record)) return;
     const targets = this.list().filter(sub => matches(sub, record));
     if (!targets.length) return;
-    const contentType = headers.get('content-type') || 'application/json';
-    for (const sub of targets) waitUntil(deliver(sub, record, body, contentType, this.fetcher).then(result => this.record(sub.id, result)).catch(() => undefined));
+    for (const sub of targets) waitUntil(deliver(sub, record, body, headers, this.fetcher).then(result => this.record(sub.id, result)).catch(() => undefined));
   }
   /** The newest results live in the subscription's row: still one row write per send, and no extra reads. */
   private record(id: string, result: ForwardResult): void {
