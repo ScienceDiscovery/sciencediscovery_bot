@@ -47,6 +47,8 @@
 
 ## 动作取值
 
+管理页每个类型和动作标签的悬浮说明与本文分类一致，悬浮在文字或复选框上即可查看。
+
 | 事件类型 | actions 取值与含义 |
 | --- | --- |
 | `issue` | `issue:opened` 新建、`issue:closed` 关闭、`issue:reopened` 重新打开、`issue:edited` 更新、`issue:other` 其余动作 |

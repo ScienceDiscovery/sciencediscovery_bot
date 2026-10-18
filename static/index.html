@@ -566,11 +566,42 @@ const FORWARD_ACTIONS = {
   issue_comment: { issue: "议题评论", pull_request: "合并请求评论", other: "其他评论" },
   pull_request_review: { submitted: "提交评审", edited: "更新评审", dismissed: "撤销评审", diff_comment: "代码行评论", other: "其他评审" }
 };
+const FORWARD_TYPE_HELP = {
+  "issue": "GitHub 的 issues，以及 GitCode 的 Issue Hook。只含议题本身的打开、关闭和修改，不含下面的评论。",
+  "issue_comment": "写在议题或合并请求对话区里的评论。GitHub 用 issue_comment，在 PR 对话区发言也属于这里；GitCode 用 Note Hook。这不是正式评审。",
+  "pull_request": "GitHub 的 pull_request，以及 GitCode 的 Merge Request Hook。不含对话区评论，也不含正式评审。",
+  "pull_request_review": "GitHub 的正式评审 pull_request_review，以及 diff 上的行间评论 pull_request_review_comment。当前没有 GitCode 事件被归入这一类；GitCode 的合并请求评论在「评论」里。",
+  "push": "GitHub 的 push，以及 GitCode 的 Push Hook 和 Tag Push Hook。这一类不再细分动作。",
+  "ping": "GitHub 的 ping，用于确认 Webhook 配置。这一类不再细分动作。",
+  "other": "以上几类之外、已经归档的事件，例如 workflow_run、installation 或星标。这一类不再细分动作。"
+};
+const FORWARD_ACTION_HELP = {
+  "issue:opened": "新建议题。GitHub 的 opened，GitCode 的 open。",
+  "issue:closed": "关闭议题。GitHub 的 closed，GitCode 的 close。",
+  "issue:reopened": "重新打开已关闭的议题。GitHub 的 reopened，GitCode 的 reopen。",
+  "issue:edited": "修改标题或正文。GitHub 的 edited，GitCode 的 update。不是新评论。",
+  "issue:other": "标签、指派、里程碑、锁定等没有单独列出的议题动作。",
+  "pull_request:opened": "新建合并请求。GitHub 的 opened，GitCode 的 open。",
+  "pull_request:closed": "未合并就关闭。GitHub 的 closed 且未合并，GitCode 的 close。已经合并的不在这里。",
+  "pull_request:reopened": "重新打开已关闭的合并请求。GitHub 的 reopened，GitCode 的 reopen。",
+  "pull_request:edited": "修改标题、正文或说明，不包含分支上的新提交。GitHub 的 edited；GitCode 不带新提交记录的 update。",
+  "pull_request:synchronize": "向合并请求的分支推送了新提交。GitHub 的 synchronize；GitCode 带 oldrev 的 update。",
+  "pull_request:merged": "合并请求已经合并。GitHub 在关闭时标记 merged；GitCode 的 merge。",
+  "pull_request:other": "转为草稿、标签、请求评审等没有单独列出的动作。",
+  "issue_comment:issue": "评论写在议题下面。GitHub 的 issue_comment 且对象是议题；GitCode 的 Note Hook 且对象是 Issue。",
+  "issue_comment:pull_request": "评论写在合并请求的对话区。不是 diff 上的行间评论，也不是一次正式评审。GitHub 的 issue_comment 且对象是 PR；GitCode 的 Note Hook 且对象是 Merge Request。",
+  "issue_comment:other": "例如 GitCode 对某次提交的 Note。",
+  "pull_request_review:submitted": "提交一次正式评审，包括通过、要求修改，以及以评论形式提交的评审。GitHub 的 pull_request_review，动作为 submitted。",
+  "pull_request_review:edited": "修改已提交评审的正文。GitHub 的 edited，且不是行间评论。",
+  "pull_request_review:dismissed": "撤回一次评审。GitHub 的 dismissed。",
+  "pull_request_review:diff_comment": "写在 diff 某一行上的评论。GitHub 的 pull_request_review_comment，新建、修改和删除都归这里。",
+  "pull_request_review:other": "上面没有单独列出的评审动作。"
+};
 const forwardActionLabel = value => { const [type, action] = value.split(":"); return `${FORWARD_TYPES[type]}：${FORWARD_ACTIONS[type]?.[action] || action}`; };
 function forwardTypes(sub) {
   $("#forward-types").innerHTML = Object.entries(FORWARD_TYPES).map(([type, label]) => `<div class="forward-type" data-forward-type="${type}">
-    <label><input type="checkbox" name="types" value="${type}"> ${label}</label>
-    ${FORWARD_ACTIONS[type] ? `<div class="forward-actions" aria-label="${label}的动作">${Object.entries(FORWARD_ACTIONS[type]).map(([action, name]) => `<label><input type="checkbox" name="actions" value="${type}:${action}"> ${name}</label>`).join("")}</div>` : ""}
+    <label title="${esc(FORWARD_TYPE_HELP[type])}"><input type="checkbox" name="types" value="${type}"> ${label}</label>
+    ${FORWARD_ACTIONS[type] ? `<div class="forward-actions" aria-label="${label}的动作">${Object.entries(FORWARD_ACTIONS[type]).map(([action, name]) => `<label title="${esc(FORWARD_ACTION_HELP[`${type}:${action}`])}"><input type="checkbox" name="actions" value="${type}:${action}"> ${name}</label>`).join("")}</div>` : ""}
   </div>`).join("");
   const form = $("#forward-form");
   check(form, "types", sub?.types || []); check(form, "actions", sub?.actions || []);

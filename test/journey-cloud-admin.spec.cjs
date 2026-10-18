@@ -207,6 +207,20 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   const issueActions = form.locator('[data-forward-type="issue"]');
   const prActions = form.locator('[data-forward-type="pull_request"]');
   await expect(form).toContainText('不选动作表示该类型全部转发');
+  // Native label titles cover both the checkbox and its visible Chinese text.
+  const optionLabels = form.locator('#forward-types label');
+  await expect(optionLabels).toHaveCount(27);
+  expect(await optionLabels.evaluateAll(labels => labels.every(label => label.title.trim() && label.querySelector('input[type="checkbox"]')))).toBe(true);
+  const commentLabel = form.locator('[data-forward-type="issue_comment"] > label');
+  const reviewLabel = form.locator('[data-forward-type="pull_request_review"] > label');
+  await expect(commentLabel).toHaveAttribute('title', "写在议题或合并请求对话区里的评论。GitHub 用 issue_comment，在 PR 对话区发言也属于这里；GitCode 用 Note Hook。这不是正式评审。");
+  await expect(reviewLabel).toHaveAttribute('title', "GitHub 的正式评审 pull_request_review，以及 diff 上的行间评论 pull_request_review_comment。当前没有 GitCode 事件被归入这一类；GitCode 的合并请求评论在「评论」里。");
+  await expect(prActions.locator('input[value="pull_request:edited"]').locator('..')).toHaveAttribute('title', "修改标题、正文或说明，不包含分支上的新提交。GitHub 的 edited；GitCode 不带新提交记录的 update。");
+  await expect(prActions.locator('input[value="pull_request:synchronize"]').locator('..')).toHaveAttribute('title', "向合并请求的分支推送了新提交。GitHub 的 synchronize；GitCode 带 oldrev 的 update。");
+  await commentLabel.hover();
+  await commentLabel.locator('input').hover();
+  expect(await commentLabel.locator('input').evaluate(input => input.closest('label').title)).toContain('这不是正式评审');
+
   await issueActions.getByLabel('新建', {exact: true}).check();
   await prActions.getByLabel('合并', {exact: true}).check();
   await expect(issueActions.locator('.forward-actions')).toBeVisible();
