@@ -40,6 +40,10 @@
   .config-form textarea { font: 12px/1.5 ui-monospace, monospace; }
   .config-form fieldset { border: 1px solid var(--line); border-radius: 4px; display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; min-width: 0; }
   .config-form fieldset label { display: inline-flex; gap: 4px; align-items: center; }
+  .config-form fieldset.forward-types { display: grid; gap: 10px; }
+  .forward-actions { margin: 6px 0 0 22px; display: flex; flex-wrap: wrap; gap: 6px 14px; }
+  .forward-type { min-width: 0; }
+  .forward-type label { overflow-wrap: anywhere; }
   .form-actions, .card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .card-actions { margin-top: 8px; }
   .test-result { margin: 8px 0 0; font-size: 12px; }
@@ -186,24 +190,21 @@
   </section>
   <section id="forwards-page" aria-label="转发" hidden>
     <h2>Webhook 转发</h2>
-    <p class="muted">只转发已经验签并归档成功的投递，同一 delivery 的重复投递不再转发。目标只接受 https，不能是回环、私网、链路本地或云元数据地址；每次 5 秒超时、不跟随重定向。目标失败不影响 Webhook 的确认。正文不另存，每条订阅保留最近 20 次调用的时间、状态和耗时。「测试」立即向目标发送一条带 <code>X-Sdbot-Test: 1</code> 的测试请求（不受来源、事件类型和仓库筛选限制），显示状态码、耗时和脱敏后的返回内容开头，并计入最近调用。</p>
+    <p class="muted">只转发已经验签并归档成功的投递，同一 delivery 的重复投递不再转发。目标只接受 https，不能是回环、私网、链路本地或云元数据地址；每次 5 秒超时、不跟随重定向。目标失败不影响 Webhook 的确认。转发保留原始正文及来源业务标头，移除连接和基础设施标头；来源平台签名保持原值，订阅密钥的签名写入 <code>X-Sdbot-Signature-256</code>，仅缺少 <code>X-Hub-Signature-256</code> 时才同时补上该标头。附加标头只补缺失名称。正文不另存，每条订阅保留最近 20 次调用的时间、状态和耗时。「测试」立即向目标发送一条带 <code>X-Sdbot-Test: 1</code> 的测试请求（不受来源、事件类型、动作和仓库筛选限制），显示状态码、耗时和脱敏后的返回内容开头，并计入最近调用。</p>
     <div class="filters"><button id="reload-forwards">刷新转发</button><button id="new-forward">新增订阅</button><span id="forward-count" class="muted" role="status"></span></div>
     <form id="forward-form" class="config-form" hidden novalidate>
       <label>名称 <input type="text" name="name" maxlength="80" autocomplete="off"></label>
       <label>目标 URL <input type="url" name="url" placeholder="https://" autocomplete="off"></label>
       <fieldset><legend>来源</legend><label><input type="checkbox" name="providers" value="github"> github</label><label><input type="checkbox" name="providers" value="gitcode"> gitcode</label></fieldset>
-      <fieldset><legend>事件类型</legend>
-        <label><input type="checkbox" name="types" value="issue"> issue</label><label><input type="checkbox" name="types" value="issue_comment"> issue_comment</label>
-        <label><input type="checkbox" name="types" value="pull_request"> pull_request</label><label><input type="checkbox" name="types" value="pull_request_review"> pull_request_review</label>
-        <label><input type="checkbox" name="types" value="push"> push</label><label><input type="checkbox" name="types" value="ping"> ping</label>
-        <label><input type="checkbox" name="types" value="other"> other（以上之外的已归档事件）</label>
+      <fieldset class="forward-types"><legend>事件类型与动作</legend>
+        <p class="muted">不选动作表示该类型全部转发。</p><div id="forward-types"></div>
       </fieldset>
       <label>仓库（可选，每行一个 owner/name；留空表示所有仓库） <textarea name="repos" rows="2" spellcheck="false" placeholder="openJiuwen-ai/sciencediscovery"></textarea></label>
       <fieldset class="header-rows"><legend>附加标头（可选，最多 10 个，例如 Authorization: Bearer …）</legend>
         <div id="forward-headers"></div>
         <div class="form-actions"><button type="button" id="add-forward-header">添加标头</button><label class="inline-check muted"><input type="checkbox" id="show-forward-headers"> 显示标头值</label></div>
       </fieldset>
-      <label>签名密钥（可选，HMAC-SHA256 写入 X-Hub-Signature-256） <input type="password" name="secret" maxlength="256" autocomplete="off"></label>
+      <label>签名密钥（可选，HMAC-SHA256 写入 X-Sdbot-Signature-256） <input type="password" name="secret" maxlength="256" autocomplete="off"></label>
       <label class="muted inline-check"><input type="checkbox" id="show-forward-secret"> 显示密钥</label>
       <div class="form-actions"><button type="submit">保存订阅</button><button type="button" id="cancel-forward">取消</button></div>
       <p class="form-error" role="alert"></p>
@@ -558,7 +559,29 @@ document.addEventListener("click", (ev) => {
 });
 
 // ---- Forwarding and certificate callers: Worker-only configuration, read on page load, view switch or refresh.
-const FORWARD_TYPES = ["issue", "issue_comment", "pull_request", "pull_request_review", "push", "ping", "other"];
+const FORWARD_TYPES = { issue: "议题（Issue）", issue_comment: "评论", pull_request: "合并请求（PR）", pull_request_review: "评审", push: "推送", ping: "连通检查", other: "其他事件" };
+const FORWARD_ACTIONS = {
+  issue: { opened: "新建", closed: "关闭", reopened: "重新打开", edited: "更新", other: "其余动作" },
+  pull_request: { opened: "新建", closed: "关闭（不含合并）", reopened: "重新打开", edited: "更新", synchronize: "新提交", merged: "合并", other: "其余动作" },
+  issue_comment: { issue: "议题评论", pull_request: "合并请求评论", other: "其他评论" },
+  pull_request_review: { submitted: "提交评审", edited: "更新评审", dismissed: "撤销评审", diff_comment: "代码行评论", other: "其他评审" }
+};
+const forwardActionLabel = value => { const [type, action] = value.split(":"); return `${FORWARD_TYPES[type]}：${FORWARD_ACTIONS[type]?.[action] || action}`; };
+function forwardTypes(sub) {
+  $("#forward-types").innerHTML = Object.entries(FORWARD_TYPES).map(([type, label]) => `<div class="forward-type" data-forward-type="${type}">
+    <label><input type="checkbox" name="types" value="${type}"> ${label}</label>
+    ${FORWARD_ACTIONS[type] ? `<div class="forward-actions" aria-label="${label}的动作">${Object.entries(FORWARD_ACTIONS[type]).map(([action, name]) => `<label><input type="checkbox" name="actions" value="${type}:${action}"> ${name}</label>`).join("")}</div>` : ""}
+  </div>`).join("");
+  const form = $("#forward-form");
+  check(form, "types", sub?.types || []); check(form, "actions", sub?.actions || []);
+  toggleForwardActions();
+}
+function toggleForwardActions() {
+  document.querySelectorAll(".forward-type").forEach(group => {
+    const enabled = group.querySelector('[name="types"]').checked, actions = group.querySelector('.forward-actions');
+    if (actions) { actions.hidden = !enabled; actions.querySelectorAll('input').forEach(input => { input.disabled = !enabled; }); }
+  });
+}
 let forwards = [], forwardDoc = null, callers = [], editingForward = null, editingCaller = null;
 // Test outcomes and opened history lists survive the card re-render that follows each change.
 const testResults = new Map(), openHistory = new Set();
@@ -597,7 +620,8 @@ function renderForwards(doc = forwardDoc) {
   $("#forward-list").innerHTML = forwards.map(f => `<article class="subscription" data-forward="${esc(f.id)}">
     <header><h3>${esc(f.name)}</h3><span class="${f.last?.error ? "bad" : f.last ? "ok" : "muted"}">${f.last ? (f.last.error ? "最近失败" : "最近成功") : "未转发"}</span></header>
     <p><code>${esc(f.url)}</code></p>
-    <div class="routes">${f.providers.map(v => `<code>${esc(v)}</code>`).join("")}${f.types.map(v => `<code>${esc(v)}</code>`).join("")}</div>
+    <div class="routes">${f.providers.map(v => `<code>${esc(v)}</code>`).join("")}${f.types.map(v => `<span class="tag">${esc(FORWARD_TYPES[v] || v)}</span>`).join("")}</div>
+    <p class="scope">动作：${esc(f.actions?.length ? f.actions.map(forwardActionLabel).join("、") : "各类型全部")}</p>
     <p class="scope">仓库：${esc(f.repos.length ? f.repos.join("、") : "所有仓库")}${f.headers.length ? ` · 附加标头：${esc(f.headers.map(h => h.name).join("、"))}` : ""}</p>
     <p class="scope">${f.has_secret ? "已设置签名密钥" : "不签名"} · 最近一次：${lastResult(f.last)}</p>
     <div class="card-actions"><button type="button" data-test-forward="${esc(f.id)}"${testResults.get(f.id)?.pending ? " disabled" : ""}>测试</button><button type="button" data-edit-forward="${esc(f.id)}">编辑</button><button type="button" data-delete-forward="${esc(f.id)}">删除</button></div>
@@ -627,10 +651,11 @@ function openForward(sub) {
   field(form, "repos").value = (sub?.repos || []).join("\n");
   $("#forward-headers").replaceChildren();
   for (const header of sub?.headers || []) headerRow(header);
-  check(form, "providers", sub?.providers || ["github"]); check(form, "types", sub?.types || []);
+  check(form, "providers", sub?.providers || ["github"]); forwardTypes(sub);
   form.querySelector(".form-error").textContent = "";
   field(form, "name").focus();
 }
+$("#forward-types").addEventListener("change", toggleForwardActions);
 $("#new-forward").addEventListener("click", () => openForward(null));
 $("#cancel-forward").addEventListener("click", () => { $("#forward-form").hidden = true; editingForward = null; });
 $("#show-forward-secret").addEventListener("change", ev => { field($("#forward-form"), "secret").type = ev.target.checked ? "text" : "password"; });
@@ -640,6 +665,7 @@ $("#show-forward-headers").addEventListener("change", ev => { document.querySele
 $("#forward-form").addEventListener("submit", async ev => {
   ev.preventDefault();
   const form = ev.target, body = { name: field(form, "name").value, url: field(form, "url").value, providers: checked(form, "providers"), types: checked(form, "types"), secret: field(form, "secret").value,
+    actions: checked(form, "actions").filter(action => checked(form, "types").includes(action.split(":")[0])),
     repos: field(form, "repos").value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean),
     // Rows left completely empty are ignored; a half-filled row is sent so the server can say what is missing.
     headers: [...document.querySelectorAll("#forward-headers .header-row")].map(row => ({ name: row.querySelector(".header-name").value.trim(), value: row.querySelector(".header-value").value }))

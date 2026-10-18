@@ -10,6 +10,7 @@
 - **目标 URL**：只接受 `https`；
 - **来源**：`github`、`gitcode` 或两者；
 - **事件类型**：可多选 `issue`、`issue_comment`、`pull_request`、`pull_request_review`、`push`、`ping`、`other`。类型是归一化后的 kind，`other` 表示这六类之外、已经归档的事件，例如 `workflow_run`、`installation` 或未识别的事件；
+- **动作**（可选）：在对应事件类型下面选择，使用下表的 `类型:动作` 值；不选表示该类型全部转发，旧订阅没有 `actions` 时行为不变；
 - **仓库**（可选）：一组 `owner/name`，最多 50 个，不区分大小写；留空表示所有仓库；
 - **附加标头**（可选）：最多 10 个，例如 `Authorization: Bearer <令牌>`，用于目标服务的鉴权；
 - **签名密钥**（可选）。
@@ -22,13 +23,18 @@
   - 验签失败或请求无效的投递不转发；
   - 同一 delivery id 的重复投递只转发第一次。
 - **发送时机**：在归档事务提交之后，用 `waitUntil` 在后台发出，Webhook 的响应不等待转发。
-- **请求格式**：方法为 `POST`，正文是收到的原始字节，`Content-Type` 沿用来源请求。每次都带：
+- **请求格式**：方法为 `POST`，正文保持收到的原始字节。先复制来源业务标头，保留来源的 `User-Agent`、`Content-Type`、`X-GitHub-*`、`X-GitCode-*` 和平台签名。再按名称不区分大小写、只在缺失时追加：
+  - `Content-Type: application/json`；
+  - `User-Agent: sciencediscovery-bot-forward`；
   - `X-Sdbot-Provider`；
   - `X-Sdbot-Event`：归一化后的 kind；
-  - `X-Sdbot-Delivery`：平台 delivery id，没有时用记录 id。
+  - `X-Sdbot-Delivery`：平台 delivery id，没有时用记录 id；
+  - `X-Sdbot-Action`：归一化动作，允许为空。
+- **不复制的来源标头**：`Content-Length`、`Host`、`Connection`、`Keep-Alive`、`Transfer-Encoding`、`TE`、`Trailer`、`Upgrade`、`Expect`、`Content-Encoding`、`Cookie`；以 `Proxy-`、`CF-`、`Sec-`、`X-Sdbot-` 开头的名称；以及 `Forwarded`、`Via`、`X-Forwarded-For`、`X-Forwarded-Proto`、`X-Forwarded-Host`、`X-Forwarded-Port`、`X-Real-IP`、`True-Client-IP`、`CDN-Loop`。连接、基础设施和客户端 IP 标头不传到目标；不带 `Content-Encoding`，因为发送的是接收器实际捕获到的字节。
+- **动作过滤**：先匹配来源、事件类型和仓库，再匹配该类型已选动作。`actions` 缺省或为空时不限制动作；非空时，仍只有选了动作的类型受限制。例如订阅同时选择 Issue 和 PR，只选 `issue:opened`，则只限制 Issue 为新建，PR 继续全部转发。动作不能扩大事件类型范围，未选择对应类型、未知动作、非数组均返回 422。只使用归档记录的 `kind`、`action`、`extra.on`，不重新解析正文。已合并 PR 只匹配 `pull_request:merged`，不匹配 `pull_request:closed`。
 - **仓库过滤**：订阅填了仓库时，只转发这些仓库的投递，按归一化后的仓库名（GitHub 的 `full_name`、GitCode 的项目路径）不区分大小写比较。不在 `SDBOT_REPOS` 范围、记为 `ignored` 的投递，只要仓库在订阅列表里也会转发。没有仓库的投递（例如 App 级别的 `installation`）只发给未填仓库的订阅。
-- **附加标头**：原样加入每次转发请求。名称须是合法的 HTTP 字段名，同名（不区分大小写）不能出现两次；值最长 1024 个字符，不能含换行或其他控制字符，防止拼出额外的标头。Bot 自己设置或会改变请求结构与路由的标头不能配置：`Content-Type`、`Content-Length`、`Content-Encoding`、`Transfer-Encoding`、`Host`、`Connection`、`Keep-Alive`、`Upgrade`、`TE`、`Trailer`、`Expect`、`Cookie`、`User-Agent`、`X-Hub-Signature-256`，以及以 `X-Sdbot-`、`Proxy-`、`CF-`、`Sec-` 开头的名称。
-- **签名**：设置了密钥时，对原始正文做 HMAC-SHA256，十六进制摘要放在 `X-Hub-Signature-256: sha256=<hex>`。
+- **附加标头**：只在名称尚不存在时追加，不能覆盖来源值。名称须是合法的 HTTP 字段名，同名（不区分大小写）不能配置两次；值最长 1024 个字符，不能含换行或其他控制字符。不能配置连接类标头、`Cookie`、`Content-Type`、`User-Agent`、`X-Hub-Signature-256`、`X-GitCode-Signature-256`，以及所有 `X-Sdbot-*`、`Proxy-*`、`CF-*`、`Sec-*` 名称。`Authorization` 等非保留标头可以配置，但来源已有同名值时来源优先。
+- **签名与兼容性**：订阅设置密钥时，对实际发出的正文做 HMAC-SHA256，将十六进制摘要写入 `X-Sdbot-Signature-256: sha256=<hex>`。来源的 `X-Hub-Signature-256` 与 `X-GitCode-Signature-256` 始终保留原值；只有来源没有 `X-Hub-Signature-256` 时才把同一订阅签名补到该标头。**接收 GitHub 已签名投递的服务，验证订阅密钥时须改读 `X-Sdbot-Signature-256`**，因为 `X-Hub-Signature-256` 现在是原平台签名，不再被订阅签名替换。GitCode 平台签名继续留在 `X-GitCode-Signature-256`；缺少 `X-Hub-Signature-256` 时，后者仍可兼容承载订阅签名。
 - **超时与重定向**：单次超时 5 秒，不跟随重定向，3xx 记为失败。
 - **不重试**：目标失败、超时或被拒绝时，Webhook 仍按来源平台原来的成功状态确认，转发也不会再重试。
 - **目标地址检查**：只接受 `https`，URL 中不能带用户名或密码。以下目标会被拒绝：
@@ -39,11 +45,22 @@
   `https://2130706433/` 这类整数写法会先被 URL 解析规范为点分地址再检查。保存时和每次发送前都会检查。主机名的 DNS 解析由 Cloudflare 出站完成，Worker 无法在发送前解析名称，因此这里只检查字面地址。
 - **存储内容**：不再另存 Webhook 正文。每条订阅保存配置和最近 20 次调用结果（含测试，新的在前），每次记录时间、delivery id、事件类型、仓库、耗时，以及 HTTP 状态或错误摘要（`HTTP 500`、`redirect not followed (HTTP 302)`、`timed out after 5 s`、`network error`）。编辑订阅不清空这些结果；删除订阅时一并删除。升级前保存的单条结果作为第一条历史保留，没有耗时、类型和仓库。
 
+## 动作取值
+
+| 事件类型 | actions 取值与含义 |
+| --- | --- |
+| `issue` | `issue:opened` 新建、`issue:closed` 关闭、`issue:reopened` 重新打开、`issue:edited` 更新、`issue:other` 其余动作 |
+| `pull_request` | `pull_request:opened` 新建、`pull_request:closed` 关闭但未合并、`pull_request:reopened` 重新打开、`pull_request:edited` 更新、`pull_request:synchronize` 新提交、`pull_request:merged` 合并、`pull_request:other` 其余动作 |
+| `issue_comment` | `issue_comment:issue` 议题评论、`issue_comment:pull_request` 合并请求评论、`issue_comment:other` 其他评论；按 `extra.on` 归类 |
+| `pull_request_review` | `pull_request_review:submitted` 提交评审、`pull_request_review:edited` 更新评审、`pull_request_review:dismissed` 撤销评审、`pull_request_review:diff_comment` 代码行评论、`pull_request_review:other` 其他评审；`extra.on=diff_comment` 优先归为代码行评论 |
+
+`push`、`ping`、`other` 不设动作。GitHub 和 GitCode 使用同一套归一化值。管理页使用中文标签，动作放在所属类型下面；取消类型勾选时不提交该类型动作。
+
 ## 测试与调用记录
 
 订阅卡片上的「测试」立即向目标发送一条测试请求，用来确认地址、鉴权标头和签名配置可用：
-- **请求内容**：方法、地址、附加标头和签名与真实转发相同；`X-Sdbot-Provider` 为 `test`，`X-Sdbot-Event` 为 `ping`，`X-Sdbot-Delivery` 为 `test-<uuid>`，并额外带 `X-Sdbot-Test: 1`。正文是一小段 JSON：`{"test": true, "zen": "...", "subscription": {"id", "name"}, "sent_at"}`；
-- **不受筛选限制**：订阅的来源、事件类型和仓库筛选不影响测试；
+- **请求内容**：方法、地址及附加标头规则与真实转发相同，但没有来源标头；`X-Sdbot-Provider` 为 `test`，`X-Sdbot-Event` 为 `ping`，`X-Sdbot-Delivery` 为 `test-<uuid>`，并额外带 `X-Sdbot-Test: 1`。`X-Sdbot-Action` 为空；有密钥时同时写入 `X-Sdbot-Signature-256` 和 `X-Hub-Signature-256`。正文仍是一小段 JSON：`{"test": true, "zen": "...", "subscription": {"id", "name"}, "sent_at"}`；
+- **不受筛选限制**：订阅的来源、事件类型、动作和仓库筛选不影响测试；
 - **结果**：页面在卡片上显示 HTTP 状态或错误、耗时和时间，以及目标返回内容的开头。返回内容最多读取 4 KB，签名密钥和附加标头的值被替换为 `[REDACTED]`，再按常见令牌格式脱敏，最多显示 500 个字符；它只出现在这次测试的响应里，不保存；
 - **记录**：测试结果和真实转发一样计入最近 20 次调用，并标记「测试」。测试请求不是 Webhook，不进入投递归档。
 
@@ -80,7 +97,8 @@
 
 `tests-ts/worker-forward.test.mjs` 在 workerd 中验证：
 - 私网和元数据地址被拒绝；
-- 来源与类型筛选、转发头与签名；
+- 来源／类型／动作筛选与旧订阅兼容：Issue 新建不包含关闭，未选 PR 动作时 PR 不受限，合并不匹配关闭，GitCode MR 评论及评审代码行评论按归档字段匹配；
+- 原始正文字节及来源 User-Agent、Content-Type、GitHub／GitCode 事件和平台签名保留，连接与基础设施标头剔除，同名附加标头不覆盖来源，订阅签名使用新标头且旧标头仅补缺；
 - 目标返回 500、302 和超时时 Webhook 仍返回 200，并记录各自的结果；
 - 验签失败和重复投递不转发；
 - 密钥不进入状态和用量接口；
@@ -90,4 +108,4 @@
 - 最近结果包含真实转发和测试，新的在前，超过 20 条丢弃最旧的，编辑后保留；
 - 测试路径的 405、未知订阅 404、跨站 403、非 JSON 415 和未认证 401，被拒绝的请求不会发到目标。
 
-浏览器旅程 `test/journey-cloud-admin.spec.cjs` 在 390px 下完成配置（含仓库和 `Authorization` 标头，值默认遮住、卡片只显示名称），点击「测试」看到 `HTTP 503`、耗时和「返回内容为空」，展开最近调用并在第二次测试后仍保持展开，在 390px 和桌面宽度下都没有横向溢出，并确认加载后没有定时请求。
+浏览器旅程 `test/journey-cloud-admin.spec.cjs` 在 390px 下完成配置（含按类型动作、仓库和 `Authorization` 标头，值默认遮住、卡片只显示名称），编辑回显动作、取消类型后不提交对应动作、清空动作恢复该类型全部后，点击「测试」看到 `HTTP 503`、耗时和「返回内容为空」，展开最近调用并在第二次测试后仍保持展开，在 390px 和桌面宽度下都没有横向溢出，并确认加载后没有定时请求。

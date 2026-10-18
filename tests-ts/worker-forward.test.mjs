@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { workerRuntime } from '../tools/worker-runtime.mjs';
 import { accessFixture } from './support/access.mjs';
+import { deliver as forwardDelivery, matches, forwardAction, parseSubscription, publicSubscription, FORWARD_ACTIONS } from '../src/core/forward.ts';
 
 const GITHUB_SECRET = 'forward-github-secret', GITCODE_SECRET = 'forward-gitcode-secret';
 const github = (event, payload, delivery = randomUUID(), secret = GITHUB_SECRET) => {
@@ -55,7 +56,7 @@ test('forwarding sends verified, archived deliveries to matching HTTPS targets o
   const subs = {};
   await t.test('subscriptions are created and read back with their secret', async () => {
     for (const [key, fields] of Object.entries({
-      issues: { name: 'Issues', url: 'https://a.example/issues', secret: 'forward-target-secret' },
+      issues: { name: 'Issues', url: 'https://a.example/issues', secret: 'forward-target-secret', headers: [{ name: 'X-Note', value: 'configured' }, { name: 'Authorization', value: 'configured-auth' }, { name: 'X-Added', value: 'added' }] },
       gitcodePush: { name: 'GitCode push', url: 'https://a.example/gitcode-push', providers: ['gitcode'], types: ['push'] },
       other: { name: 'Everything else', url: 'https://a.example/other', providers: ['github', 'gitcode'], types: ['other'] },
       broken: { name: 'Broken', url: 'https://broken.example/hook' },
@@ -73,6 +74,19 @@ test('forwarding sends verified, archived deliveries to matching HTTPS targets o
 
   await t.test('an issue event reaches only issue subscriptions; failing targets never change the webhook reply', async () => {
     const delivery = github('issues', { action: 'opened', repository, issue: { number: 4, title: 'forward me' } });
+    // Deliberate whitespace and Unicode detect an accidental parse/stringify of the body.
+    delivery.body = ' \n' + delivery.body.replace('forward me', '原样转发') + '\n';
+    delivery.init.body = delivery.body;
+    Object.assign(delivery.init.headers, {
+      'x-hub-signature-256': 'sha256=' + createHmac('sha256', GITHUB_SECRET).update(delivery.body).digest('hex'),
+      'User-Agent': 'GitHub-Hookshot/fixture', 'content-type': 'application/json; charset=utf-8',
+      'X-Note': 'source-note', 'AUTHORIZATION': 'source-auth', Host: 'inbound.example',
+      'Content-Length': String(Buffer.byteLength(delivery.body)), Cookie: 'private-cookie=fixture',
+      'CF-Connecting-IP': '192.0.2.1', 'X-Forwarded-For': '192.0.2.2', 'Forwarded': 'for=fixture', Via: 'fixture',
+      'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'inbound.example', 'X-Forwarded-Port': '443',
+      'X-Real-IP': '192.0.2.3', 'True-Client-IP': '192.0.2.4', 'CDN-Loop': 'fixture',
+      'Proxy-Authorization': 'fixture', 'Sec-Fetch-Site': 'same-origin', 'X-Sdbot-Provider': 'forged', 'X-Sdbot-Signature-256': 'forged'
+    });
     const started = Date.now();
     const response = await mf.dispatchFetch('http://localhost/webhook/github', delivery.init);
     assert.equal(response.status, 200);
@@ -83,7 +97,21 @@ test('forwarding sends verified, archived deliveries to matching HTTPS targets o
     assert.equal(sent.headers['x-sdbot-provider'], 'github');
     assert.equal(sent.headers['x-sdbot-event'], 'issue');
     assert.equal(sent.headers['x-sdbot-delivery'], delivery.delivery);
-    assert.equal(sent.headers['x-hub-signature-256'], 'sha256=' + createHmac('sha256', 'forward-target-secret').update(delivery.body).digest('hex'));
+    assert.equal(sent.headers['x-hub-signature-256'], delivery.init.headers['x-hub-signature-256']);
+    const subscriptionSignature = 'sha256=' + createHmac('sha256', 'forward-target-secret').update(sent.body).digest('hex');
+    assert.equal(sent.headers['x-sdbot-signature-256'], subscriptionSignature);
+    assert.notEqual(sent.headers['x-hub-signature-256'], subscriptionSignature);
+    assert.equal(sent.headers['x-sdbot-action'], 'opened');
+    assert.deepEqual([sent.headers['user-agent'], sent.headers['content-type'], sent.headers['x-github-event'], sent.headers['x-github-delivery']],
+      ['GitHub-Hookshot/fixture', 'application/json; charset=utf-8', 'issues', delivery.delivery]);
+    assert.deepEqual([sent.headers['x-note'], sent.headers.authorization, sent.headers['x-added']], ['source-note', 'source-auth', 'added']);
+    // workerd adds destination Host/framing itself. The direct send test below verifies
+    // neither header is copied into RequestInit; source Host must never reach the target.
+    assert.equal(sent.headers.host, 'a.example');
+    if (sent.headers['content-length'] !== undefined) assert.equal(sent.headers['content-length'], String(Buffer.byteLength(delivery.body)));
+    for (const name of ['cookie', 'cf-connecting-ip', 'x-forwarded-for', 'forwarded', 'via', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-port', 'x-real-ip', 'true-client-ip', 'cdn-loop', 'proxy-authorization', 'sec-fetch-site']) {
+      assert.equal(sent.headers[name], undefined, name);
+    }
     assert.equal(to('/other').length + to('/gitcode-push').length, 0);
     // Results are recorded per subscription: HTTP status, refused redirect, five-second timeout.
     const last = await until(async () => {
@@ -112,6 +140,9 @@ test('forwarding sends verified, archived deliveries to matching HTTPS targets o
     assert.equal(push.status, 200);
     const [gitcode] = await until(() => to('/gitcode-push').length && to('/gitcode-push'));
     assert.deepEqual([gitcode.headers['x-sdbot-provider'], gitcode.headers['x-sdbot-event'], gitcode.headers['x-hub-signature-256']], ['gitcode', 'push', undefined]);
+    assert.equal(gitcode.body.toString(), body);
+    assert.equal(gitcode.headers['x-gitcode-event'], 'Push Hook');
+    assert.equal(gitcode.headers['x-gitcode-signature-256'], 'sha256=' + createHmac('sha256', GITCODE_SECRET).update(body).digest('hex'));
     const ping = github('ping', { zen: 'hi', hook_id: 1, hook: { type: 'App' } });
     assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', ping.init)).status, 200);
     await new Promise(r => setTimeout(r, 300));
@@ -184,6 +215,7 @@ test('subscriptions can be limited to repositories and send configured headers',
       [{ headers: [{ name: 'X-Sdbot-Event', value: 'issue' }] }, /cannot be configured/],
       [{ headers: [{ name: 'X-Hub-Signature-256', value: 'sha256=0' }] }, /cannot be configured/],
       [{ headers: [{ name: 'Host', value: 'a.example' }] }, /cannot be configured/],
+      ...['User-Agent', 'Cookie', 'X-GitCode-Signature-256', 'CF-Test', 'Sec-Test', 'Proxy-Test', 'X-Sdbot-Signature-256'].map(name => [{ headers: [{ name, value: 'fixture' }] }, /cannot be configured/]),
       [{ headers: [{ name: 'Authorization', value: 'a' }, { name: 'authorization', value: 'b' }] }, /more than once/],
       [{ headers: Array.from({ length: 11 }, (_, i) => ({ name: 'X-H' + i, value: 'v' })) }, /at most 10 headers/],
     ]) {
@@ -246,7 +278,7 @@ test('a test send reaches the target at once and the latest 20 results are kept'
   await t.test('the test request carries the subscription headers and signature, but not its filters', async () => {
     // Filters that no delivery here would pass: a test is sent regardless of source, type and repository.
     const created = await json(await admin('/admin/api/forwards', { method: 'POST', body: { name: 'Tested', url: 'https://a.example/tested', providers: ['gitcode'], types: ['pull_request'],
-      repos: ['someone/else'], secret: 'forward-target-secret', headers: credentials } }));
+      repos: ['someone/else'], actions: ['pull_request:closed'], secret: 'forward-target-secret', headers: credentials } }));
     tested = created.body.subscription.id;
     assert.deepEqual(created.body.subscription.recent, []);
     const reply = await runTest(tested);
@@ -260,6 +292,8 @@ test('a test send reaches the target at once and the latest 20 results are kept'
     assert.deepEqual([sent.headers['x-sdbot-test'], sent.headers['x-sdbot-provider'], sent.headers['x-sdbot-event'], sent.headers['x-sdbot-delivery']], ['1', 'test', 'ping', result.delivery_id]);
     assert.deepEqual([sent.headers.authorization, sent.headers['x-env'], sent.headers['content-type']], ['Bearer crsr_test_value', 'custom-value-123', 'application/json']);
     assert.equal(sent.headers['x-hub-signature-256'], 'sha256=' + createHmac('sha256', 'forward-target-secret').update(sent.body).digest('hex'));
+    assert.equal(sent.headers['x-sdbot-signature-256'], sent.headers['x-hub-signature-256']);
+    assert.equal(sent.headers['x-sdbot-action'], '');
     const body = JSON.parse(sent.body.toString());
     assert.deepEqual([body.test, body.subscription], [true, { id: tested, name: 'Tested' }]);
     const sub = (await list()).subscriptions.find(s => s.id === tested);
@@ -314,4 +348,136 @@ test('a test send reaches the target at once and the latest 20 results are kept'
     assert.equal((await mf.dispatchFetch('http://localhost' + path, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } })).status, 401);
     assert.equal(received.length, before, 'no refused request reached a target');
   });
+});
+
+test('forward actions classify archived fields and preserve legacy subscriptions', () => {
+  const legacy = { providers: ['github', 'gitcode'], types: ['issue', 'pull_request', 'issue_comment', 'pull_request_review', 'push', 'ping', 'other'], repos: [] };
+  const record = { provider: 'github', kind: 'issue', action: 'closed', repo: 'owner/repo', extra: {} };
+  assert.equal(matches(legacy, record), true, 'an old subscription without actions keeps all actions');
+  assert.deepEqual(publicSubscription(legacy).actions, []);
+  assert.equal('actions' in legacy, false, 'reading an old subscription does not mutate it');
+  assert.equal(matches({ ...legacy, actions: [] }, record), true);
+  assert.equal(matches({ ...legacy, actions: ['issue:opened'] }, record), false);
+  assert.equal(matches({ ...legacy, actions: ['issue:opened'] }, { ...record, kind: 'pull_request' }), true, 'a type without selected actions is unrestricted');
+  assert.equal(matches({ ...legacy, types: ['issue'], actions: ['issue:opened'] }, { ...record, kind: 'pull_request', action: 'opened' }), false);
+  assert.equal(matches({ ...legacy, providers: ['gitcode'] }, record), false);
+  assert.equal(matches({ ...legacy, repos: ['someone/else'] }, record), false);
+  for (const [kind, actions] of Object.entries(FORWARD_ACTIONS)) {
+    for (const action of actions) {
+      const extra = kind === 'issue_comment' ? { on: action } : action === 'diff_comment' ? { on: 'diff_comment' } : {};
+      const entry = { ...record, kind, action: action === 'other' ? 'unrecognized' : action, extra };
+      if (kind === 'issue_comment') entry.action = 'created';
+      assert.equal(forwardAction(entry), `${kind}:${action}`);
+      assert.equal(matches({ ...legacy, actions: [`${kind}:${action}`] }, entry), true);
+      const different = actions.find(candidate => candidate !== action);
+      assert.equal(matches({ ...legacy, actions: [`${kind}:${different}`] }, entry), false);
+    }
+  }
+  assert.equal(matches({ ...legacy, actions: ['pull_request:closed'] }, { ...record, kind: 'pull_request', action: 'merged' }), false);
+  assert.equal(matches({ ...legacy, actions: ['issue:opened'] }, { ...record, kind: 'push' }), true);
+  assert.equal(matches({ ...legacy, actions: ['issue:opened'] }, { ...record, kind: 'ping' }), true);
+  assert.equal(matches({ ...legacy, actions: ['issue:opened'] }, { ...record, kind: 'workflow_run' }), true);
+  for (const value of [null, 'issue:opened', ['issue:unknown'], ['pull_request:opened'], ['push:pushed'], ['other:other'], [4]]) {
+    const parsed = parseSubscription({ name: 'Actions', url: 'https://a.example/hook', providers: ['github'], types: ['issue'], actions: value });
+    assert.equal(parsed.ok, false, JSON.stringify(value));
+  }
+});
+
+test('forwarding drops infrastructure headers and only supplies missing header values', async () => {
+  const omitted = ['content-length', 'host', 'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade', 'expect', 'content-encoding', 'cookie',
+    'proxy-authorization', 'cf-connecting-ip', 'sec-fetch-site', 'x-sdbot-provider', 'x-sdbot-action', 'x-sdbot-signature-256',
+    'forwarded', 'via', 'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-port', 'x-real-ip', 'true-client-ip', 'cdn-loop'];
+  const source = new Headers(omitted.map(name => [name, 'fixture']));
+  source.set('User-Agent', 'source-agent'); source.set('Content-Type', 'application/custom+json');
+  source.set('X-Hub-Signature-256', 'source-platform-signature'); source.set('X-GitCode-Signature-256', 'gitcode-platform-signature');
+  source.set('X-Mixed-Case', 'original');
+  const sub = { id: 'fixture', name: 'Fixture', url: 'https://a.example/unit', secret: 'subscription-secret', headers: [
+    { name: 'x-MIXED-case', value: 'replacement' }, { name: 'X-New', value: 'additional' },
+    { name: 'X-Hub-Signature-256', value: 'forged' }, { name: 'X-GitCode-Signature-256', value: 'forged' }
+  ] };
+  const record = { provider: 'gitcode', kind: 'pull_request', action: 'merged', record_id: 'archive-id' };
+  const body = new TextEncoder().encode('  {"text":"中文"}\n');
+  let sent;
+  const fetcher = async (_url, init) => { sent = init; return new Response('ok'); };
+  await forwardDelivery(sub, record, body, source, fetcher);
+  assert.deepEqual(sent.body, body);
+  assert.equal(sent.headers.get('user-agent'), 'source-agent');
+  assert.equal(sent.headers.get('content-type'), 'application/custom+json');
+  assert.equal(sent.headers.get('x-hub-signature-256'), 'source-platform-signature');
+  assert.equal(sent.headers.get('x-gitcode-signature-256'), 'gitcode-platform-signature');
+  assert.equal(sent.headers.get('x-mixed-case'), 'original');
+  assert.equal(sent.headers.get('x-new'), 'additional');
+  assert.equal(sent.headers.get('x-sdbot-provider'), 'gitcode');
+  assert.equal(sent.headers.get('x-sdbot-event'), 'pull_request');
+  assert.equal(sent.headers.get('x-sdbot-action'), 'merged');
+  assert.equal(sent.headers.get('x-sdbot-delivery'), 'archive-id');
+  for (const name of omitted.filter(name => !name.startsWith('x-sdbot-'))) assert.equal(sent.headers.has(name), false, name);
+  const signature = 'sha256=' + createHmac('sha256', sub.secret).update(body).digest('hex');
+  assert.equal(sent.headers.get('x-sdbot-signature-256'), signature);
+  assert.equal(source.get('x-sdbot-provider'), 'fixture', 'the source headers are not mutated');
+  await forwardDelivery(sub, record, body, new Headers(), fetcher);
+  assert.equal(sent.headers.get('user-agent'), 'sciencediscovery-bot-forward');
+  assert.equal(sent.headers.get('content-type'), 'application/json');
+  assert.equal(sent.headers.get('x-hub-signature-256'), signature, 'legacy signature is supplied only if absent');
+  const emptySignature = new Headers({ 'X-Hub-Signature-256': '' });
+  await forwardDelivery(sub, record, body, emptySignature, fetcher);
+  assert.equal(sent.headers.get('x-hub-signature-256'), '', 'an existing empty value is not replaced');
+});
+
+test('action filters use the archived GitHub and GitCode actions after type matching', { timeout: 60000 }, async t => {
+  await mkdir('.tmp/tests-ts', { recursive: true });
+  const directory = await mkdtemp(resolve('.tmp/tests-ts/worker-forward-actions-'));
+  const access = await accessFixture(), received = [];
+  const mf = await workerRuntime({ directory, bindings: { ...access.bindings, SDBOT_GITHUB_WEBHOOK_SECRET: GITHUB_SECRET, SDBOT_GITCODE_WEBHOOK_SECRET: GITCODE_SECRET,
+    SDBOT_REPOS: 'openJiuwen-ai/sciencediscovery', SDBOT_ENVIRONMENT: 'test' }, outboundService: async request => {
+    const jwks = access.jwks(request); if (jwks) return jwks;
+    received.push({ path: new URL(request.url).pathname, headers: Object.fromEntries(request.headers), body: await request.text() });
+    return new Response('ok');
+  } });
+  t.after(async () => { await mf.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const create = async (name, types, actions, extra = {}) => access.admin(mf, '/admin/api/forwards', { method: 'POST', body: {
+    name, url: 'https://a.example/' + name, providers: ['github', 'gitcode'], types, ...(actions === undefined ? {} : { actions }), ...extra } });
+  assert.equal((await create('invalid', ['issue'], ['pull_request:opened'])).status, 422);
+  assert.equal((await create('invalid', ['push'], ['push:pushed'])).status, 422);
+  const specs = [
+    ['opened', ['issue', 'pull_request'], ['issue:opened']],
+    ['closed-pr', ['pull_request'], ['pull_request:closed']],
+    ['merged-pr', ['pull_request'], ['pull_request:merged']],
+    ['pr-comments', ['issue_comment'], ['issue_comment:pull_request']],
+    ['diff-comments', ['pull_request_review'], ['pull_request_review:diff_comment']],
+    ['all', ['issue', 'pull_request', 'issue_comment', 'pull_request_review', 'push', 'ping', 'other'], undefined],
+    ['gitcode-signed', ['push'], [], { providers: ['gitcode'], secret: 'gitcode-forward-secret' }]
+  ];
+  for (const spec of specs) assert.equal((await create(...spec)).status, 201);
+  const cases = [
+    ['issues', { action: 'opened', repository, issue: { number: 1 } }, ['opened', 'all']],
+    ['issues', { action: 'closed', repository, issue: { number: 1 } }, ['all']],
+    ['pull_request', { action: 'opened', repository, pull_request: { number: 2 } }, ['opened', 'all']],
+    ['pull_request', { action: 'closed', repository, pull_request: { number: 2, merged: false } }, ['opened', 'closed-pr', 'all']],
+    ['pull_request', { action: 'closed', repository, pull_request: { number: 2, merged: true } }, ['opened', 'merged-pr', 'all']],
+    ['issue_comment', { action: 'created', repository, issue: { number: 1 }, comment: {} }, ['all']],
+    ['pull_request_review', { action: 'submitted', repository, pull_request: { number: 2 }, review: {} }, ['all']],
+    ['pull_request_review_comment', { action: 'created', repository, pull_request: { number: 2 }, comment: {} }, ['diff-comments', 'all']],
+    ['Note Hook', { object_kind: 'note', project: { path_with_namespace: 'openJiuwen/sciencediscovery' }, object_attributes: { noteable_type: 'MergeRequest' }, merge_request: { iid: 3 } }, ['pr-comments', 'all']],
+    ['Push Hook', { object_kind: 'push', ref: 'refs/heads/main', project: { path_with_namespace: 'openJiuwen/sciencediscovery' } }, ['gitcode-signed', 'all']]
+  ];
+  for (const [event, payload, expected] of cases) {
+    const fromGitCode = event.endsWith('Hook'), source = fromGitCode ? 'gitcode' : 'github';
+    const delivery = github(event, payload);
+    if (fromGitCode) delivery.init.headers = { 'content-type': 'application/json', 'x-gitcode-event': event, 'x-gitcode-delivery': delivery.delivery,
+      'x-gitcode-signature-256': 'sha256=' + createHmac('sha256', GITCODE_SECRET).update(delivery.body).digest('hex') };
+    assert.equal((await mf.dispatchFetch('http://localhost/webhook/' + source, delivery.init)).status, 200);
+    await until(() => received.filter(row => row.headers['x-sdbot-delivery'] === delivery.delivery).length >= expected.length);
+    const sent = received.filter(row => row.headers['x-sdbot-delivery'] === delivery.delivery);
+    assert.deepEqual(sent.map(row => row.path.slice(1)).sort(), expected.slice().sort(), event + ' ' + (payload.action || ''));
+    for (const row of sent) assert.equal(row.body, delivery.body);
+    if (event === 'Push Hook') {
+      const signed = sent.find(row => row.path === '/gitcode-signed');
+      assert.equal(signed.headers['x-gitcode-event'], 'Push Hook');
+      assert.equal(signed.headers['x-gitcode-signature-256'], delivery.init.headers['x-gitcode-signature-256']);
+      const signature = 'sha256=' + createHmac('sha256', 'gitcode-forward-secret').update(signed.body).digest('hex');
+      assert.equal(signed.headers['x-sdbot-signature-256'], signature);
+      assert.equal(signed.headers['x-hub-signature-256'], signature);
+    }
+  }
 });
