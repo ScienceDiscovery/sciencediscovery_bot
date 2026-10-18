@@ -1,7 +1,7 @@
 const { test, expect } = require('../.e2e/node_modules/@playwright/test');
 const { createHmac, randomUUID } = require('node:crypto');
 
-test('authenticated cloud management shows exchanges and listeners without write controls', async ({ page, context, request }, testInfo) => {
+test('authenticated cloud management shows exchanges and listeners without ingestion replay', async ({ page, context, request }, testInfo) => {
   expect((await request.get('/admin/')).status()).toBe(401);
   expect((await request.get('/api/status')).status()).toBe(404);
   const delivery = randomUUID();
@@ -465,4 +465,65 @@ test('a failed read says whether to wait for a new version or to log in again', 
   await page.route('**/admin/api/status', route => route.fulfill({ status: 401, json: { ok: false, error: 'unauthorized' } }));
   await page.reload();
   await expect(banner).toHaveText('读取失败：unauthorized（登录可能已过期，请刷新页面重新登录）');
+});
+
+test('relay signature modes match a GitHub-compatible receiver and archived events can be forwarded again', async ({page, context, request}, testInfo) => {
+  await context.addCookies([{name:'test_access',value:'allowed',url:'http://127.0.0.1:18893',httpOnly:true}]);
+  await page.goto('/admin/#forwards');
+  await page.getByRole('button',{name:'新增订阅'}).click();
+  const form=page.locator('#forward-form');
+  await expect(form.getByLabel('保留来源签名',{exact:true})).toBeChecked();
+  await form.getByLabel('名称',{exact:true}).fill('标准签名验收');
+  await form.getByLabel('目标 URL').fill('https://signatures.example/hook');
+  await form.getByLabel('议题（Issue）',{exact:true}).check();
+  await form.getByRole('button',{name:'生成密钥',exact:true}).click();
+  await expect(form.getByLabel(/签名密钥/)).toHaveValue(/^whsec_[A-Za-z0-9+/]{43}=$/);
+  await form.getByLabel(/签名密钥/).fill('journey-standard-secret');
+  await page.setViewportSize({width:390,height:844});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await form.screenshot({path:testInfo.outputPath('signature-mode-mobile.png')});
+  await form.getByRole('button',{name:'保存订阅'}).click();
+  const card=page.locator('#forward-list article',{hasText:'标准签名验收'});
+  await expect(card).toContainText('保留来源签名');
+  // This receiver only accepts GitHub-style signatures: preserve now fails the sample as real GitHub would.
+  await card.getByRole('button',{name:'测试',exact:true}).click();
+  await expect(card.locator('.test-result')).toContainText('HTTP 401');
+  await expect(card.locator('.test-result')).toContainText('"standard":true');
+  await expect(card.locator('.test-result')).toContainText('"github_compatible":false');
+  await card.getByRole('button',{name:'编辑'}).click();
+  await expect(form.getByLabel('GitHub 兼容',{exact:true}).locator('..')).toHaveAttribute('title',/只支持 GitHub/);
+  await form.getByLabel('GitHub 兼容',{exact:true}).check();
+  await form.getByRole('button',{name:'保存订阅'}).click();
+  await card.getByRole('button',{name:'测试',exact:true}).click();
+  await expect(card.locator('.test-result')).toContainText('HTTP 202');
+  await expect(card.locator('.test-result')).toContainText('"upstream_preserved":true');
+  await page.setViewportSize({width:1440,height:1000});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await card.screenshot({path:testInfo.outputPath('signature-receiver-desktop.png')});
+  const delivery=randomUUID(), body=JSON.stringify({action:'opened',repository:{full_name:'ScienceDiscovery/sciencediscovery'},issue:{number:21,title:'重新转发验收'}});
+  expect((await request.post('/webhook/github',{data:body,headers:{'content-type':'application/json','x-github-event':'issues','x-github-delivery':delivery,
+    'x-hub-signature-256':'sha256='+createHmac('sha256',process.env.SDBOT_E2E_SECRET).update(body).digest('hex')}})).status()).toBe(200);
+  await page.getByRole('link',{name:'事件记录',exact:true}).click();
+  await page.locator('#f-delivery').fill(delivery);await page.locator('#f-delivery').press('Enter');
+  await expect(page.locator('#rows tr')).toHaveCount(1);
+  await page.locator('#rows tr').filter({hasText:'重新转发验收'}).getByRole('button',{name:'查看详情'}).click();
+  const dialog=page.getByRole('dialog');
+  await expect(dialog.locator('#request-body')).toContainText('重新转发验收');
+  await dialog.getByRole('button',{name:'重新转发',exact:true}).click();
+  await expect(dialog.locator('#forward-archived-result')).toContainText(/已向 \d+ 个订阅安排重新转发，投递 manual-/);
+  await dialog.screenshot({path:testInfo.outputPath('manual-forward-desktop.png')});
+  await page.setViewportSize({width:390,height:844});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await dialog.screenshot({path:testInfo.outputPath('manual-forward-mobile.png')});
+  await dialog.getByRole('button',{name:'关闭',exact:true}).click();
+  await page.getByRole('link',{name:'转发',exact:true}).click();
+  await expect(card).toContainText('最近成功');
+  await card.locator('details summary').click();
+  await expect(card.locator('.forward-history')).toContainText('manual-');
+  await expect(card.locator('.forward-history')).toContainText('第 1 次');
+  await expect(card.locator('.forward-history')).toContainText('issue');
+  // Removing this fixture subscription cancels any of its pending work, and keeps later runs isolated.
+  await page.evaluate(()=>window.confirm=()=>true);
+  await card.getByRole('button',{name:'删除',exact:true}).click();
+  await expect(card).toHaveCount(0);
 });

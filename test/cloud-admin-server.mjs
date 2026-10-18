@@ -1,4 +1,6 @@
 // Isolated Access stand-in: this server is never bundled into the deployed Worker.
+import { createHmac } from 'node:crypto';
+import { Webhook } from 'standardwebhooks';
 import { createServer } from 'node:http';
 import { generateKeyPair, exportJWK, exportPKCS8, SignJWT } from 'jose';
 import { workerRuntime } from '../tools/worker-runtime.mjs';
@@ -26,7 +28,16 @@ const mf = await workerRuntime({ directory: process.env.SDBOT_CLOUD_E2E_RUN_DIR,
   SDBOT_ADMIN_HOSTNAME: '127.0.0.1', SDBOT_ACCESS_ISSUER: issuer, SDBOT_ACCESS_AUD: 'browser-admin', SDBOT_ENVIRONMENT: 'test',
   SDBOT_ANALYTICS_TOKEN: ANALYTICS.token, SDBOT_CLOUDFLARE_ACCOUNT_ID: ANALYTICS.account, SDBOT_ARCHIVE_BUCKET: ANALYTICS.bucket,
   SDBOT_GITHUB_APP_ID: '321', SDBOT_GITHUB_APP_PRIVATE_KEY: await exportPKCS8(app.privateKey),
-}, outboundService: request => request.url === issuer + '/cdn-cgi/access/certs' ? Response.json({ keys: [jwk] }) : github(request) || analytics.handler(request) });
+}, outboundService: async request => {
+  if (request.url === issuer + '/cdn-cgi/access/certs') return Response.json({ keys: [jwk] });
+  if (new URL(request.url).hostname === 'signatures.example') {
+    const body = Buffer.from(await request.arrayBuffer()), headers = Object.fromEntries(request.headers), secret = 'journey-standard-secret';
+    try { new Webhook(secret, { format: 'raw' }).verify(body, headers); } catch { return new Response('invalid standard signature', { status: 401 }); }
+    const compatible = headers['x-hub-signature-256'] === 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
+    return Response.json({ standard: true, github_compatible: compatible, upstream_preserved: !!headers['x-sdbot-source-signature-256'], webhook_id: headers['webhook-id'] }, { status: compatible ? 202 : 401 });
+  }
+  return github(request) || analytics.handler(request);
+} });
 const server = createServer(async (req, res) => {
   try {
     const headers = new Headers();

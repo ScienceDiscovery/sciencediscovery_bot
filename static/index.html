@@ -190,7 +190,8 @@
   </section>
   <section id="forwards-page" aria-label="转发" hidden>
     <h2>Webhook 转发</h2>
-    <p class="muted">只转发已经验签并归档成功的投递，同一 delivery 的重复投递不再转发。目标只接受 https，不能是回环、私网、链路本地或云元数据地址；每次 5 秒超时、不跟随重定向。目标失败不影响 Webhook 的确认。转发保留原始正文及来源业务标头，移除连接和基础设施标头；来源平台签名保持原值，订阅密钥的签名写入 <code>X-Sdbot-Signature-256</code>，仅缺少 <code>X-Hub-Signature-256</code> 时才同时补上该标头。附加标头只补缺失名称。正文不另存，每条订阅保留最近 20 次调用的时间、状态和耗时。「测试」立即向目标发送一条带 <code>X-Sdbot-Test: 1</code> 的测试请求（不受来源、事件类型、动作和仓库筛选限制），显示状态码、耗时和脱敏后的返回内容开头，并计入最近调用。</p>
+    <p class="muted">转发保留原始正文和来源业务标头。每次尝试写入 Standard Webhooks 的 <code>webhook-id</code>、<code>webhook-timestamp</code>、<code>webhook-signature</code>，同时保留 <code>X-Sdbot-Signature-256</code>。平台签名的含义由订阅的签名模式决定。</p>
+    <p class="muted">网络错误、超时、408、429 和 5xx 在首次失败后 24 小时内退避重试；其他 4xx 不重试。每次 5 秒超时，不跟随重定向；目标失败不影响 Webhook 确认。「测试」发送带伪造上游签名的 GitHub 示例，验证当前签名模式，不是历史投递重放，也不受订阅筛选限制。正文不另存，最近保留 20 次尝试。</p>
     <div class="filters"><button id="reload-forwards">刷新转发</button><button id="new-forward">新增订阅</button><span id="forward-count" class="muted" role="status"></span></div>
     <form id="forward-form" class="config-form" hidden novalidate>
       <label>名称 <input type="text" name="name" maxlength="80" autocomplete="off"></label>
@@ -204,7 +205,12 @@
         <div id="forward-headers"></div>
         <div class="form-actions"><button type="button" id="add-forward-header">添加标头</button><label class="inline-check muted"><input type="checkbox" id="show-forward-headers"> 显示标头值</label></div>
       </fieldset>
-      <label>签名密钥（可选，HMAC-SHA256 写入 X-Sdbot-Signature-256） <input type="password" name="secret" maxlength="256" autocomplete="off"></label>
+      <fieldset><legend>签名模式</legend>
+        <label title="接收方使用 Standard Webhooks 或 X-Sdbot-Signature-256 验证订阅密钥；平台签名只保留上游原值，不用订阅密钥验证。"><input type="radio" name="signature_mode" value="preserve" checked> 保留来源签名</label>
+        <label title="接收方只支持 GitHub 风格验签时选此项。两个平台签名头都使用订阅密钥，上游原签名移到独立的 X-Sdbot-Source 标头。"><input type="radio" name="signature_mode" value="github-compatible"> GitHub 兼容</label>
+      </fieldset>
+      <label>签名密钥（留空自动生成；HMAC-SHA256 写入 X-Sdbot-Signature-256）<input type="password" name="secret" maxlength="256" autocomplete="off"></label>
+      <button type="button" id="generate-forward-secret">生成密钥</button>
       <label class="muted inline-check"><input type="checkbox" id="show-forward-secret"> 显示密钥</label>
       <div class="form-actions"><button type="submit">保存订阅</button><button type="button" id="cancel-forward">取消</button></div>
       <p class="form-error" role="alert"></p>
@@ -287,7 +293,7 @@ curl -X POST https://api.github.com/repos/openJiuwen-ai/sciencediscovery/issues/
   <div class="detail-title"><h2 id="detail-title">Webhook 投递详情</h2><button id="close-detail">关闭</button></div>
   <p id="detail-meta"></p>
   <p id="detail-note" role="status"></p>
-  <div class="detail-toolbar"><label><input id="pretty-json" type="checkbox" checked> 格式化 JSON</label></div>
+  <div class="detail-toolbar"><button id="forward-archived" hidden>重新转发</button><span id="forward-archived-result" role="status"></span><label><input id="pretty-json" type="checkbox" checked> 格式化 JSON</label></div>
   <div class="exchange">
     <section><h3>请求内容</h3><details><summary>请求头（凭据已脱敏）</summary><pre id="request-headers"></pre></details><pre id="request-body"></pre></section>
     <section><h3 id="response-title">返回内容</h3><details><summary>返回头</summary><pre id="response-headers"></pre></details><pre id="response-body"></pre></section>
@@ -521,6 +527,7 @@ function renderBodies() {
 async function openDetail(id) {
   const requestId = ++detailRequest;
   currentDetail = null;
+  $("#forward-archived").hidden = true; $("#forward-archived-result").textContent = "";
   $("#detail-meta").textContent = "正在加载…";
   $("#detail-meta").title = "";
   $("#detail-note").textContent = "";
@@ -531,6 +538,7 @@ async function openDetail(id) {
     const doc = await api("/api/events/" + encodeURIComponent(id));
     if (requestId !== detailRequest) return;
     currentDetail = doc;
+    $("#forward-archived").hidden = !cloudAdmin || !doc.request.body_available || !["accepted", "ignored"].includes(doc.record.status);
     const r = doc.record, req = doc.request, res = doc.response;
     $("#detail-meta").textContent = `${eventTime(r.received_at)} · ${req.method || "未知方法"} ${req.path || "历史路径未保存"}\n投递 ${r.delivery_id || "无平台 ID"} · 记录 ${r.record_id}`;
     $("#detail-meta").title = r.received_at || "";
@@ -550,6 +558,16 @@ async function openDetail(id) {
   }
 }
 
+$("#forward-archived").addEventListener("click", async () => {
+  const id = currentDetail?.record.record_id; if (!id) return;
+  const button = $("#forward-archived"); button.disabled = true;
+  $("#forward-archived-result").textContent = "正在安排转发…";
+  try {
+    const result = await send("/api/events/" + encodeURIComponent(id) + "/forward", "POST", {});
+    if (currentDetail?.record.record_id === id) $("#forward-archived-result").textContent = `已向 ${result.subscriptions} 个订阅安排重新转发，投递 ${result.webhook_id}`;
+  } catch (err) { if (currentDetail?.record.record_id === id) $("#forward-archived-result").textContent = "重新转发失败：" + err.message; }
+  finally { button.disabled = false; }
+});
 $("#close-detail").addEventListener("click", () => $("#delivery-detail").close());
 $("#delivery-detail").addEventListener("close", () => { ++detailRequest; currentDetail = null; });
 $("#pretty-json").addEventListener("change", renderBodies);
@@ -641,7 +659,7 @@ function testResult(f) {
 function callHistory(f) {
   if (!f.recent.length) return "";
   const rows = f.recent.map(r => `<li><span title="${esc(r.at)}">${esc(eventTime(r.at))}</span>${outcome(r)}${r.duration_ms == null ? "" : `<span>${esc(r.duration_ms)} ms</span>`}`
-    + `${r.event ? `<code>${esc(r.event)}</code>` : ""}${r.repo ? `<span>${esc(r.repo)}</span>` : ""}<code title="${esc(r.delivery_id)}">${esc(String(r.delivery_id).slice(0, 18))}</code>${testTag(r)}</li>`).join("");
+    + `${r.event ? `<code>${esc(r.event)}</code>` : ""}${r.repo ? `<span>${esc(r.repo)}</span>` : ""}<code title="${esc(r.delivery_id)}">${esc(String(r.delivery_id).slice(0, 18))}</code>${testTag(r)}${r.attempt ? `<span>第 ${esc(r.attempt)} 次</span>` : ""}${r.retry_at ? `<span>下次重试 ${esc(eventTime(r.retry_at))}</span>` : r.terminal && r.error ? "<span>已停止重试</span>" : ""}</li>`).join("");
   return `<details data-history="${esc(f.id)}"${openHistory.has(f.id) ? " open" : ""}><summary>最近 ${f.recent.length} 次调用（最多保留 ${esc(forwardDoc.history)} 次）</summary><ol class="forward-history">${rows}</ol></details>`;
 }
 function renderForwards(doc = forwardDoc) {
@@ -654,7 +672,7 @@ function renderForwards(doc = forwardDoc) {
     <div class="routes">${f.providers.map(v => `<code>${esc(v)}</code>`).join("")}${f.types.map(v => `<span class="tag">${esc(FORWARD_TYPES[v] || v)}</span>`).join("")}</div>
     <p class="scope">动作：${esc(f.actions?.length ? f.actions.map(forwardActionLabel).join("、") : "各类型全部")}</p>
     <p class="scope">仓库：${esc(f.repos.length ? f.repos.join("、") : "所有仓库")}${f.headers.length ? ` · 附加标头：${esc(f.headers.map(h => h.name).join("、"))}` : ""}</p>
-    <p class="scope">${f.has_secret ? "已设置签名密钥" : "不签名"} · 最近一次：${lastResult(f.last)}</p>
+    <p class="scope">${f.has_secret ? "已设置签名密钥" : "首次使用时生成签名密钥"} · ${f.signature_mode === "github-compatible" ? "GitHub 兼容" : "保留来源签名"} · 最近一次：${lastResult(f.last)}</p>
     <div class="card-actions"><button type="button" data-test-forward="${esc(f.id)}"${testResults.get(f.id)?.pending ? " disabled" : ""}>测试</button><button type="button" data-edit-forward="${esc(f.id)}">编辑</button><button type="button" data-delete-forward="${esc(f.id)}">删除</button></div>
     ${testResult(f)}${callHistory(f)}
   </article>`).join("") || '<p class="muted">还没有转发订阅</p>';
@@ -679,6 +697,7 @@ function openForward(sub) {
   editingForward = sub ? sub.id : null;
   form.hidden = false;
   field(form, "name").value = sub?.name || ""; field(form, "url").value = sub?.url || ""; field(form, "secret").value = sub?.secret || "";
+  check(form, "signature_mode", [sub?.signature_mode || "preserve"]);
   field(form, "repos").value = (sub?.repos || []).join("\n");
   $("#forward-headers").replaceChildren();
   for (const header of sub?.headers || []) headerRow(header);
@@ -686,6 +705,10 @@ function openForward(sub) {
   form.querySelector(".form-error").textContent = "";
   field(form, "name").focus();
 }
+$("#generate-forward-secret").addEventListener("click", () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  field($("#forward-form"), "secret").value = "whsec_" + btoa(String.fromCharCode(...bytes));
+});
 $("#forward-types").addEventListener("change", toggleForwardActions);
 $("#new-forward").addEventListener("click", () => openForward(null));
 $("#cancel-forward").addEventListener("click", () => { $("#forward-form").hidden = true; editingForward = null; });
@@ -696,6 +719,7 @@ $("#show-forward-headers").addEventListener("change", ev => { document.querySele
 $("#forward-form").addEventListener("submit", async ev => {
   ev.preventDefault();
   const form = ev.target, body = { name: field(form, "name").value, url: field(form, "url").value, providers: checked(form, "providers"), types: checked(form, "types"), secret: field(form, "secret").value,
+    signature_mode: checked(form, "signature_mode")[0],
     actions: checked(form, "actions").filter(action => checked(form, "types").includes(action.split(":")[0])),
     repos: field(form, "repos").value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean),
     // Rows left completely empty are ignored; a half-filled row is sent so the server can say what is missing.

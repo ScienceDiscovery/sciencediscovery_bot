@@ -32,6 +32,7 @@
     "@types/node": "22.19.0",
     "esbuild": "0.28.2",
     "miniflare": "4.20260730.0",
+    "standardwebhooks": "1.1.1",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "wrangler": "4.136.1"
