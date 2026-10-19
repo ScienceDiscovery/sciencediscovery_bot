@@ -11,12 +11,17 @@ import { makeCertificate } from './support/certificates.mjs';
 const REPO = 'openJiuwen-ai/sciencediscovery', OTHER = 'ScienceDiscovery/sciencediscovery';
 const appKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' });
 const EXPIRES = new Date(Date.now() + 3600000).toISOString();
+const APPROVED = { metadata: 'read', contents: 'write', issues: 'write', pull_requests: 'write', actions: 'write', checks: 'write', statuses: 'write', workflows: 'write', merge_queues: 'write', deployments: 'write', pages: 'write', discussions: 'write' };
+const installed = (id = 42, permissions = APPROVED, repositories = [REPO, OTHER, 'openJiuwen-ai/tools']) => ({
+  id, account: { login: 'fixture-owner-' + id, type: 'Organization' }, target_type: 'Organization', repository_selection: 'selected',
+  suspended_at: null, permissions, repositories,
+});
 
 async function runtime(t, bindings, options = {}) {
   await mkdir('.tmp/tests-ts', { recursive: true });
   const directory = await mkdtemp(resolve('.tmp/tests-ts/worker-caller-'));
   const access = await accessFixture();
-  const calls = [], state = { approved: true };
+  const calls = [], state = { approved: true, failInventory: false, failRepositories: false, installations: [installed()] };
   const mf = await workerRuntime({ directory, entry: 'tests-ts/support/worker-rows.mjs', bindings: { ...access.bindings, SDBOT_GITHUB_WEBHOOK_SECRET: 'caller-webhook-secret',
     SDBOT_REPOS: `${REPO},${OTHER}`, SDBOT_GITHUB_APP_ID: '123', SDBOT_GITHUB_APP_PRIVATE_KEY: appKey, ...bindings },
   outboundService: async request => {
@@ -24,11 +29,33 @@ async function runtime(t, bindings, options = {}) {
     const url = new URL(request.url), text = await request.text();
     calls.push({ method: request.method, url: request.url, body: text ? JSON.parse(text) : null });
     if (url.hostname !== 'api.github.com') return new Response(null, { status: 503 });
-    if (url.pathname.endsWith('/installation')) return Response.json({ id: 42 });
+    if (url.pathname === '/app/installations') {
+      if (state.failInventory) return Response.json({ message: 'private upstream details' }, { status: 502 });
+      const start = (Number(url.searchParams.get('page')) - 1) * 100;
+      return Response.json(state.installations.slice(start, start + 100).map(({ repositories, ...row }) => row));
+    }
+    if (url.pathname.endsWith('/installation')) {
+      const repo = url.pathname.slice('/repos/'.length, -'/installation'.length);
+      const row = state.installations.find(row => row.repositories.some(name => name.toLowerCase() === repo.toLowerCase()));
+      return row ? Response.json(row) : Response.json({}, { status: 404 });
+    }
+    if (url.pathname === '/installation/repositories') {
+      if (state.failRepositories) return new Response(null, { status: 502 });
+      const id = Number(request.headers.get('authorization')?.match(/directory-(\d+)/)?.[1]);
+      const row = state.installations.find(row => row.id === id);
+      if (!row || row.suspended_at) return new Response(null, { status: 403 });
+      const start = (Number(url.searchParams.get('page')) - 1) * 100;
+      return Response.json({ total_count: row.repositories.length, repositories: row.repositories.slice(start, start + 100).map(full_name => ({ full_name })) });
+    }
     // Rule repositories: readable only when GitHub knows them.
     if (request.method === 'GET' && url.pathname.toLowerCase() === '/repos/openjiuwen-ai/tools') return Response.json({ id: 700, full_name: 'openJiuwen-ai/tools', owner: { id: 701 } });
     // Until the organization approves issues and pull_requests write, GitHub refuses the token.
-    if (url.pathname === '/app/installations/42/access_tokens') return state.approved
+    const issuance = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(url.pathname);
+    if (issuance && !JSON.parse(text).repositories && Object.keys(JSON.parse(text).permissions).length === 1) {
+      assert.deepEqual(JSON.parse(text), { permissions: { metadata: 'read' } }, 'directory token has metadata only and no broader permissions');
+      return Response.json({ token: 'directory-' + issuance[1], expires_at: EXPIRES });
+    }
+    if (issuance) return state.approved
       ? Response.json({ token: 'ghs_installation-token-' + calls.length, expires_at: EXPIRES }, { status: 201 })
       : Response.json({ message: 'The permissions requested are not granted to this installation.' }, { status: 422 });
     return new Response(null, { status: 404 });
@@ -75,7 +102,7 @@ test('certificate callers exchange a JWT for a narrowly scoped GitHub installati
     assert.deepEqual(result.body.permissions, { metadata: 'read', issues: 'write', pull_requests: 'write' });
     assert.deepEqual([result.body.expires_at, result.body.repository], [EXPIRES, REPO]);
     assert.match(result.body.token, /^ghs_installation-token-/);
-    const grant = calls.find(c => c.url.endsWith('/app/installations/42/access_tokens'));
+    const grant = calls.find(c => c.url.endsWith('/app/installations/42/access_tokens') && c.body.repositories);
     assert.deepEqual(grant.body, { repositories: ['sciencediscovery'], permissions: { metadata: 'read', issues: 'write', pull_requests: 'write' } });
     assert.equal(calls.filter(c => !c.url.includes('/installation')).length, 0, 'the bot itself makes no other GitHub call');
   });
@@ -166,7 +193,7 @@ test('certificate callers exchange a JWT for a narrowly scoped GitHub installati
     const result = await exchange(mf, await jwt(rsaClient, rsa.privateKey, 'RS256'), { repo: REPO });
     state.approved = true;
     assert.equal(result.status, 503);
-    assert.match(result.body.error, /metadata:read, issues:write, pull_requests:write/);
+    assert.match(result.body.error, /installation-approved permissions/);
     assert.equal((await grants(admin)).grants.length, before, 'refused exchanges are not recorded');
   });
 
@@ -185,6 +212,100 @@ test('certificate callers exchange a JWT for a narrowly scoped GitHub installati
     assert.equal((await mf.dispatchFetch('http://localhost/caller/v1/token')).status, 405);
     for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) assert.equal((await admin('/admin/api/token-grants', { method, body: {} })).status, 405);
     assert.equal((await mf.dispatchFetch('http://localhost/admin/api/token-grants')).status, 401);
+  });
+});
+
+test('installation inventory and caller permissions follow the approved installation scope', { timeout: 120000 }, async t => {
+  const { mf, admin, calls, state } = await runtime(t, {}), pair = makeCertificate();
+  await t.test('Access protects the GET-only directory; other admin reads do not fetch it', async () => {
+    assert.equal((await mf.dispatchFetch('http://localhost/admin/api/installations')).status, 401);
+    for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) assert.equal((await admin('/admin/api/installations', { method, body: {} })).status, 405);
+    await mf.dispatchFetch('http://localhost/healthz');
+    await admin('/admin/api/status'); await admin('/admin/api/callers');
+    assert.equal(calls.length, 0, 'no directory query on startup, health or ordinary reads');
+  });
+  await t.test('accounts, raw unknown permissions and untracked repositories remain visible; suspended repositories are not fetched', async () => {
+    state.installations = [installed(42, { ...APPROVED, members: 'read' }), { ...installed(43, {}, ['paused/repo']), suspended_at: '2026-09-01T00:00:00Z' }];
+    const result = await admin('/admin/api/installations');
+    assert.equal(result.status, 200);
+    assert.equal(result.body.installations[0].account, 'fixture-owner-42');
+    assert.equal(result.body.installations[0].permissions.members, 'read');
+    assert.ok(result.body.permission_catalog.some(row => row.key === 'issues' && row.label.includes('Issue')));
+    assert.ok(result.body.installations[0].repositories.includes('openJiuwen-ai/tools'));
+    assert.deepEqual(result.body.eligible_repositories, [REPO.toLowerCase(), OTHER.toLowerCase()].sort());
+    assert.deepEqual(result.body.installations[1].repositories, []);
+    assert.equal(result.body.installations[1].suspended, true);
+    assert.ok(!calls.some(call => call.url.endsWith('/43/access_tokens')));
+    assert.doesNotMatch(JSON.stringify(result.body), /directory-|ghs_|BEGIN .*KEY|access_tokens_url/);
+  });
+  await t.test('saving intersects all actual installations, or just selected repositories', async () => {
+    state.installations = [installed(42, { metadata: 'read', issues: 'read', pull_requests: 'read', workflows: 'read' }, [REPO]),
+      installed(43, { metadata: 'read', issues: 'write', pull_requests: 'read', contents: 'read', workflows: 'write' }, [OTHER])];
+    const wanted = { issues: 'write', pull_requests: 'write', contents: 'write', workflows: 'write', merge_queues: 'read' };
+    const all = await register(admin, { name: 'all', certificate: pair.certificate, permissions: wanted });
+    assert.deepEqual(all.permissions, { metadata: 'read', issues: 'read', pull_requests: 'read' });
+    const selected = await register(admin, { name: 'selected', certificate: pair.certificate, repos: [OTHER], permissions: wanted });
+    assert.deepEqual(selected.permissions, { metadata: 'read', contents: 'read', issues: 'write', pull_requests: 'read', workflows: 'write' });
+    for (const repos of [['missing/repo'], ['openJiuwen-ai/tools']]) {
+      assert.equal((await admin('/admin/api/callers', { method: 'POST', body: { name: 'unavailable', certificate: pair.certificate, repos } })).status, 422);
+    }
+    for (const repos of ['not-an-array', [false]]) assert.equal((await admin('/admin/api/callers', { method: 'POST', body: { name: 'bad scope', certificate: pair.certificate, repos } })).status, 422);
+  });
+  await t.test('failed reads are explicit and cannot overwrite a saved client', async () => {
+    const previous = (await admin('/admin/api/callers')).body.clients;
+    state.failInventory = true;
+    const inventory = await admin('/admin/api/installations');
+    assert.equal(inventory.status, 503); assert.equal(inventory.body.ok, false);
+    assert.equal(inventory.body.installations, undefined); assert.doesNotMatch(JSON.stringify(inventory.body), /private upstream/);
+    const reply = await admin('/admin/api/callers/' + previous[0].id, { method: 'PUT', body: { name: 'changed', certificate: pair.certificate } });
+    assert.equal(reply.status, 503);
+    assert.deepEqual((await admin('/admin/api/callers')).body.clients, previous);
+    state.failInventory = false;
+    state.failRepositories = true;
+    assert.equal((await admin('/admin/api/installations')).status, 503, 'a repository-page failure is not an empty successful installation');
+    state.failRepositories = false;
+  });
+  await t.test('old broad clients are not rewritten; exchange submits and records only current approved permissions', async () => {
+    state.installations = [installed()];
+    const client = await register(admin, { name: 'wide legacy', certificate: pair.certificate, permissions: APPROVED });
+    const approved = { metadata: 'read', contents: 'read', issues: 'read', pull_requests: 'read' };
+    state.installations[0].permissions = approved;
+    const before = calls.length, result = await exchange(mf, await jwt(client, pair.privateKey, 'RS256'), { repo: REPO });
+    assert.equal(result.status, 200); assert.deepEqual(result.body.permissions, approved);
+    const requests = calls.slice(before);
+    assert.ok(!requests.some(call => call.url.includes('/app/installations?') || call.url.includes('/installation/repositories')),
+      'the exchange looks up only repository installations, not the directory');
+    assert.deepEqual(requests.find(call => call.url.endsWith('/access_tokens')).body, { repositories: ['sciencediscovery'], permissions: approved });
+    assert.equal((await grants(admin)).grants[0].permissions, 'metadata:read, contents:read, issues:read, pull_requests:read');
+    assert.deepEqual((await admin('/admin/api/callers')).body.clients.find(row => row.id === client.id).permissions, APPROVED, 'no startup or exchange rewrite');
+    state.installations[0].permissions = { metadata: 'read' };
+    const refused = await admin('/admin/api/callers', { method: 'POST', body: { name: 'no rights', certificate: pair.certificate } });
+    assert.equal(refused.status, 422);
+    const issuedBefore = calls.filter(call => call.body?.repositories).length;
+    const empty = await exchange(mf, await jwt(client, pair.privateKey, 'RS256'), { repo: REPO });
+    assert.equal(empty.status, 503); assert.match(empty.body.error, /besides metadata/);
+    assert.equal(calls.filter(call => call.body?.repositories).length, issuedBefore, 'no metadata-only caller grant');
+    state.installations[0].permissions = APPROVED;
+    state.installations[0].suspended_at = '2026-09-01T00:00:00Z';
+    assert.equal((await exchange(mf, await jwt(client, pair.privateKey, 'RS256'), { repo: REPO })).status, 503);
+    assert.equal(calls.filter(call => call.body?.repositories).length, issuedBefore, 'a paused installation cannot issue caller tokens');
+    assert.equal((await admin('/admin/api/callers', { method: 'POST', body: { name: 'paused', certificate: pair.certificate, repos: [REPO] } })).status, 422);
+  });
+  await t.test('repository pagination stops at 1000 and clearly marks truncation', async () => {
+    state.installations = [installed(42, APPROVED, Array.from({ length: 1001 }, (_, index) => 'fixture/repo-' + index))];
+    const before = calls.length, reply = await admin('/admin/api/installations');
+    assert.equal(reply.status, 200);
+    assert.deepEqual([reply.body.installations[0].repositories.length, reply.body.installations[0].total_repositories, reply.body.installations[0].truncated], [1000, 1001, true]);
+    assert.equal(calls.slice(before).filter(call => call.url.includes('/installation/repositories?')).length, 10);
+  });
+  await t.test('the App installation list itself is paginated, while paused installs get no grants', async () => {
+    state.installations = [...Array.from({ length: 100 }, (_, index) => ({ ...installed(index + 1), suspended_at: '2026-09-01T00:00:00Z' })), installed(101)];
+    const before = calls.length, reply = await admin('/admin/api/installations');
+    assert.equal(reply.body.installations.length, 101);
+    const requests = calls.slice(before);
+    assert.equal(requests.filter(call => call.url.includes('/app/installations?')).length, 2);
+    assert.equal(requests.filter(call => call.url.endsWith('/access_tokens')).length, 1);
+    assert.ok(requests.some(call => call.url.endsWith('/101/access_tokens')));
   });
 });
 
@@ -211,7 +332,7 @@ test('clients saved before permissions were configurable keep issues and pull_re
   const listed = (await admin('/admin/api/callers')).body.clients.find(c => c.id === client.id);
   assert.deepEqual(listed.permissions, { metadata: 'read', issues: 'write', pull_requests: 'write' });
   assert.equal((await exchange(mf, await jwt(client, pair.privateKey, 'RS256'), { repo: REPO })).status, 200);
-  assert.deepEqual(calls.find(c => c.url.endsWith('/access_tokens')).body.permissions, { metadata: 'read', issues: 'write', pull_requests: 'write' });
+  assert.deepEqual(calls.findLast(c => c.url.endsWith('/access_tokens')).body.permissions, { metadata: 'read', issues: 'write', pull_requests: 'write' });
 });
 
 test('GitHub Actions access rules are managed behind Access, starting from the dashboard collection', { timeout: 60000 }, async t => {

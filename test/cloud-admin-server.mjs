@@ -14,13 +14,30 @@ const jwt = await new SignJWT({ sub: 'browser-user' }).setProtectedHeader({ alg:
 const analytics = analyticsService();
 // A throwaway GitHub App key; installation tokens come from the stand-in below, never from GitHub.
 const app = await generateKeyPair('RS256', { extractable: true });
+const installations = [
+  { id: 7, account: { login: 'openJiuwen-ai', type: 'Organization' }, target_type: 'Organization', repository_selection: 'selected', suspended_at: null,
+    permissions: { metadata: 'read', contents: 'read', issues: 'write', pull_requests: 'write', checks: 'read', members: 'read' }, repositories: ['openJiuwen-ai/sciencediscovery', 'openJiuwen-ai/untracked'] },
+  { id: 8, account: { login: 'ScienceDiscovery', type: 'Organization' }, target_type: 'Organization', repository_selection: 'all', suspended_at: null,
+    permissions: { metadata: 'read', contents: 'write', issues: 'write', pull_requests: 'write', checks: 'write' }, repositories: ['ScienceDiscovery/sciencediscovery'] },
+  { id: 9, account: { login: 'paused-owner', type: 'User' }, target_type: 'User', repository_selection: 'all', suspended_at: '2026-09-01T00:00:00Z',
+    permissions: { metadata: 'read', issues: 'write' }, repositories: ['paused-owner/repo'] },
+];
 const github = request => {
   const url = new URL(request.url);
   if (url.hostname !== 'api.github.com') return null;
-  if (url.pathname.endsWith('/installation')) return Response.json({ id: 7 });
+  if (url.pathname === '/app/installations') return Response.json(installations.map(({ repositories, ...row }) => row));
+  if (url.pathname.endsWith('/installation')) {
+    const repo = url.pathname.slice('/repos/'.length, -'/installation'.length).toLowerCase();
+    return Response.json(installations.find(row => row.repositories.some(name => name.toLowerCase() === repo)) || { id: 7 });
+  }
+  if (url.pathname === '/installation/repositories') {
+    const row = installations.find(row => request.headers.get('authorization') === 'Bearer directory-' + row.id);
+    return row ? Response.json({ total_count: row.repositories.length, repositories: row.repositories.map(full_name => ({ full_name })) }) : new Response(null, { status: 403 });
+  }
   // Pinning an Actions rule's workflow repository reads its IDs.
   if (request.method === 'GET' && url.pathname.toLowerCase() === '/repos/sciencediscovery/github-status-board') return Response.json({ id: 900, full_name: 'ScienceDiscovery/github-status-board', owner: { id: 901 } });
-  if (url.pathname === '/app/installations/7/access_tokens') return Response.json({ token: 'ghs_browser-journey', expires_at: new Date(Date.now() + 3600000).toISOString() }, { status: 201 });
+  const issuance = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(url.pathname);
+  if (issuance) return request.json().then(body => Response.json({ token: Object.keys(body.permissions).length === 1 ? 'directory-' + issuance[1] : 'ghs_browser-journey', expires_at: new Date(Date.now() + 3600000).toISOString() }, { status: 201 }));
   return new Response(null, { status: 404 });
 };
 const mf = await workerRuntime({ directory: process.env.SDBOT_CLOUD_E2E_RUN_DIR, bindings: {
@@ -36,7 +53,7 @@ const mf = await workerRuntime({ directory: process.env.SDBOT_CLOUD_E2E_RUN_DIR,
     const compatible = headers['x-hub-signature-256'] === 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
     return Response.json({ standard: true, github_compatible: compatible, upstream_preserved: !!headers['x-sdbot-source-signature-256'], webhook_id: headers['webhook-id'] }, { status: compatible ? 202 : 401 });
   }
-  return github(request) || analytics.handler(request);
+  return await github(request) || analytics.handler(request);
 } });
 const server = createServer(async (req, res) => {
   try {

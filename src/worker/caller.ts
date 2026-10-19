@@ -2,7 +2,8 @@
 import { decodeJwt, importX509, jwtVerify } from 'jose';
 import { CALLER_AUDIENCE, CALLER_CLOCK_TOLERANCE, CALLER_LIMIT, CALLER_MAX_TOKEN_SECONDS, CALLER_RATE_PER_MINUTE, CALLER_TOKEN_PATH, DEFAULT_CALLER_PERMISSIONS,
   authorizeRepo, parseClient, parseTokenRequest, publicClient, type CallerClient, type Refusal } from '../core/caller.js';
-import { GitHubApp } from '../core/github-app.js';
+import { GitHubApp, InstallationPermissionError } from '../core/github-app.js';
+import { callerCeiling, intersectPermissions, type CallerInventory } from '../core/installations.js';
 import { permissionCatalog } from '../core/permissions.js';
 import { jsonResponse } from '../core/http.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
@@ -14,7 +15,7 @@ const CLIENT_ID = /^[0-9a-f-]{36}$/;
 /** Clients, single-use token ids and the per-minute counter, in the bot's Durable Object. */
 export class WorkerCallers {
   private cache: CallerClient[] | null = null;
-  constructor(readonly storage: DurableObjectStorage) {}
+  constructor(readonly storage: DurableObjectStorage, private readonly inventory: () => Promise<CallerInventory>) {}
   /** Tables are created on first use; the client list is then served from memory. */
   private get sql(): SqlStorage {
     if (!this.cache) {
@@ -67,12 +68,22 @@ export class WorkerCallers {
     if (method === 'POST' && !id || method === 'PUT' && id) {
       const parsed = await parseClient(input);
       if (!parsed.ok) return { status: 422, body: { ok: false, error: parsed.error } };
+      let inventory: CallerInventory;
+      try { inventory = await this.inventory(); }
+      catch { return { status: 503, body: { ok: false, error: 'GitHub 安装列表读取失败，客户端未修改。' } }; }
+      const eligible = new Set(inventory.eligible_repositories.map(repo => repo.toLowerCase()));
+      if (parsed.value.repos.some(repo => !eligible.has(repo))) return { status: 422, body: { ok: false, error: '仓库必须属于未暂停的安装并在 SDBOT_REPOS 中。' } };
+      // The network read above yields: recheck the item so a concurrent delete cannot be undone.
+      const current = id ? this.client(id) : null;
+      if (id && !current) return { status: 404, body: { ok: false, error: 'client not found' } };
+      const permissions = intersectPermissions(parsed.value.permissions || current?.permissions || DEFAULT_CALLER_PERMISSIONS, callerCeiling(inventory, parsed.value.repos));
+      if (Object.keys(permissions).length < 2) return { status: 422, body: { ok: false, error: '安装未批准任何所选权限（元数据除外）。' } };
       if (!id && clients.length >= CALLER_LIMIT) return { status: 422, body: { ok: false, error: `at most ${CALLER_LIMIT} clients` } };
       const now = new Date().toISOString();
-      const client: CallerClient = id ? { ...clients[index], ...parsed.value, updated: now }
-        : { id: crypto.randomUUID(), ...parsed.value, permissions: parsed.value.permissions || { ...DEFAULT_CALLER_PERMISSIONS }, created: now, updated: now };
+      const client: CallerClient = id ? { ...current!, ...parsed.value, permissions, updated: now }
+        : { id: crypto.randomUUID(), ...parsed.value, permissions, created: now, updated: now };
       this.sql.exec('INSERT INTO caller_clients VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET doc=excluded.doc', client.id, JSON.stringify(client));
-      if (id) clients[index] = client; else clients.push(client);
+      if (id) clients[clients.findIndex(row => row.id === id)] = client; else clients.push(client);
       return { status: id ? 200 : 201, body: { ok: true, client: publicClient(client) } };
     }
     return { status: 405, body: { ok: false, error: 'method not allowed' } };
@@ -125,13 +136,14 @@ export async function handleCaller(request: Request, env: WorkerEnv, fetcher: ty
   if (denied) return refuse(denied);
   if (!cfg.github_app_id || !cfg.github_app_private_key) return refuse({ status: 503, error: 'GitHub App credentials are not configured' });
   let grant;
-  // GitHub refuses the token while the App installation has not been granted every chosen permission.
-  try { grant = await new GitHubApp(cfg.github_app_id, cfg.github_app_private_key, fetcher).grantForCaller(call.repo, client.permissions); }
-  catch { return refuse({ status: 503, error: `GitHub did not issue a token with ${describePermissions(client.permissions)} for this repository` }); }
+  // Recheck only the client's usable repositories, not the App-wide installation directory.
+  const scope = cfg.repos.filter(repo => !client.repos.length || client.repos.includes(repo.toLowerCase()));
+  try { grant = await new GitHubApp(cfg.github_app_id, cfg.github_app_private_key, fetcher).grantForCaller(call.repo, client.permissions, scope); }
+  catch (error) { return refuse({ status: 503, error: error instanceof InstallationPermissionError ? error.message : 'GitHub did not issue a token with the installation-approved permissions for this repository' }); }
   // The record carries no token; failing to write it never withholds a token that was issued.
   try {
     await bot.recordTokenGrant({ issued_at: new Date().toISOString(), expires_at: grant.expires_at, source: 'caller', identity: id, repository: call.repo,
-      purpose: null, permissions: describePermissions(client.permissions) });
+      purpose: null, permissions: describePermissions(grant.permissions) });
   } catch { /* the grant list is informational */ }
-  return jsonResponse({ token: grant.token, expires_at: grant.expires_at, repository: call.repo, permissions: client.permissions });
+  return jsonResponse({ token: grant.token, expires_at: grant.expires_at, repository: call.repo, permissions: grant.permissions });
 }

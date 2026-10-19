@@ -34,6 +34,7 @@ export type Refusal = { status: 401 | 403 | 422 | 429 | 503; error: string };
 export async function parseClient(input: unknown): Promise<{ ok: true; value: Omit<CallerClient, 'id' | 'created' | 'updated' | 'permissions'> & { permissions?: PermissionSet } } | { ok: false; error: string }> {
   const doc = object(input), name = string(doc.name).trim();
   if (!name || name.length > 80) return { ok: false, error: 'name must be 1-80 characters' };
+  if (doc.repos !== undefined && (!Array.isArray(doc.repos) || doc.repos.some(repo => typeof repo !== 'string'))) return { ok: false, error: 'repositories must be an array of owner/name' };
   let cert: CertificateInfo;
   try { cert = await parseCertificate(string(doc.certificate)); }
   catch (error) { return { ok: false, error: error instanceof CertificateError ? error.message : 'could not read the certificate' }; }
