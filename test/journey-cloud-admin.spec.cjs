@@ -317,9 +317,10 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await callerForm.getByRole('button', { name: '保存客户端' }).click();
   await expect(callerForm.locator('.form-error')).toContainText('private key');
   await callerForm.getByLabel(/公钥证书/).fill(pair.certificate);
-  // There is no operation list any more: a client exchanges tokens for its repositories.
-  await expect(callerForm.locator('input[type=checkbox]')).toHaveCount(0);
-  await callerForm.getByLabel(/允许的仓库/).fill('ScienceDiscovery/sciencediscovery');
+  // Repository selection is limited to installed, tracked repositories; no hand-written scope.
+  await expect(callerForm.locator('#caller-repositories input[type=checkbox]')).toHaveCount(2);
+  await expect(callerForm.locator('textarea[name=repos], input[type=text][name=repos]')).toHaveCount(0);
+  await callerForm.getByLabel('sciencediscovery/sciencediscovery', { exact: true }).check();
   // Each permission has its name, what it allows, and 读写 / 只读 / 禁止; a new client starts with Issues and PR write.
   const perm = (form, key) => form.locator(`[data-perm="${key}"]`);
   await expect(callerForm.locator('.perm-row')).toHaveCount(12);
@@ -446,6 +447,109 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await page.getByRole('link', { name: '转发', exact: true }).click();
   await card.getByRole('button', { name: '删除' }).click();
   await expect(page.locator('#forward-list')).toContainText('还没有转发订阅');
+});
+
+test('installations are readable without polling and callers choose repositories within approved permission ceilings', async ({ page, context }, testInfo) => {
+  const { makeCertificate } = await import('../tests-ts/support/certificates.mjs');
+  await context.addCookies([{ name: 'test_access', value: 'allowed', url: 'http://127.0.0.1:18893', httpOnly: true }]);
+  let inventoryReads = 0;
+  page.on('request', request => { if (new URL(request.url()).pathname === '/admin/api/installations') inventoryReads++; });
+  await page.clock.install();
+  await page.goto('/admin/#installations');
+  const list = page.locator('#installation-list');
+  await expect(list.locator('[data-installation]')).toHaveCount(3);
+  const active = list.locator('[data-installation="7"]');
+  await expect(active).toContainText('openJiuwen-ai');
+  await expect(active).toContainText('组织 · 所选仓库');
+  await expect(active).toContainText('元数据（Metadata）');
+  await expect(active).toContainText('members');
+  await expect(active).toContainText('openJiuwen-ai/untracked');
+  await expect(list.locator('[data-installation="9"]')).toContainText('已暂停，不读取仓库，不能选择');
+  expect(inventoryReads).toBe(1);
+  await page.clock.runFor(20 * 60_000);
+  expect(inventoryReads).toBe(1, 'opening the directory must not start a timer');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('installations-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('installations-mobile.png'), fullPage: true });
+  await page.getByRole('button', { name: '刷新安装', exact: true }).click();
+  await expect.poll(() => inventoryReads).toBe(2);
+
+  await page.getByRole('link', { name: '外部调用', exact: true }).click();
+  await page.getByRole('button', { name: '新增客户端', exact: true }).click();
+  const form = page.locator('#caller-form'), permissions = key => form.locator(`[data-perm="${key}"]`);
+  await expect(form.locator('#caller-repositories input')).toHaveCount(2);
+  await expect(form.locator('[name=repos]:not([type=checkbox])')).toHaveCount(0);
+  await expect(form.locator('#caller-repositories')).not.toContainText('untracked');
+  await expect(form.locator('#caller-repositories')).not.toContainText('paused-owner');
+  await expect(form).toContainText('一项都不选表示允许 SDBOT_REPOS 中的全部仓库');
+  await expect(permissions('checks').getByLabel('读写', { exact: true })).toBeDisabled();
+  await expect(permissions('merge_queues').getByLabel('只读', { exact: true })).toBeDisabled();
+  await form.getByLabel('sciencediscovery/sciencediscovery', { exact: true }).check();
+  await expect(permissions('checks').getByLabel('读写', { exact: true })).toBeEnabled();
+  await permissions('checks').getByLabel('读写', { exact: true }).check();
+  await form.getByLabel('openjiuwen-ai/sciencediscovery', { exact: true }).check();
+  await expect(permissions('checks').getByLabel('读写', { exact: true })).toBeDisabled();
+  await expect(permissions('checks').getByLabel('只读', { exact: true })).toBeChecked();
+  const pair = makeCertificate({ cn: 'inventory journey' });
+  await form.getByLabel('名称', { exact: true }).fill('安装范围验收');
+  await form.getByLabel(/公钥证书/).fill(pair.certificate);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await form.screenshot({ path: testInfo.outputPath('caller-repository-ceiling-mobile.png') });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await form.screenshot({ path: testInfo.outputPath('caller-repository-ceiling-desktop.png') });
+  await form.getByRole('button', { name: '保存客户端', exact: true }).click();
+  await expect(form).toBeHidden();
+  const client = page.locator('#caller-list article', { hasText: '安装范围验收' });
+  await expect(client).toContainText('checks 只读');
+
+  // A historical client may still name a removed repository or retain a formerly approved permission.
+  await page.route('**/admin/api/callers', async route => {
+    const response = await route.fetch(), doc = await response.json();
+    const saved = doc.clients.find(row => row.name === '安装范围验收');
+    saved.repos.push('removed/private'); saved.permissions.merge_queues = 'read';
+    await route.fulfill({ response, json: doc });
+  }, { times: 1 });
+  await page.getByRole('button', { name: '刷新外部调用', exact: true }).click();
+  await expect(client).toContainText('实际可签发');
+  await client.getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(form.locator('#caller-unavailable')).toContainText('不可用：removed/private');
+  const saving = page.waitForRequest(request => request.method() === 'PUT' && /\/admin\/api\/callers\//.test(request.url()));
+  await form.getByRole('button', { name: '保存客户端', exact: true }).click();
+  expect((await saving).postDataJSON().repos).not.toContain('removed/private');
+  await expect(page.locator('#caller-save-note')).toContainText('已去掉不可用仓库：removed/private');
+  await expect(client).not.toContainText('removed/private');
+
+  await page.route('**/admin/api/installations', route => route.fulfill({ status: 503, json: { ok: false, error: 'GitHub 安装读取失败' } }));
+  await page.getByRole('button', { name: '刷新外部调用', exact: true }).click();
+  await expect(page.locator('#caller-inventory-note')).toContainText('安装列表读取失败');
+  await expect(page.getByRole('button', { name: '新增客户端', exact: true })).toBeDisabled();
+  await expect(client.getByRole('button', { name: '编辑', exact: true })).toBeDisabled();
+  await expect(client).toContainText('安装范围验收');
+  await expect(form.locator('textarea[name=repos]')).toHaveCount(0);
+  const reads = inventoryReads;
+  await page.clock.runFor(20 * 60_000);
+  expect(inventoryReads).toBe(reads);
+  await page.getByRole('link', { name: '安装', exact: true }).click();
+  await expect(page.locator('#installation-note')).toHaveText('安装列表读取失败');
+  await expect(list).toContainText('读取失败');
+  await expect(list).not.toContainText('尚无安装');
+  // A temporary failure while editing must not clear selected repositories when the directory recovers.
+  await page.unroute('**/admin/api/installations');
+  await page.getByRole('link', { name: '外部调用', exact: true }).click();
+  await client.getByRole('button', { name: '编辑', exact: true }).click();
+  await form.getByLabel('openjiuwen-ai/sciencediscovery', { exact: true }).uncheck();
+  await permissions('checks').getByLabel('读写', { exact: true }).check();
+  await page.route('**/admin/api/installations', route => route.fulfill({ status: 503, json: { ok: false, error: 'temporary failure' } }));
+  await page.getByRole('button', { name: '刷新外部调用', exact: true }).click();
+  await expect(form.getByRole('button', { name: '保存客户端', exact: true })).toBeDisabled();
+  await page.unroute('**/admin/api/installations');
+  await page.getByRole('button', { name: '刷新外部调用', exact: true }).click();
+  await expect(form.getByRole('button', { name: '保存客户端', exact: true })).toBeEnabled();
+  await expect(form.getByLabel('sciencediscovery/sciencediscovery', { exact: true })).toBeChecked();
+  await expect(form.getByLabel('openjiuwen-ai/sciencediscovery', { exact: true })).not.toBeChecked();
+  await expect(permissions('checks').getByLabel('读写', { exact: true })).toBeChecked();
 });
 
 test('a failed read says whether to wait for a new version or to log in again', async ({ page, context }) => {

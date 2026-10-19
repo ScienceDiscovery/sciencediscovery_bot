@@ -12,6 +12,7 @@ import type { RunChange } from './run-changes.js';
 import { WorkerBoard } from './board.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
 import { authorizeAdmin } from './access.js';
+import { installationResponse, readInstallations } from './installations.js';
 import { exchangeActionsToken, readGitCodeSync, runChanges } from './actions-auth.js';
 import { WorkerGitCodeSync } from './gitcode-sync.js';
 import { AnalyticsCache } from './usage.js';
@@ -50,7 +51,7 @@ export class BotObject extends DurableObject<WorkerEnv> {
         const current = await this.ctx.storage.getAlarm();
         if (current === null || at < current) await this.ctx.storage.setAlarm(at);
       }));
-    this.callers = new WorkerCallers(ctx.storage);
+    this.callers = new WorkerCallers(ctx.storage, () => readInstallations(env));
     // The dashboard collection configured for this Worker becomes the first Actions rule.
     const mappings = Object.entries(targets(cfg)), repositoryId = String(env.SDBOT_ACTIONS_REPOSITORY_ID || ''), ownerId = String(env.SDBOT_ACTIONS_OWNER_ID || '');
     const board: BoardCollection | null = mappings.length === 1 && /^[1-9]\d*$/.test(repositoryId) && /^[1-9]\d*$/.test(ownerId)
@@ -222,6 +223,7 @@ export default {
           'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
         } });
         const path = url.pathname.slice('/admin'.length);
+        if (path === '/api/installations') return await installationResponse(env);
         // The rule form's check button: a repository's IDs and whether the App is installed there.
         if (path === '/api/repository-identity') return await repositoryLookup(url, env);
         // Usage has its own RPC: it is requested by the usage section only, never by the 10-second refresh.
