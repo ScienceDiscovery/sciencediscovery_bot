@@ -109,6 +109,9 @@ export function registerBuiltin(bus: EventBus, board: Board, sync: PullRequestSy
   ];
   for (const [method, routes, exclude] of boards) bus.subscribe({ id: `board.${method}`, business: '看板更新', description: board.mode === 'active' ? '按源仓排队更新对应静态看板。' : '未启用静态发布，当前仅记录调用。',
     routes, exclude, mode: board.mode, providers: board.mode === 'active' ? ['github'] : [], repositories: board.repositories, handler: event => board.handle(method, event) });
+  if (board.observeRun) bus.subscribe({ id: 'board.on_workflow_run', business: '看板更新', routes: ['workflow_run.completed'],
+    description: '仅合并记录重跑完成的 run ID，等待原有刷新节奏批量补采，不立即触发采集。',
+    providers: ['github'], repositories: board.repositories, mode: board.mode, enabled: board.mode === 'active', handler: event => board.observeRun!(event) });
   // Without a token, with target `off`, or with missing GitHub credentials, the listener stays registered
   // but disabled, so PR routes and hooks are unchanged and the Worker keeps serving everything else.
   const active = sync.mode === 'active';

@@ -38,6 +38,14 @@ App 安装到源仓及目标仓。Bot 触发时只申请目标仓 Metadata read 
 
 Workers 使用持久 Alarm 和事务 outbox 调用同一个 Actions 入口，详见 [Workers 指南](workers.md)。不要同时运行两个 Bot 调度同站点。切换 Node 到 Actions 不会自动部署 Cloudflare Worker。
 
+## CI 重跑通知
+
+Worker 的 `board.on_workflow_run` 监听已验签、范围内且未重复的 GitHub `workflow_run.completed`。仅当 `workflow_run.status=completed`、`run_attempt>1` 时登记重跑；第一次执行仍由现有增量列表发现，不为每次普通完成增加一条待办。不依赖重跑时不会触发的 `requested`。
+
+待办只保存源仓、run ID、最新 attempt 和随机 revision，同一 run 合并，旧 attempt 不覆盖新值；与投递索引在归档成功后的同一 SQLite 事务内提交，重启不丢失。它不增加刷新代数、不重置合并窗口、不提前 Alarm，也不为每个完成事件 dispatch。通知随下一次原有 Issue／PR 刷新或空闲刷新一起处理，频率不变。Node 本地模式没有这条持久通知链路。
+
+看板采集用现有 OIDC 身份调用 `POST /actions/reruns`，每轮最多读 20 条，轮转读取，失败项不会一直挡住后续 ID；只按 ID 查询最新 attempt、状态和必要报告，不为重跑翻全部 Actions 历史。看板将进度与公开数据原子提交后，才向 `POST /actions/reruns/ack` 确认成功项。删除必须同时匹配源仓、ID、attempt、revision，旧采集不能误删后来到达的新重跑。查询失败、预算耗尽、报告读取未完成、提交冲突或确认丢失均保留待办，下次沿用原频率再处理；不保存额外正文或产物。接口权限见 [Actions OIDC](actions-oidc.md)。
+
 ## 看板仓负责的工作
 
 每次从 main 读取 `.sync/` 和 `site/data/history/`，在请求／时间预算内增量刷新、补历史、重试报告。进度与数据在同一提交内写入；使用准确 checkout 父提交，冲突则失败并从新 main 重试，禁止强推。看板仓自己的定时每天一次，只在 Bot 停止触发时兜底；无站点变化只更新进度，不触发 Pages。
@@ -49,3 +57,5 @@ Issue / PR 和 run / attempt 指标分片长期保留；不复制测试日志、
 ## 验证
 
 `npm run check`、`npm test` 覆盖 Webhook 完整存档、范围／去重、队列恢复、触发失败重试、App 最小权限及管理状态。`tests-ts/board-app.test.ts` 明确验证 dispatch 不伪造提交或发布成功。实际部署验收应核对 Actions 完成、进度与数据同一提交、Pages 完成及站点内容。
+
+`tests-ts/worker-run-changes.test.mjs` 在真实 workerd 中验证完成通知合并、事务回滚、重启、轮转批次、OIDC 范围和带版本确认，并断言重跑通知不改变 outbox 与 Alarm。看板仓的 `test/journey-rerun-collection.py` 用隔离 HTTP 源和真实采集 CLI 验证旧 run 变绿、失败保留与发布冲突不确认。

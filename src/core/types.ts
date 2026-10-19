@@ -56,6 +56,8 @@ export interface Board {
   readonly mode: 'active' | 'noop';
   readonly repositories: readonly string[];
   handle(method: string, event: BotEvent): Promise<Doc>;
+  /** Workers may retain changed run IDs without requesting an immediate refresh. */
+  observeRun?(event: BotEvent): Promise<Doc>;
   status(): Doc;
 }
 /** Stable public codes for why GitCode sync is not running; missing credentials can appear together. */
