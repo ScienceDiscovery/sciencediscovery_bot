@@ -52,8 +52,8 @@ flowchart TD
 ```
 
 1. HTTP 接收原始字节，`Pipeline` 验签后解析并归一化事件，检查允许的源仓与 delivery 去重。只有有效且匹配的事件进入业务监听；未知、重复、范围外或验签失败的投递仍保存各自请求和应用响应。存储失败返回 503，不确认已保存。
-2. Worker 的看板监听器仅暂存刷新意图。R2 正文／详情写入成功后，SQLite 事务一起提交索引、去重和刷新待办；随后由持久 Alarm 触发 `collect.yml`，HTTP 请求不会等待 Python 采集结束。
-3. `collect.yml` 从目标 main 读取上轮进度与历史，校验唯一源仓映射。GitHub 为采集 job 签发 OIDC 身份；对应 Worker 的 `/actions/token` 校验该身份后，用本环境 App 私钥分别申请源仓只读、看板仓 Contents 写安装令牌。采集器用这些令牌读取 GitHub API，再将新进度与变化数据一起提交到看板仓；结束时尝试撤销令牌。Bot 的 dispatch 参数不携带令牌，看板 Actions 不保存 App 私钥。
+2. Worker 的看板监听器暂存刷新意图，或合并 `workflow_run.completed` 的重跑 ID。R2 正文／详情写入成功后，SQLite 事务一起提交索引、去重和待办；随后仍由原有持久 Alarm 触发 `collect.yml`，重跑通知不提前调度，HTTP 请求不会等待 Python 采集结束。
+3. `collect.yml` 从目标 main 读取上轮进度与历史，校验唯一源仓映射。GitHub 为采集 job 签发 OIDC 身份；对应 Worker 的 `/actions/token` 校验该身份后，用本环境 App 私钥分别申请源仓只读、看板仓 Contents 写安装令牌。采集器用这些令牌读取 GitHub API，再将新进度与变化数据一起提交到看板仓；结束时尝试撤销令牌。它还以固定采集身份每轮领取最多 20 条重跑 ID，按 ID 补采而不为此扫描全部历史，提交成功后才按 revision 确认；失败项留在 Worker，进度与指标仍只由看板仓维护。Bot 的 dispatch 参数不携带令牌，看板 Actions 不保存 App 私钥。
 4. `pages.yml` 只在 `site/` 变化或手动运行时上传整个 `site/`。仅进度变化不触发部署；页面无变化时不能把“没有新 Pages 运行”判成采集失败。
 
 Webhook 已接受、Actions 已触发、采集提交成功、Pages 部署成功是四个独立状态。Bot 的 `last_dispatch` 只代表触发成功，最终结果分别查看采集与发布工作流。详情见[看板更新](features/board-publication.md)。

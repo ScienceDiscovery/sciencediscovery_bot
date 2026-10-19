@@ -66,6 +66,8 @@ Worker 保留 `SDBOT_GITHUB_APP_ID` 和 Secret `SDBOT_GITHUB_APP_PRIVATE_KEY`，
 
 `POST /actions/gitcode-sync` 使用同一身份校验（不需要请求体，也不受每次运行一次的限制），只返回本看板源仓的 GitCode 同步记录，不签发令牌、不进入 Webhook 档案；同步未启用时返回 `enabled: false`。见 [GitHub PR 同步到 GitCode](gitcode-sync.md)。
 
+`POST /actions/reruns` 与 `POST /actions/reruns/ack` 也不签发令牌、不进入投递档案，只允许既有看板配置中的固定采集身份：仓库与所有者 ID、`main`、`.github/workflows/collect.yml`、`schedule`／`workflow_dispatch`、固定 audience 和管理域名；其他访问规则不能借此查询待办，新增接口不扩大 OIDC 信任范围。读取请求为 `{}`，返回 `{"ok":true,"source":"owner/source","runs":[{"id":123,"attempt":2,"revision":"32位小写十六进制"}]}`，最多 20 条。确认请求为 `{"commit":"已提交的40位小写SHA","runs":[原样成功项]}`，正文上限 4096 字节；仅删除版本仍匹配的项。客户端必须在公开数据和进度提交成功后确认，并重新申请短期 OIDC 身份，避免长采集结束时原 JWT 已过期。接口不受令牌兑换次数限制，失败不清待办；响应均为 `no-store`。见 [CI 重跑通知](board-publication.md#ci-重跑通知)。
+
 成功返回 `token`、`expires_at`、`repository`、`purpose`（请求没带时为 null）、`permissions`，响应 `Cache-Control: no-store`。认证失败为 401，身份超出信任范围为 403，重复兑换为 409，配置不完整为 503，上游签发失败为 502。发布新版本后的几分钟内，Worker 的后台对象可能还在运行旧代码，这时返回 503 且带 `Retry-After: 60` 和 `retryable: true`，稍后重跑即可。错误只返回短说明，不透传上游响应。该端点及 `/actions/` 保留路径不进入 Webhook 档案；它也不能查询管理信息。
 
 ## 采集器与失败恢复

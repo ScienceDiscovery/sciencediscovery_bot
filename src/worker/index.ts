@@ -8,10 +8,11 @@ import type { ActionsRule } from '../core/actions-rules.js';
 import { dispatchCollection } from '../core/actions.js';
 import { Mutex, object, type Doc } from '../core/types.js';
 import { WorkerArchive, type PruneResult } from './archive.js';
+import type { RunChange } from './run-changes.js';
 import { WorkerBoard } from './board.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
 import { authorizeAdmin } from './access.js';
-import { exchangeActionsToken, readGitCodeSync } from './actions-auth.js';
+import { exchangeActionsToken, readGitCodeSync, runChanges } from './actions-auth.js';
 import { WorkerGitCodeSync } from './gitcode-sync.js';
 import { AnalyticsCache } from './usage.js';
 import { WorkerForwards, type AdminReply } from './forward.js';
@@ -133,6 +134,8 @@ export class BotObject extends DurableObject<WorkerEnv> {
   tokenGrants(): Doc { return { ok: true, retention_days: GRANT_RETENTION_DAYS, limit: GRANT_LIMIT, shown: GRANT_PAGE, grants: this.grants.list() }; }
   // Read-only RPC for the OIDC-authenticated dashboard collector.
   gitcodeSync(): Promise<Record<string, unknown>> { return this.sync.snapshot(); }
+  runChanges(source: string): RunChange[] { return this.board.changes.list(source); }
+  ackRunChanges(source: string, rows: RunChange[]): void { this.board.changes.ack(source, rows); }
   async wake(): Promise<void> { await this.mutex.run(() => this.schedule()); await this.forwards.schedule(); }
   // Cron-driven retention step; bounded per call and independent of the ingestion mutex.
   pruneArchive(now?: number): Promise<PruneResult> { return this.archive.prune(now); }
@@ -199,6 +202,7 @@ export default {
       const url = new URL(request.url);
       if (url.pathname === '/actions/token') return await exchangeActionsToken(request, env);
       if (url.pathname === '/actions/gitcode-sync') return await readGitCodeSync(request, env);
+      if (url.pathname === '/actions/reruns' || url.pathname === '/actions/reruns/ack') return await runChanges(request, env, url.pathname.endsWith('/ack'));
       if (url.pathname === '/actions' || url.pathname.startsWith('/actions/')) return jsonResponse({ ok: false, error: 'not found' }, 404);
       // Certificate callers authenticate with their own JWT; this path is never behind Access and never a webhook.
       if (url.pathname === '/caller' || url.pathname.startsWith('/caller/')) return await handleCaller(request, env);

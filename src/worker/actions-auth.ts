@@ -5,6 +5,7 @@ import { GitHubApp } from '../core/github-app.js';
 import { object } from '../core/types.js';
 import { PURPOSE, matchActionsRule, type ActionsClaims, type ActionsRule } from '../core/actions-rules.js';
 import { OBJECT_NAME, workerConfig, type WorkerEnv } from './env.js';
+import { RUN_CHANGE_BATCH, validRunChange } from './run-changes.js';
 import { describePermissions } from './token-grants.js';
 
 const issuer = 'https://token.actions.githubusercontent.com';
@@ -119,4 +120,27 @@ export async function readGitCodeSync(request: Request, env: WorkerEnv): Promise
   if (sync.source.toLowerCase() !== verified.source.toLowerCase()) return fail('forbidden', 403);
   try { return jsonResponse(await env.BOT.getByName(OBJECT_NAME).gitcodeSync()); }
   catch { return fail('sync records unavailable', 503); }
+}
+
+/** Collector-only rerun hints. Acknowledgement follows the dashboard's atomic publication. */
+export async function runChanges(request: Request, env: WorkerEnv, acknowledge = false): Promise<Response> {
+  const verified = await verifyCollector(request, env, false);
+  if (verified instanceof Response) return verified;
+  const captured = await captureBody(request, 4096);
+  if (captured.error) return fail(captured.error.message, captured.error.status);
+  let input: Record<string, unknown>;
+  try {
+    const raw = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(captured.body) || '{}');
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return fail('bad request', 400);
+    input = object(raw);
+  } catch { return fail('bad request', 400); }
+  const bot = env.BOT.getByName(OBJECT_NAME);
+  if (!acknowledge) {
+    if (Object.keys(input).length) return fail('bad request', 400);
+    return jsonResponse({ ok: true, source: verified.source, runs: await bot.runChanges(verified.source) });
+  }
+  if (Object.keys(input).sort().join(',') !== 'commit,runs' || typeof input.commit !== 'string' || !/^[0-9a-f]{40}$/.test(input.commit)
+    || !Array.isArray(input.runs) || input.runs.length > RUN_CHANGE_BATCH || !input.runs.every(validRunChange)) return fail('bad request', 400);
+  await bot.ackRunChanges(verified.source, input.runs);
+  return jsonResponse({ ok: true });
 }

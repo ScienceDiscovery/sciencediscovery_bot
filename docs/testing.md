@@ -51,6 +51,8 @@ npm run test:e2e:cloud-admin
 
 Actions 触发模式还需验证队列重启后恢复、失败不确认代数，以及 `last_dispatch` 不被误报成 `last_success` 或 Pages 提交。看板仓负责历史续跑与指标缓存的 Python、浏览器及真实 Actions 验证。
 
+`node --import tsx --test tests-ts/worker-run-changes.test.mjs` 是重跑通知的 API 旅程：真实 workerd 接收签名 Webhook，使用现场签发的 OIDC 身份读写待办，验证重复、重启、事务回滚、轮转及旧确认不删除新 attempt；不请求真实 Actions，也断言不提前刷新。看板仓另有 `PYTHONDONTWRITEBYTECODE=1 python3 test/journey-rerun-collection.py`，通过本地 HTTP 替身运行实际发布 CLI，验证窗口外重跑变绿、源端失败和发布冲突不确认。
+
 ## 提交前
 
 云端没有测试实例：合入 `main` 即由 Workers Builds 发布正式 Worker `sciencediscovery-bot`，所以上面的本地检查、workerd 测试和浏览器旅程就是合入前的全部验证，不再有“先部署测试 Worker”这一步。

@@ -1,4 +1,5 @@
 import { boardBlocked, targets, type Config } from '../core/config.js';
+import { WorkerRunChanges } from './run-changes.js';
 import { category, type Board, type BotEvent, type Doc } from '../core/types.js';
 
 interface DispatchState {
@@ -12,7 +13,9 @@ export class WorkerBoard implements Board {
   readonly repositories: string[];
   readonly blocked: '' | 'no_github_app';
   private readonly pending = new Set<string>();
+  readonly changes: WorkerRunChanges;
   constructor(readonly storage: DurableObjectStorage, readonly cfg: Config, readonly clock = () => Date.now()) {
+    this.changes = new WorkerRunChanges(storage);
     // Without App credentials nothing can be dispatched: report it instead of scheduling doomed work.
     this.blocked = boardBlocked(cfg, true);
     this.repositories = this.blocked ? [] : Object.keys(targets(cfg)).map(source => source.toLowerCase());
@@ -36,9 +39,14 @@ export class WorkerBoard implements Board {
     if (event.provider !== 'github' || !this.repositories.includes(event.repo.toLowerCase())) return { hook: 'board', method, status: this.mode === 'noop' ? 'noop' : 'ignored' };
     this.pending.add(event.repo.toLowerCase()); return { hook: 'board', method, status: 'queued' };
   }
-  clearPending(): void { this.pending.clear(); }
+  async observeRun(event: BotEvent): Promise<Doc> {
+    if (event.provider !== 'github' || !this.repositories.includes(event.repo.toLowerCase())) return { status: 'ignored' };
+    return this.changes.stage(event);
+  }
+  clearPending(): void { this.pending.clear(); this.changes.clearPending(); }
   commitPending(): void {
     for (const source of this.pending) this.request(this.get(source)!);
+    this.changes.commitPending();
     this.pending.clear();
   }
   private request(state: DispatchState): void {
