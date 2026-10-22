@@ -116,6 +116,7 @@ export class BotObject extends DurableObject<WorkerEnv> {
   }
   /** Access-authenticated configuration of forward subscriptions and certificate callers. */
   forwardsAdmin(method: string, id: string | null, input: unknown): AdminReply { return this.forwards.admin(method, id, input); }
+  forwardEnabled(id: string, input: unknown): AdminReply { return this.forwards.setEnabled(id, input); }
   forwardTest(id: string): Promise<AdminReply> { return this.forwards.test(id); }
   async forwardArchived(id: string): Promise<AdminReply> {
     const source = await this.archive.forwardSource(id);
@@ -173,7 +174,7 @@ async function repositoryLookup(url: URL, env: WorkerEnv): Promise<Response> {
 
 type AdminKind = 'forwards' | 'callers' | 'actions-rules' | 'events';
 /**
- * Collections take GET and POST, items PUT and DELETE, a forward's test action POST. Writes must be
+ * Collections take GET and POST, items PUT and DELETE, a forward's test/enabled actions POST. Writes must be
  * same-origin JSON, which a cross-site form cannot send, on top of the Access identity already verified.
  */
 async function adminConfig(request: Request, env: WorkerEnv, kind: AdminKind, id: string | null, action: string | null = null): Promise<Response> {
@@ -192,7 +193,7 @@ async function adminConfig(request: Request, env: WorkerEnv, kind: AdminKind, id
     }
   }
   const bot = env.BOT.getByName(OBJECT_NAME);
-  const reply = (action === 'forward' ? await bot.forwardArchived(id!) : action === 'test' ? await bot.forwardTest(id!) : kind === 'forwards' ? await bot.forwardsAdmin(request.method, id, input)
+  const reply = (action === 'forward' ? await bot.forwardArchived(id!) : action === 'test' ? await bot.forwardTest(id!) : action === 'enabled' ? await bot.forwardEnabled(id!, input) : kind === 'forwards' ? await bot.forwardsAdmin(request.method, id, input)
     : kind === 'actions-rules' ? await bot.actionsRulesAdmin(request.method, id, input) : await bot.callersAdmin(request.method, id, input)) as unknown as AdminReply;
   return jsonResponse(object(reply.body) as Doc, reply.status);
 }
@@ -214,7 +215,7 @@ export default {
         // `/admin/api/forwards/<id>/test` sends a test request to that subscription's target.
         const resend = /^\/admin\/api\/events\/([0-9a-f]{32})\/forward$/.exec(url.pathname);
         if (resend) return await adminConfig(request, env, 'events', resend[1], 'forward');
-        const writable = /^\/admin\/api\/(?:(forwards)\/([0-9a-f-]{36})\/(test)|(forwards|callers|actions-rules)(?:\/([0-9a-f-]{36}))?)$/.exec(url.pathname);
+        const writable = /^\/admin\/api\/(?:(forwards)\/([0-9a-f-]{36})\/(test|enabled)|(forwards|callers|actions-rules)(?:\/([0-9a-f-]{36}))?)$/.exec(url.pathname);
         if (writable) return await adminConfig(request, env, (writable[1] || writable[4]) as AdminKind, writable[2] || writable[5] || null, writable[3] || null);
         if (request.method !== 'GET') return jsonResponse({ ok: false, error: 'method not allowed' }, 405, new Headers({ Allow: 'GET', 'Cache-Control': 'no-store', 'Content-Type': 'application/json' }));
         if (['/admin', '/admin/'].includes(url.pathname)) return new Response(panel, { headers: {

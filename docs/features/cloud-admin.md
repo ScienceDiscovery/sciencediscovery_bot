@@ -2,7 +2,7 @@
 
 ## 功能与入口
 
-接收与管理共用一个 Worker。`/admin`、`/admin/` 是管理页面，`/admin/api/status`、`/admin/api/listeners`、`/admin/api/events`、`/admin/api/events/<record_id>`、`/admin/api/usage`、`/admin/api/token-grants`、`/admin/api/installations` 及 `/admin/api/repository-identity` 是只读接口。唯一的管理写接口是 `/admin/api/forwards` 与 `/admin/api/callers`（及其 `/<id>`）、GitHub Actions 访问规则 `/admin/api/actions-rules`（及其 `/<id>`），归档的独立重新转发 `/admin/api/events/<record_id>/forward`，以及发送转发测试请求的 `/admin/api/forwards/<id>/test`，用于配置和检查 [Webhook 转发](webhook-forwarding.md)、[外部调用](caller-api.md) 与 [Actions 访问规则](actions-oidc.md#访问规则)；它们同样先经过 Access 校验，并只接受同源 JSON 写入。页面复用事件详情、筛选、分页、浏览器时区和实际监听点列表；顶栏标明运行环境与云端记录。「安装」页按需读取 App 安装、获批权限和仓库；外部调用据此选择仓库并收窄权限，见[外部调用](caller-api.md#安装目录)。
+接收与管理共用一个 Worker。`/admin`、`/admin/` 是管理页面，`/admin/api/status`、`/admin/api/listeners`、`/admin/api/events`、`/admin/api/events/<record_id>`、`/admin/api/usage`、`/admin/api/token-grants`、`/admin/api/installations` 及 `/admin/api/repository-identity` 是只读接口。唯一的管理写接口是 `/admin/api/forwards` 与 `/admin/api/callers`（及其 `/<id>`）、GitHub Actions 访问规则 `/admin/api/actions-rules`（及其 `/<id>`），归档的独立重新转发 `/admin/api/events/<record_id>/forward`，切换单条转发启用状态的 `POST /admin/api/forwards/<id>/enabled`，以及发送转发测试请求的 `/admin/api/forwards/<id>/test`，用于配置和检查 [Webhook 转发](webhook-forwarding.md)、[外部调用](caller-api.md) 与 [Actions 访问规则](actions-oidc.md#访问规则)；它们同样先经过 Access 校验，并只接受同源 JSON 写入。页面复用事件详情、筛选、分页、浏览器时区和实际监听点列表；顶栏标明运行环境与云端记录。「安装」页按需读取 App 安装、获批权限和仓库；外部调用据此选择仓库并收窄权限，见[外部调用](caller-api.md#安装目录)。
 
 所有管理页面与 API 均要求 Cloudflare Access 身份。根路径 `/api/status` 等不提供别名，Webhook 与健康路径不要求交互登录。Node 的本机管理端继续使用原有 Bearer／loopback／Cf-* 拒绝规则，本地管理桥不进入云端部署产物。
 

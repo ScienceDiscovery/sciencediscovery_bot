@@ -187,7 +187,8 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await page.setViewportSize({ width: 390, height: 844 });
   const reads = [];
   page.on('request', r => { const path = new URL(r.url()).pathname; if (path.startsWith('/admin/api/')) reads.push(`${r.method()} ${path}`); });
-  page.on('dialog', dialog => dialog.accept());
+  let confirmations = 0;
+  page.on('dialog', dialog => { confirmations++; return dialog.accept(); });
   await page.clock.install();
   await page.goto('/admin/#forwards');
   await expect(page.locator('#forward-count')).toContainText('/ 20 条订阅');
@@ -196,6 +197,7 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   // A private address is refused with the reason; a public HTTPS target is saved.
   await page.getByRole('button', { name: '新增订阅' }).click();
   const form = page.locator('#forward-form');
+  await expect(form.getByLabel('启用这条订阅')).toBeChecked();
   await form.getByLabel('名称').fill('内网目标');
   await form.getByLabel('目标 URL').fill('https://10.0.0.8/hook');
   await form.getByLabel('议题（Issue）', { exact: true }).check();
@@ -243,13 +245,39 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await expect(card).toContainText('议题（Issue）：新建');
   await expect(card).toContainText('合并请求（PR）：合并');
   const saved = await (await page.request.get('/admin/api/forwards')).json();
+  expect(saved.subscriptions.find(sub => sub.name === 'Issue 转发').enabled).toBe(true);
   expect(saved.subscriptions.find(sub => sub.name === 'Issue 转发').actions).toEqual(['issue:opened', 'pull_request:merged']);
   await expect(card).toContainText('仓库：openjiuwen-ai/sciencediscovery');
   await expect(card).toContainText('附加标头：Authorization');
   await expect(page.locator('#forward-list')).not.toContainText('crsr_journey');
+  const confirmationCount = confirmations;
+  const countBefore = await page.locator('#forward-count').textContent();
+  await expect(card.getByRole('button', { name: '测试', exact: true })).toBeEnabled();
+  const toggled = page.waitForRequest(r => r.method() === 'POST' && r.url().endsWith('/enabled'));
+  await card.getByRole('button', { name: '禁用', exact: true }).click();
+  expect((await toggled).postDataJSON()).toEqual({ enabled: false });
+  await expect(card).toContainText('已禁用');
+  await expect(card.getByRole('button', { name: '测试', exact: true })).toBeDisabled();
+  await expect(card.getByRole('button', { name: '编辑', exact: true })).toBeEnabled();
+  await expect(card.getByRole('button', { name: '删除', exact: true })).toBeEnabled();
+  await expect(page.locator('#forward-count')).toHaveText(countBefore);
+  expect(await overflow()).toBe(true);
+  await card.screenshot({ path: testInfo.outputPath('forward-disabled-mobile.png') });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  expect(await overflow()).toBe(true);
+  await card.screenshot({ path: testInfo.outputPath('forward-disabled-desktop.png') });
+  await card.getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(form.getByLabel('启用这条订阅')).not.toBeChecked();
+  await form.getByRole('button', { name: '取消', exact: true }).click();
+  await card.getByRole('button', { name: '启用', exact: true }).click();
+  await expect(card).not.toContainText('已禁用');
+  await expect(card.getByRole('button', { name: '测试', exact: true })).toBeEnabled();
+  expect(confirmations).toBe(confirmationCount);
+  await page.setViewportSize({ width: 390, height: 844 });
   // Edit keeps the stored secret readable to the admin, then changes the types.
   await card.getByRole('button', { name: '编辑' }).click();
   await expect(form.getByLabel(/签名密钥/)).toHaveValue('journey-secret');
+  await expect(form.getByLabel('启用这条订阅')).toBeChecked();
   await expect(issueActions.getByLabel('新建', {exact: true})).toBeChecked();
   await expect(prActions.getByLabel('合并', {exact: true})).toBeChecked();
   expect(await overflow()).toBe(true);
@@ -275,8 +303,16 @@ test('forwarding and certificate callers can be configured on a 390 px screen wi
   await expect(issueActions.getByLabel('新建', {exact: true})).toBeChecked();
   await expect(prActions.getByLabel('合并', {exact: true})).not.toBeChecked();
   await issueActions.getByLabel('新建', {exact: true}).uncheck();
+  await form.getByLabel('启用这条订阅').uncheck();
+  await form.getByLabel(/签名密钥/).fill('');
   await form.getByRole('button', {name: '保存订阅'}).click();
   await expect(card).toContainText('动作：各类型全部');
+  await expect(card).toContainText('已禁用');
+  const editedSubscription = (await (await page.request.get('/admin/api/forwards')).json()).subscriptions.find(sub => sub.name === 'Issue 转发');
+  expect(editedSubscription.enabled).toBe(false);
+  expect(editedSubscription.secret).toBe('journey-secret');
+  await card.getByRole('button', { name: '启用', exact: true }).click();
+  await expect(card.getByRole('button', { name: '测试', exact: true })).toBeEnabled();
   expect(await overflow()).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('forward-list-mobile.png'), fullPage: true });
 

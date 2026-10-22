@@ -12,6 +12,11 @@ export class BotObject extends Original {
     super(ctx, env);
     this.testNow = Date.now(); this.forwards.clock = () => this.testNow;
     this.cursors = cursors;
+    const payload = this.forwards.payload;
+    this.forwards.payload = async record => {
+      if (this.holdPayload) await fetch('https://payload-gate.example/wait');
+      return payload(record);
+    };
   }
   rows() {
     const value = this.cursors.reduce((sum, { cursor, select }) => ({
@@ -35,6 +40,8 @@ export class BotObject extends Original {
     this.ctx.storage.sql.exec('INSERT INTO forward_subscriptions VALUES (?,?)', sub.id, JSON.stringify(sub));
     this.forwards.cache = null;
   }
+  forwardSeedJob(job) { this.forwards.retries().exec('INSERT INTO forward_retries VALUES (?,?,?,?)', job.id, job.subscription, job.due, JSON.stringify(job)); }
+  forwardHoldPayload(hold) { this.holdPayload = hold; }
   async probeAlarm(at) { if (at) await this.ctx.storage.setAlarm(at); return this.ctx.storage.getAlarm(); }
 }
 export default {
@@ -45,6 +52,8 @@ export default {
     if (url.pathname === '/_test/drop-body') return Response.json(await stub.forwardDropBody(url.searchParams.get('id')) ?? null);
     if (url.pathname === '/_test/expire') return Response.json(await stub.forwardExpire() ?? null);
     if (url.pathname === '/_test/seed') return Response.json(await stub.forwardSeed(await request.json()) ?? null);
+    if (url.pathname === '/_test/seed-job') return Response.json(await stub.forwardSeedJob(await request.json()) ?? null);
+    if (url.pathname === '/_test/hold-payload') return Response.json(await stub.forwardHoldPayload(url.searchParams.get('value') === 'true') ?? null);
     if (url.pathname === '/_test/rows') return Response.json(await stub.rows());
     if (url.pathname === '/_test/alarm') return Response.json(await stub.probeAlarm(Number(url.searchParams.get('at'))));
     return worker.fetch(request, env, ctx);

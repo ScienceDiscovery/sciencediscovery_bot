@@ -197,8 +197,10 @@
     <h2>Webhook 转发</h2>
     <p class="muted">转发保留原始正文和来源业务标头。每次尝试写入 Standard Webhooks 的 <code>webhook-id</code>、<code>webhook-timestamp</code>、<code>webhook-signature</code>，同时保留 <code>X-Sdbot-Signature-256</code>。平台签名的含义由订阅的签名模式决定。</p>
     <p class="muted">网络错误、超时、408、429 和 5xx 在首次失败后 24 小时内退避重试；其他 4xx 不重试。每次 5 秒超时，不跟随重定向；目标失败不影响 Webhook 确认。「测试」发送带伪造上游签名的 GitHub 示例，验证当前签名模式，不是历史投递重放，也不受订阅筛选限制。正文不另存，最近保留 20 次尝试。</p>
+    <p class="muted">禁用后保留配置，不转发、不重试、不能测试，可以再启用；删除才是彻底移除。</p>
     <div class="filters"><button id="reload-forwards">刷新转发</button><button id="new-forward">新增订阅</button><span id="forward-count" class="muted" role="status"></span></div>
     <form id="forward-form" class="config-form" hidden novalidate>
+      <label class="inline-check"><input type="checkbox" name="enabled" checked> 启用这条订阅</label>
       <label>名称 <input type="text" name="name" maxlength="80" autocomplete="off"></label>
       <label>目标 URL <input type="url" name="url" placeholder="https://" autocomplete="off"></label>
       <fieldset><legend>来源</legend><label><input type="checkbox" name="providers" value="github"> github</label><label><input type="checkbox" name="providers" value="gitcode"> gitcode</label></fieldset>
@@ -214,7 +216,7 @@
         <label title="接收方使用 Standard Webhooks 或 X-Sdbot-Signature-256 验证订阅密钥；平台签名只保留上游原值，不用订阅密钥验证。"><input type="radio" name="signature_mode" value="preserve" checked> 保留来源签名</label>
         <label title="接收方只支持 GitHub 风格验签时选此项。两个平台签名头都使用订阅密钥，上游原签名移到独立的 X-Sdbot-Source 标头。"><input type="radio" name="signature_mode" value="github-compatible"> GitHub 兼容</label>
       </fieldset>
-      <label>签名密钥（留空自动生成；HMAC-SHA256 写入 X-Sdbot-Signature-256）<input type="password" name="secret" maxlength="256" autocomplete="off"></label>
+      <label>签名密钥（新建留空自动生成；编辑留空保留；HMAC-SHA256 写入 X-Sdbot-Signature-256）<input type="password" name="secret" maxlength="256" autocomplete="off"></label>
       <button type="button" id="generate-forward-secret">生成密钥</button>
       <label class="muted inline-check"><input type="checkbox" id="show-forward-secret"> 显示密钥</label>
       <div class="form-actions"><button type="submit">保存订阅</button><button type="button" id="cancel-forward">取消</button></div>
@@ -684,13 +686,13 @@ function renderForwards(doc = forwardDoc) {
   $("#forward-count").textContent = `${forwards.length} / ${doc.limit} 条订阅`;
   $("#new-forward").disabled = forwards.length >= doc.limit;
   $("#forward-list").innerHTML = forwards.map(f => `<article class="subscription" data-forward="${esc(f.id)}">
-    <header><h3>${esc(f.name)}</h3><span class="${f.last?.error ? "bad" : f.last ? "ok" : "muted"}">${f.last ? (f.last.error ? "最近失败" : "最近成功") : "未转发"}</span></header>
+    <header><h3>${esc(f.name)}${f.enabled === false ? ' <span class="tag">已禁用</span>' : ""}</h3><span class="${f.last?.error ? "bad" : f.last ? "ok" : "muted"}">${f.last ? (f.last.error ? "最近失败" : "最近成功") : "未转发"}</span></header>
     <p><code>${esc(f.url)}</code></p>
     <div class="routes">${f.providers.map(v => `<code>${esc(v)}</code>`).join("")}${f.types.map(v => `<span class="tag">${esc(FORWARD_TYPES[v] || v)}</span>`).join("")}</div>
     <p class="scope">动作：${esc(f.actions?.length ? f.actions.map(forwardActionLabel).join("、") : "各类型全部")}</p>
     <p class="scope">仓库：${esc(f.repos.length ? f.repos.join("、") : "所有仓库")}${f.headers.length ? ` · 附加标头：${esc(f.headers.map(h => h.name).join("、"))}` : ""}</p>
     <p class="scope">${f.has_secret ? "已设置签名密钥" : "首次使用时生成签名密钥"} · ${f.signature_mode === "github-compatible" ? "GitHub 兼容" : "保留来源签名"} · 最近一次：${lastResult(f.last)}</p>
-    <div class="card-actions"><button type="button" data-test-forward="${esc(f.id)}"${testResults.get(f.id)?.pending ? " disabled" : ""}>测试</button><button type="button" data-edit-forward="${esc(f.id)}">编辑</button><button type="button" data-delete-forward="${esc(f.id)}">删除</button></div>
+    <div class="card-actions"><button type="button" data-toggle-forward="${esc(f.id)}">${f.enabled === false ? "启用" : "禁用"}</button><button type="button" data-test-forward="${esc(f.id)}"${f.enabled === false || testResults.get(f.id)?.pending ? " disabled" : ""}>测试</button><button type="button" data-edit-forward="${esc(f.id)}">编辑</button><button type="button" data-delete-forward="${esc(f.id)}">删除</button></div>
     ${testResult(f)}${callHistory(f)}
   </article>`).join("") || '<p class="muted">还没有转发订阅</p>';
 }
@@ -712,6 +714,7 @@ function headerRow(header = { name: "", value: "" }) {
 function openForward(sub) {
   const form = $("#forward-form");
   editingForward = sub ? sub.id : null;
+  field(form, "enabled").checked = sub?.enabled !== false;
   form.hidden = false;
   field(form, "name").value = sub?.name || ""; field(form, "url").value = sub?.url || ""; field(form, "secret").value = sub?.secret || "";
   check(form, "signature_mode", [sub?.signature_mode || "preserve"]);
@@ -736,12 +739,13 @@ $("#show-forward-headers").addEventListener("change", ev => { document.querySele
 $("#forward-form").addEventListener("submit", async ev => {
   ev.preventDefault();
   const form = ev.target, body = { name: field(form, "name").value, url: field(form, "url").value, providers: checked(form, "providers"), types: checked(form, "types"), secret: field(form, "secret").value,
-    signature_mode: checked(form, "signature_mode")[0],
+    signature_mode: checked(form, "signature_mode")[0], enabled: field(form, "enabled").checked,
     actions: checked(form, "actions").filter(action => checked(form, "types").includes(action.split(":")[0])),
     repos: field(form, "repos").value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean),
     // Rows left completely empty are ignored; a half-filled row is sent so the server can say what is missing.
     headers: [...document.querySelectorAll("#forward-headers .header-row")].map(row => ({ name: row.querySelector(".header-name").value.trim(), value: row.querySelector(".header-value").value }))
       .filter(header => header.name || header.value) };
+  if (editingForward && !body.secret) delete body.secret;
   try {
     await send(editingForward ? "/api/forwards/" + editingForward : "/api/forwards", editingForward ? "PUT" : "POST", body);
     form.hidden = true; editingForward = null;
@@ -751,7 +755,15 @@ $("#forward-form").addEventListener("submit", async ev => {
 // "toggle" does not bubble, so the list listens in the capture phase.
 $("#forward-list").addEventListener("toggle", ev => { const id = ev.target.dataset?.history; if (id) ev.target.open ? openHistory.add(id) : openHistory.delete(id); }, true);
 $("#forward-list").addEventListener("click", async ev => {
-  const edit = ev.target.closest("[data-edit-forward]"), remove = ev.target.closest("[data-delete-forward]"), test = ev.target.closest("[data-test-forward]");
+  const edit = ev.target.closest("[data-edit-forward]"), remove = ev.target.closest("[data-delete-forward]"), test = ev.target.closest("[data-test-forward]"), toggle = ev.target.closest("[data-toggle-forward]");
+  if (toggle) {
+    toggle.disabled = true;
+    try {
+      const f = forwards.find(item => item.id === toggle.dataset.toggleForward);
+      const doc = await send(`/api/forwards/${f.id}/enabled`, "POST", { enabled: f.enabled === false });
+      forwards[forwards.indexOf(f)] = doc.subscription; renderForwards();
+    } catch (err) { toggle.disabled = false; $("#forward-count").textContent = "切换失败：" + err.message; }
+  }
   if (test) {
     const id = test.dataset.testForward;
     testResults.set(id, { pending: true }); renderForwards();

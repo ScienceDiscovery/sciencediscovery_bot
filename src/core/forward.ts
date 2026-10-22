@@ -43,6 +43,8 @@ export interface ForwardSubscription {
   /** Empty or absent keeps all actions; only types with a selection are restricted. */
   actions?: string[];
   signature_mode?: SignatureMode;
+  /** Absent in legacy documents; only false disables forwarding. */
+  enabled?: boolean;
   /** Extra request headers such as Authorization; values are credentials and stay admin-only. */
   headers: ForwardHeader[];
   created: string; updated: string; last: ForwardResult | null;
@@ -169,9 +171,10 @@ const pick = (values: unknown, allowed: readonly string[]): string[] | null => {
   return [...new Set(list as string[])].sort((a, b) => allowed.indexOf(a) - allowed.indexOf(b));
 };
 /** Validates an admin request body; returns the fields or the reason it was refused. */
-export function parseSubscription(input: unknown): { ok: true; value: Pick<ForwardSubscription, 'name' | 'url' | 'providers' | 'types' | 'secret' | 'repos' | 'headers' | 'actions' | 'signature_mode'> } | { ok: false; error: string } {
+export function parseSubscription(input: unknown): { ok: true; value: Pick<ForwardSubscription, 'name' | 'url' | 'providers' | 'types' | 'secret' | 'repos' | 'headers' | 'actions' | 'signature_mode' | 'enabled'> } | { ok: false; error: string } {
   const doc = object(input), name = string(doc.name).trim(), url = string(doc.url).trim();
   const secret = string(doc.secret) || generateForwardSecret(), mode = doc.signature_mode ?? 'preserve';
+  if (doc.enabled !== undefined && typeof doc.enabled !== 'boolean') return { ok: false, error: 'enabled must be a boolean' };
   if (!name || name.length > 80) return { ok: false, error: 'name must be 1-80 characters' };
   const problem = targetProblem(url);
   if (problem) return { ok: false, error: `target URL rejected: ${problem}` };
@@ -185,7 +188,7 @@ export function parseSubscription(input: unknown): { ok: true; value: Pick<Forwa
   if (typeof repos === 'string') return { ok: false, error: repos };
   if (typeof headers === 'string') return { ok: false, error: headers };
   if (typeof actions === 'string') return { ok: false, error: actions };
-  return { ok: true, value: { name, url, providers, types, secret, repos, headers, actions, signature_mode: mode } };
+  return { ok: true, value: { name, url, providers, types, secret, repos, headers, actions, signature_mode: mode, enabled: doc.enabled !== false } };
 }
 /** The subscription type an archived delivery falls under. */
 export const forwardType = (kind: string): string => NAMED.has(kind) ? kind : 'other';
@@ -199,6 +202,7 @@ export function forwardAction(record: Doc): string {
 }
 /** A type with no selected actions remains unrestricted, after source/type/repository matching. */
 export const matches = (sub: ForwardSubscription, record: Doc): boolean => {
+  if (sub.enabled === false) return false;
   if (!sub.providers.includes(string(record.provider)) || !sub.types.includes(forwardType(string(record.kind)))
     || sub.repos?.length && !sub.repos.includes(string(record.repo).toLowerCase())) return false;
   const selected = (sub.actions || []).filter(action => action.startsWith(`${string(record.kind)}:`));
@@ -288,5 +292,5 @@ export async function deliverTest(sub: ForwardSubscription, fetcher: typeof fetc
   return send(sub, { provider: 'test', kind: 'ping', delivery_id: sample.delivery, repo: '' }, body, headers, fetcher, now, { 'X-Sdbot-Test': '1' }, true);
 }
 /** What the admin page shows; the secret and header values are readable there and nowhere else. */
-export const publicSubscription = (sub: ForwardSubscription): Doc => ({ ...sub, signature_mode: signatureMode(sub), repos: sub.repos || [], headers: sub.headers || [], actions: sub.actions || [],
+export const publicSubscription = (sub: ForwardSubscription): Doc => ({ ...sub, enabled: sub.enabled !== false, signature_mode: signatureMode(sub), repos: sub.repos || [], headers: sub.headers || [], actions: sub.actions || [],
   recent: sub.recent || (sub.last ? [sub.last] : []), has_secret: !!sub.secret });

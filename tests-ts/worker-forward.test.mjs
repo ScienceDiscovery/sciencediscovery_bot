@@ -354,6 +354,9 @@ test('a test send reaches the target at once and the latest 20 results are kept'
 test('forward actions classify archived fields and preserve legacy subscriptions', () => {
   const legacy = { providers: ['github', 'gitcode'], types: ['issue', 'pull_request', 'issue_comment', 'pull_request_review', 'push', 'ping', 'other'], repos: [] };
   const record = { provider: 'github', kind: 'issue', action: 'closed', repo: 'owner/repo', extra: {} };
+  assert.equal(matches({ ...legacy, enabled: false }, record), false);
+  assert.equal(publicSubscription(legacy).enabled, true);
+  assert.equal('enabled' in legacy, false);
   assert.equal(matches(legacy, record), true, 'an old subscription without actions keeps all actions');
   assert.deepEqual(publicSubscription(legacy).actions, []);
   assert.equal('actions' in legacy, false, 'reading an old subscription does not mutate it');
@@ -723,15 +726,146 @@ test('successful forwarding adds no new SQLite SELECTs and legacy mode reads do 
   assert.equal(forwarded.select_read, baseline.select_read, 'no new SELECT or retry-queue read on the success path');
   assert.equal(forwarded.read, baseline.read + 1, 'the existing result UPSERT reads its one subscription row');
   assert.equal(forwarded.written, baseline.written + 1, 'only the existing result row is updated');
-  const legacy = { ...sub, id: randomUUID(), name: 'Legacy', created: '2026-10-18T09:02:43Z' };
-  delete legacy.signature_mode;
+  const legacy = { ...sub, id: randomUUID(), name: 'Legacy', types: ['issue'], created: '2026-10-18T09:02:43Z' };
+  delete legacy.signature_mode; delete legacy.enabled;
   await mf.dispatchFetch('http://localhost/_test/seed', { method: 'POST', body: JSON.stringify(legacy) }); await rows();
   const listed = (await (await admin('/admin/api/forwards')).json()).subscriptions;
   assert.equal(listed.find(s => s.id === legacy.id).signature_mode, 'github-compatible');
-  assert.equal((await rows()).written, 0, 'legacy signature modes are inferred without a migration write');
+  assert.equal(listed.find(s => s.id === legacy.id).enabled, true);
+  assert.equal((await rows()).written, 0, 'legacy signature modes and enabled are inferred without a migration write');
+  await send();
+  await until(async () => (await (await admin('/admin/api/forwards')).json()).subscriptions.find(s => s.id === legacy.id).last);
   const generated = (await (await admin('/admin/api/forwards', { method: 'POST', body: {
     name: 'Generated', url: 'https://cost.example/new', providers: ['github'], types: ['issue'],
   } })).json()).subscription;
   assert.match(generated.secret, /^whsec_[A-Za-z0-9+/]{43}=$/);
   assert.equal(Buffer.from(generated.secret.slice(6), 'base64').length, 32);
+});
+
+test('subscriptions can be disabled, kept within the limit and enabled without changing their configuration', { timeout: 60000 }, async t => {
+  await mkdir('.tmp/tests-ts', { recursive: true });
+  const directory = await mkdtemp(resolve('.tmp/tests-ts/forward-enabled-')), access = await accessFixture(), received = [];
+  const mf = await workerRuntime({ directory, bindings: { ...access.bindings, SDBOT_GITHUB_WEBHOOK_SECRET: GITHUB_SECRET },
+    outboundService: async request => access.jwks(request) || (received.push(new URL(request.url).pathname), new Response('ok', { status: 202 })) });
+  t.after(async () => { await mf.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const admin = (path, options) => access.admin(mf, path, options);
+  const fields = { name: 'Toggle', url: 'https://enabled.example/hook', providers: ['github'], types: ['issue'], secret: 'retained-secret',
+    repos: [repository.full_name], actions: ['issue:opened'], headers: [{ name: 'X-Fixture', value: 'retained' }], signature_mode: 'github-compatible' };
+  const create = async body => {
+    const response = await admin('/admin/api/forwards', { method: 'POST', body: { ...fields, ...body } });
+    return { status: response.status, ...await response.json() };
+  };
+  const original = await create({}); assert.equal(original.status, 201);
+  const sub = original.subscription, endpoint = `/admin/api/forwards/${sub.id}/enabled`;
+  assert.equal(sub.enabled, true);
+  const list = async () => (await (await admin('/admin/api/forwards')).json()).subscriptions;
+  const current = async () => (await list()).find(row => row.id === sub.id);
+  const set = async enabled => {
+    const response = await admin(endpoint, { method: 'POST', body: { enabled } });
+    assert.equal(response.status, 200); return (await response.json()).subscription;
+  };
+  for (const enabled of ['false', 0, null]) assert.equal((await admin(endpoint, { method: 'POST', body: { enabled } })).status, 422);
+  assert.equal((await admin(endpoint, { method: 'POST', body: {} })).status, 422);
+  assert.equal((await admin(endpoint, { method: 'POST', body: { enabled: false, url: 'https://changed.example' } })).status, 422);
+  assert.equal((await create({ enabled: 'false' })).status, 422);
+  assert.equal((await admin(`/admin/api/forwards/${randomUUID()}/enabled`, { method: 'POST', body: { enabled: false } })).status, 404);
+  assert.equal((await mf.dispatchFetch('http://localhost' + endpoint, { method: 'POST' })).status, 401);
+  assert.equal((await admin(endpoint, { method: 'POST', body: { enabled: false }, headers: { origin: 'https://foreign.example' } })).status, 403);
+  assert.equal((await admin(endpoint, { method: 'POST', body: '{}', headers: { 'content-type': 'text/plain' } })).status, 415);
+  assert.equal((await admin(endpoint, { method: 'POST', body: '{' })).status, 422);
+  for (const method of ['GET', 'PUT', 'DELETE', 'PATCH']) assert.equal((await admin(endpoint, { method, ...(method === 'GET' ? {} : { body: {} }) })).status, 405);
+  assert.equal((await admin('/admin/api/status', { method: 'POST', body: {} })).status, 405);
+  const send = async title => {
+    const delivery = github('issues', { action: 'opened', repository, issue: { number: 1, title } });
+    assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', delivery.init)).status, 200);
+    return delivery;
+  };
+  const first = await send('Before disabling');
+  await until(async () => (await current()).last?.delivery_id === first.delivery);
+  const before = await current(), disabled = await set(false);
+  const configuration = ({ enabled, updated, ...row }) => row;
+  assert.deepEqual(configuration(disabled), configuration(before), 'toggle changes only enabled and updated');
+  assert.equal(disabled.enabled, false);
+  await send('While disabled');
+  const rejected = await admin(`/admin/api/forwards/${sub.id}/test`, { method: 'POST', body: {} });
+  assert.equal(rejected.status, 422); assert.deepEqual(await rejected.json(), { ok: false, error: 'subscription is disabled' });
+  assert.equal((await admin(`/admin/api/forwards/${randomUUID()}/test`, { method: 'POST', body: {} })).status, 404);
+  const archived = (await (await admin('/admin/api/events?delivery_id=' + first.delivery)).json()).events[0];
+  const manual = await admin(`/admin/api/events/${archived.record_id}/forward`, { method: 'POST', body: {} });
+  assert.equal(manual.status, 422); assert.equal((await manual.json()).error, 'no matching subscriptions');
+  assert.deepEqual((await current()).recent, before.recent);
+  assert.deepEqual(received, ['/hook'], 'disabled automatic, manual and test sends never reach fetch');
+  // Editing a disabled subscription and leaving the secret blank preserves both settings.
+  const edited = await admin(`/admin/api/forwards/${sub.id}`, { method: 'PUT', body: { ...fields, name: 'Edited', secret: '', enabled: false } });
+  assert.equal(edited.status, 200); assert.equal((await edited.json()).subscription.secret, sub.secret);
+  assert.equal((await current()).enabled, false);
+  await set(true);
+  const next = await send('After enabling');
+  await until(async () => (await current()).last?.delivery_id === next.delivery);
+  assert.equal(received.length, 2, 're-enabling sends new events only');
+  assert.deepEqual((await current()).recent.slice(1), before.recent);
+  // Disabled subscriptions still consume every slot in the limit.
+  for (let i = 1; i < 20; i++) assert.equal((await create({ name: `Disabled ${i}`, enabled: false })).status, 201);
+  assert.equal((await list()).length, 20); assert.ok((await list()).every(row => typeof row.enabled === 'boolean'));
+  const over = await create({ enabled: false }); assert.equal(over.status, 422); assert.match(over.error, /at most 20/);
+});
+
+test('disabling cancels queued and leased retries even when re-enabled before an in-flight send returns', { timeout: 60000 }, async t => {
+  await mkdir('.tmp/tests-ts', { recursive: true });
+  const directory = await mkdtemp(resolve('.tmp/tests-ts/forward-disable-retries-')), access = await accessFixture(), received = [];
+  let releasePayload, releaseSend;
+  const mf = await workerRuntime({ directory, entry: 'tests-ts/support/worker-forward-control.mjs',
+    bindings: { ...access.bindings, SDBOT_GITHUB_WEBHOOK_SECRET: GITHUB_SECRET }, outboundService: async request => {
+      const keys = access.jwks(request); if (keys) return keys;
+      const url = new URL(request.url);
+      if (url.hostname === 'payload-gate.example') { await new Promise(resolve => { releasePayload = resolve; }); return new Response('ok'); }
+      received.push(url.pathname);
+      if (url.pathname === '/inflight') await new Promise(resolve => { releaseSend = resolve; });
+      return new Response('busy', { status: 503 });
+    } });
+  t.after(async () => { releasePayload?.(); releaseSend?.(); await mf.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const admin = (path, options) => access.admin(mf, path, options);
+  const control = async (path, body) => {
+    const response = await mf.dispatchFetch('http://localhost/_test/' + path, body ? { method: 'POST', body: JSON.stringify(body) } : {});
+    assert.equal(response.status, 200); return response.json();
+  };
+  const current = async id => (await (await admin('/admin/api/forwards')).json()).subscriptions.find(row => row.id === id);
+  const set = async (id, enabled) => { assert.equal((await admin(`/admin/api/forwards/${id}/enabled`, { method: 'POST', body: { enabled } })).status, 200); };
+  const create = async path => (await (await admin('/admin/api/forwards', { method: 'POST', body: {
+    name: path, url: 'https://retry.example' + path, providers: ['github'], types: ['issue'], secret: 'retry-secret'
+  } })).json()).subscription;
+  const send = async () => { const delivery = github('issues', { action: 'opened', repository, issue: { number: 1, title: 'Cancel retries' } });
+    assert.equal((await mf.dispatchFetch('http://localhost/webhook/github', delivery.init)).status, 200); };
+  const sub = await create('/queued'); await send();
+  const jobs = await until(async () => { const rows = await control('forward-jobs'); return rows.length && rows; });
+  const last = await current(sub.id);
+  // The full edit form cancels pending work in the same way as the toggle action.
+  assert.equal((await admin(`/admin/api/forwards/${sub.id}`, { method: 'PUT', body: { ...last, enabled: false } })).status, 200);
+  assert.deepEqual(await control('forward-jobs'), []);
+  assert.deepEqual((await current(sub.id)).recent, last.recent);
+  await set(sub.id, true); await control('forward-tick?ms=31000');
+  assert.deepEqual(received, ['/queued'], 'cancelled jobs are not restored when enabled again');
+  await set(sub.id, false);
+  // A stale leased row reaching the alarm is removed, without a send or a new failure.
+  await control('seed-job', jobs[0]); await control('forward-tick?ms=31000');
+  assert.deepEqual(await control('forward-jobs'), []); assert.deepEqual(received, ['/queued']);
+  assert.deepEqual((await current(sub.id)).recent, last.recent);
+  await set(sub.id, true); await send();
+  await until(async () => (await control('forward-jobs')).length);
+  const beforeLease = await current(sub.id);
+  await control('hold-payload?value=true');
+  const running = control('forward-tick?ms=31000');
+  await until(() => releasePayload);
+  await set(sub.id, false); await set(sub.id, true);
+  releasePayload(); await running; await control('hold-payload?value=false');
+  assert.deepEqual(await control('forward-jobs'), []);
+  assert.deepEqual((await current(sub.id)).recent, beforeLease.recent, 'a cancelled lease does not record another failure');
+  assert.equal(received.filter(path => path === '/queued').length, 2, 'a task already reading R2 is cancelled before sending');
+  await set(sub.id, false);
+  const flight = await create('/inflight'); await send(); await until(() => releaseSend);
+  await set(flight.id, false); await set(flight.id, true);
+  releaseSend(); await until(async () => (await current(flight.id)).last?.status === 503);
+  assert.deepEqual(await control('forward-jobs'), [], 'an in-flight failure cannot recreate work cancelled by disabling');
+  await control('forward-tick?ms=3600000');
+  assert.equal(received.filter(path => path === '/inflight').length, 1);
 });
