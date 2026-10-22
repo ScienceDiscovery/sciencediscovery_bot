@@ -7,14 +7,17 @@
 每条订阅包含：
 
 - **名称**；
+- **启用**：新建默认启用；旧文档没有 `enabled` 时，读取及管理响应按启用处理，不在启动时扫表改写，下次保存才写入；
 - **目标 URL**：只接受 `https`；
 - **来源**：`github`、`gitcode` 或两者；
 - **事件类型**：可多选 `issue`、`issue_comment`、`pull_request`、`pull_request_review`、`push`、`ping`、`other`。类型是归一化后的 kind，`other` 表示这六类之外、已经归档的事件，例如 `workflow_run`、`installation` 或未识别的事件；
 - **动作**（可选）：在对应事件类型下面选择，使用下表的 `类型:动作` 值；不选表示该类型全部转发，旧订阅没有 `actions` 时行为不变；
 - **仓库**（可选）：一组 `owner/name`，最多 50 个，不区分大小写；留空表示所有仓库；
 - **附加标头**（可选）：最多 10 个，例如 `Authorization: Bearer <令牌>`，用于目标服务的鉴权；
-- **签名密钥**：可手填旧密钥，或点击「生成密钥」。留空保存时生成 `whsec_` 加 32 字节随机数的 base64；旧的空密钥订阅首次发送时仅初始化一次。
+- **签名密钥**：可手填旧密钥，或点击「生成密钥」。新建留空保存时生成 `whsec_` 加 32 字节随机数的 base64；编辑留空保留原密钥；旧的空密钥订阅首次发送时仅初始化一次。
 - **签名模式**：保留来源签名（`preserve`）或 GitHub 兼容（`github-compatible`）。
+
+禁用后保留配置，不转发、不重试、不能测试，可以再启用；删除才是彻底移除。禁用的订阅仍在列表里，计入 `n / 20`，编辑与删除仍可用，最近结果保留。卡片可直接点击「禁用」／「启用」，无需确认；编辑表单也可勾选「启用这条订阅」。
 
 ## 转发规则
 
@@ -23,6 +26,7 @@
   - 不在 `SDBOT_REPOS` 范围而记为 `ignored` 的投递也会转发；
   - 验签失败或请求无效的投递不转发；
   - 同一 delivery id 的重复投递只自动转发第一次；管理页可以独立重新转发归档原文，不重新执行入库管道和业务监听器。
+- **禁用与重试取消**：禁用订阅不参与自动或归档「重新转发」匹配；只有禁用订阅匹配时，重新转发返回 422 `no matching subscriptions`。禁用配置与取消该订阅待发重试在同一 SQLite 事务提交；闹钟已取出的任务再次检查状态，取消后不发送、不新增失败记录。已发出的请求可以完成并记录结果，但不能重新排队；即使很快再启用，也不会补发被取消的任务，之后只按原筛选转发新事件。
 - **发送时机**：在归档事务提交之后，用 `waitUntil` 在后台发出，Webhook 的响应不等待转发。
 - **请求格式**：方法为 `POST`，正文保持收到的原始字节。先复制来源业务标头，保留来源的 `User-Agent`、`Content-Type`、`X-GitHub-*`、`X-GitCode-*` 和平台签名。再按名称不区分大小写、只在缺失时追加：
   - `Content-Type: application/json`；
@@ -76,7 +80,7 @@ Standard Webhooks 三个标头总是由 Bot 生成，来源的同名标头被丢
 | `X-Sdbot-Source-Signature-256` | 不生成 | 上游原 `X-Hub-Signature-256`，原来没有就不生成 |
 | `X-Sdbot-Source-GitCode-Signature-256` | 不生成 | 上游原 `X-GitCode-Signature-256`，原来没有就不生成 |
 
-新建订阅默认 `preserve`。旧订阅没有 `signature_mode` 时，`created` 早于 `2026-10-18T09:02:44Z` 的按 `github-compatible` 解释，其余按 `preserve` 解释。管理页显示实际模式，下次保存写入显式字段，不在启动时扫表改写。模式选项有中文悬浮说明。省略密钥的编辑保留已有密钥；明确清空后保存会生成新密钥。
+新建订阅默认 `preserve`。旧订阅没有 `signature_mode` 时，`created` 早于 `2026-10-18T09:02:44Z` 的按 `github-compatible` 解释，其余按 `preserve` 解释。管理页显示实际模式，下次保存写入显式字段，不在启动时扫表改写。模式选项有中文悬浮说明。编辑时省略或留空密钥均保留已有密钥；需要更换时手填或点击「生成密钥」。
 
 接收方优先用官方 [Standard Webhooks 库](https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries)验证中继签名。旧密钥选择 raw 格式，包含非 ASCII 字符时传 UTF-8 字节；`whsec_` 直接按标准格式使用。校验实际收到的正文，检查时间戳容差（官方库默认 5 分钟），成功后按 `webhook-id` 去重。同一 ID 的重复通知确认成功即可，不重复执行业务。
 
@@ -116,29 +120,31 @@ Standard Webhooks 三个标头总是由 Bot 生成，来源的同名标头被丢
 
 | 方法与路径 | 用途 |
 | --- | --- |
-| `GET /admin/api/forwards` | 订阅列表（含密钥、最近 20 次结果 `recent` 和最近一次 `last`）、上限 `limit` 与保留条数 `history` |
+| `GET /admin/api/forwards` | 订阅列表（每条都有归一后的布尔值 `enabled`，含密钥、最近 20 次结果 `recent` 和最近一次 `last`）、上限 `limit` 与保留条数 `history` |
 | `POST /admin/api/forwards` | 新建，成功返回 201 |
 | `PUT /admin/api/forwards/<id>` | 修改 |
-| `DELETE /admin/api/forwards/<id>` | 删除 |
+| `DELETE /admin/api/forwards/<id>` | 删除订阅和它的重试，保留删除确认 |
+| `POST /admin/api/forwards/<id>/enabled` | 仅接受 `{ "enabled": true }` 或 `{ "enabled": false }`；只更新启用状态和 `updated`；不存在为 404，非布尔值或多余字段为 422 |
 | `POST /admin/api/events/<record_id>/forward` | 当前匹配订阅的独立重新转发；返回 202／422／404 |
-| `POST /admin/api/forwards/<id>/test` | 发送测试请求，等待目标答复（最多 5 秒）后返回 `{ ok, result, response_excerpt }`；订阅不存在时 404 |
+| `POST /admin/api/forwards/<id>/test` | 发送测试请求，等待目标答复（最多 5 秒）后返回 `{ ok, result, response_excerpt }`；订阅不存在时 404；禁用时 422 `{ ok: false, error: "subscription is disabled" }`，不发送网络请求 |
 
 这些接口先经过 `authorizeAdmin`。写请求还必须满足两点，用来防止跨站写入：
 - 正文是 `application/json`，否则返回 415；
 - 请求带 `Origin` 时必须与管理页同源，带 `Sec-Fetch-Site` 时必须是 `same-origin`，否则返回 403。
 
-参数不合法或已达 20 条时返回 422。集合路径只接受 GET／POST，单条路径只接受 PUT／DELETE，测试路径只接受 POST（正文为任意 JSON，例如 `{}`），其他方法返回 405。
+参数不合法或已达 20 条时返回 422。集合路径只接受 GET／POST，单条路径只接受 PUT／DELETE，启停和测试路径只接受 POST（正文为任意 JSON，例如 `{}`），其他方法返回 405。
 
 ## 主要实现与成本
 
 - `src/core/forward.ts`：地址检查、参数校验、类型匹配、发送和测试请求。
-- `src/worker/forward.ts`：SQLite 表 `forward_subscriptions`。订阅列表在 Durable Object 生命周期内只读一次并缓存在内存，所以每次 Webhook 不增加 SQLite 读取；只有实际转发或测试时，才会改写该订阅所在的一行（最近结果放在同一行里），不增加行数。
+- `src/worker/forward.ts`：SQLite 表 `forward_subscriptions`。订阅列表在 Durable Object 生命周期内只读一次并缓存在内存，所以每次 Webhook 不增加 SQLite 读取；除配置保存和启停外，只有实际转发或测试时，才会改写该订阅所在的一行（最近结果放在同一行里），不增加行数。
 - `src/worker/index.ts`：在归档成功后调用转发，并提供管理路由。
 - 页面没有新增定时器：打开页面、切换到「转发」或点击刷新时才读取。
 
 ## 验证
 
 `tests-ts/worker-forward.test.mjs` 在 workerd 中验证：
+- 旧订阅缺 `enabled` 时无需迁移写入即可继续转发、新建默认启用、启停鉴权与严格布尔校验、禁用不参与自动／重新转发且测试 422、取消待发和已取出重试、快速重新启用不补发、最近结果与 20 条额度保留；
 - 私网和元数据地址被拒绝；
 - 官方 `standardwebhooks` 验证 `whsec_` 与旧 UTF-8 密钥、两种模式、带上游签名的测试、旧订阅模式迁移及标准标头不可伪造；
 - 持久重试跨重启、503→202 的 ID 和原文不变、401 不重试、24 小时截止、正文缺失、入库锁隔离、共享 Alarm 不后推、成功首投无新 SELECT，以及管理重新转发的鉴权／同源／JSON 限制；
@@ -155,4 +161,4 @@ Standard Webhooks 三个标头总是由 Bot 生成，来源的同名标头被丢
 
 浏览器旅程 `test/journey-cloud-admin.spec.cjs` 另外以真实 workerd 和隔离接收端验证：`preserve` 的标准签名通过、旧 GitHub 风格校验失败；切换 `github-compatible` 后两种验证同时通过，上游签名已迁移；归档详情重新转发生成新 ID，最近调用出现该次真实转发。
 
-同一旅程在 390px 下完成配置（含按类型动作、仓库和 `Authorization` 标头，值默认遮住、卡片只显示名称），编辑回显动作、取消类型后不提交对应动作、清空动作恢复该类型全部后，点击「测试」看到 `HTTP 503`、耗时和「返回内容为空」，展开最近调用并在第二次测试后仍保持展开，在 390px 和桌面宽度下都没有横向溢出，并确认加载后没有定时请求。
+同一旅程验证默认启用、卡片禁用／启用无需确认、禁用标记和测试不可用、编辑启用勾选与空密钥保留，并在桌面和 390px 截图核对不溢出。它还在 390px 下完成配置（含按类型动作、仓库和 `Authorization` 标头，值默认遮住、卡片只显示名称），编辑回显动作、取消类型后不提交对应动作、清空动作恢复该类型全部后，点击「测试」看到 `HTTP 503`、耗时和「返回内容为空」，展开最近调用并在第二次测试后仍保持展开，在 390px 和桌面宽度下都没有横向溢出，并确认加载后没有定时请求。

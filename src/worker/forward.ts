@@ -21,6 +21,8 @@ const retryRecord = (record: Doc): Doc => Object.fromEntries(['record_id', 'payl
 export class WorkerForwards {
   private cache: ForwardSubscription[] | null = null;
   private retryReady = false;
+  // In-flight sends/leases must stay cancelled even if the subscription is re-enabled before they return.
+  private cancellations = new Map<string, number>();
   constructor(readonly storage: DurableObjectStorage, readonly fetcher: typeof fetch = (...args) => fetch(...args),
     readonly payload: (record: Doc) => Promise<Uint8Array | null> = async () => null,
     readonly arm: (at: number) => Promise<void> = async at => {
@@ -30,13 +32,24 @@ export class WorkerForwards {
   private list(): ForwardSubscription[] {
     if (!this.cache) {
       this.storage.sql.exec('CREATE TABLE IF NOT EXISTS forward_subscriptions (id TEXT PRIMARY KEY, doc TEXT NOT NULL)');
-      this.cache = this.storage.sql.exec<{ doc: string }>('SELECT doc FROM forward_subscriptions').toArray().map(row => JSON.parse(row.doc) as ForwardSubscription)
+      this.cache = this.storage.sql.exec<{ doc: string }>('SELECT doc FROM forward_subscriptions').toArray().map(row => {
+          const sub = JSON.parse(row.doc) as ForwardSubscription;
+          return { ...sub, enabled: sub.enabled !== false };
+        })
         .sort((a, b) => a.created.localeCompare(b.created));
     }
     return this.cache;
   }
   private save(sub: ForwardSubscription): void {
     this.storage.sql.exec('INSERT INTO forward_subscriptions VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET doc=excluded.doc', sub.id, JSON.stringify(sub));
+  }
+  /** Configuration and pending retry cancellation commit together. */
+  private configure(sub: ForwardSubscription): void {
+    this.storage.transactionSync(() => {
+      this.save(sub);
+      if (sub.enabled === false) this.retries().exec('DELETE FROM forward_retries WHERE subscription=?', sub.id);
+    });
+    if (sub.enabled === false) this.cancellations.set(sub.id, (this.cancellations.get(sub.id) || 0) + 1);
   }
   private signing(sub: ForwardSubscription): ForwardSubscription {
     // Legacy unsigned subscriptions acquire one durable relay key on use, never in a startup sweep.
@@ -70,6 +83,7 @@ export class WorkerForwards {
   }
   private async attempt(sub: ForwardSubscription, record: Doc, headers: Headers, body: Uint8Array,
     job?: RetryJob, sample?: ForwardTestSample): Promise<{ result: ForwardResult; excerpt: string | null }> {
+    const cancellation = this.cancellations.get(sub.id);
     record = { ...record, delivery_id: string(record.delivery_id) || string(record.record_id) };
     const signed = this.signing(sub), now = () => new Date(this.clock());
     let sent: { result: ForwardResult; excerpt: string | null };
@@ -80,10 +94,12 @@ export class WorkerForwards {
       sent = { result: { at: now().toISOString(), delivery_id: string(record.delivery_id), status: null, error: 'signing unavailable',
         event: string(record.kind), repo: string(record.repo), ...(sample ? { test: true } : {}) }, excerpt: null };
     }
-    if (!this.list().some(item => item.id === sub.id)) return sent;
+    const current = this.list().find(item => item.id === sub.id);
+    if (!current) return sent;
     const first = job?.first_failure ?? this.clock(), attempts = (job?.attempts ?? 0) + 1;
     const due = this.clock() + forwardRetryDelay(attempts), expires = job?.expires ?? first + FORWARD_RETRY_WINDOW;
-    const retry = retryableForward(sent.result) && due <= expires;
+    // A send already in flight may finish after disabling; it must not recreate cancelled work.
+    const retry = current.enabled !== false && this.cancellations.get(sub.id) === cancellation && retryableForward(sent.result) && due <= expires;
     Object.assign(sent.result, { attempt: attempts, ...(retry ? { retry_at: new Date(due).toISOString() } : { terminal: true }) });
     this.storage.transactionSync(() => {
       this.record(sub.id, sent.result);
@@ -105,11 +121,15 @@ export class WorkerForwards {
       for (const row of rows) sql.exec('UPDATE forward_retries SET due=? WHERE id=?', now + LEASE_MS, row.id);
       return rows.map(row => JSON.parse(row.doc) as RetryJob);
     });
+    const cancellations = new Map(jobs.map(job => [job.id, this.cancellations.get(job.subscription)]));
     await this.schedule(); // A process restart can recover an in-flight lease.
     await Promise.all(jobs.map(async job => {
       const sub = this.list().find(item => item.id === job.subscription);
-      if (!sub) { sql.exec('DELETE FROM forward_retries WHERE id=?', job.id); return; }
+      if (!sub || sub.enabled === false || this.cancellations.get(sub.id) !== cancellations.get(job.id)) { sql.exec('DELETE FROM forward_retries WHERE id=?', job.id); return; }
       const body = job.sample ? new Uint8Array() : await this.payload(job.record);
+      // Reading R2 yields: the subscription may have been disabled or deleted meanwhile.
+      const current = this.list().find(item => item.id === sub.id);
+      if (!current || current.enabled === false || this.cancellations.get(sub.id) !== cancellations.get(job.id)) { sql.exec('DELETE FROM forward_retries WHERE id=?', job.id); return; }
       if (body === null || this.clock() > job.expires) {
         this.storage.transactionSync(() => {
           this.record(sub.id, { at: new Date(this.clock()).toISOString(), delivery_id: string(job.record.delivery_id), status: null,
@@ -119,7 +139,7 @@ export class WorkerForwards {
         });
         return;
       }
-      await this.attempt(sub, job.record, new Headers(job.headers), body, job, job.sample);
+      await this.attempt(current, job.record, new Headers(job.headers), body, job, job.sample);
     }));
     await this.schedule();
   }
@@ -134,9 +154,20 @@ export class WorkerForwards {
   async test(id: string): Promise<AdminReply> {
     const sub = this.list().find(item => item.id === id);
     if (!sub) return { status: 404, body: { ok: false, error: 'subscription not found' } };
+    if (sub.enabled === false) return { status: 422, body: { ok: false, error: 'subscription is disabled' } };
     const sample = forwardTestSample(sub, () => new Date(this.clock()));
     const { result, excerpt } = await this.attempt(sub, { provider: 'test', kind: 'ping', delivery_id: sample.delivery, repo: '' }, new Headers(), new Uint8Array(), undefined, sample);
     return { status: 200, body: { ok: true, result, response_excerpt: excerpt } };
+  }
+  setEnabled(id: string, input: unknown): AdminReply {
+    const subs = this.list(), index = subs.findIndex(sub => sub.id === id);
+    if (index < 0) return { status: 404, body: { ok: false, error: 'subscription not found' } };
+    const doc = object(input);
+    if (typeof doc.enabled !== 'boolean') return { status: 422, body: { ok: false, error: 'enabled must be a boolean' } };
+    if (Object.keys(doc).length !== 1) return { status: 422, body: { ok: false, error: 'body must contain only enabled' } };
+    const sub = { ...subs[index], enabled: doc.enabled, updated: new Date(this.clock()).toISOString() };
+    this.configure(sub); subs[index] = sub;
+    return { status: 200, body: { ok: true, subscription: publicSubscription(sub) } };
   }
   admin(method: string, id: string | null, input: unknown): AdminReply {
     const subs = this.list(), index = id ? subs.findIndex(sub => sub.id === id) : -1;
@@ -144,18 +175,18 @@ export class WorkerForwards {
     if (id && index < 0) return { status: 404, body: { ok: false, error: 'subscription not found' } };
     if (method === 'DELETE' && id) {
       this.storage.transactionSync(() => { this.storage.sql.exec('DELETE FROM forward_subscriptions WHERE id=?', id); this.retries().exec('DELETE FROM forward_retries WHERE subscription=?', id); });
-      subs.splice(index, 1);
+      subs.splice(index, 1); this.cancellations.delete(id);
       return { status: 200, body: { ok: true } };
     }
     if (method === 'POST' && !id || method === 'PUT' && id) {
       const doc = object(input);
-      const parsed = parseSubscription({ ...doc, ...(id && doc.secret === undefined ? { secret: subs[index].secret } : {}), ...(id && doc.signature_mode === undefined ? { signature_mode: signatureMode(subs[index]) } : {}) });
+      const parsed = parseSubscription({ ...doc, ...(id && (doc.secret === undefined || doc.secret === '') ? { secret: subs[index].secret } : {}), ...(id && doc.enabled === undefined ? { enabled: subs[index].enabled } : {}), ...(id && doc.signature_mode === undefined ? { signature_mode: signatureMode(subs[index]) } : {}) });
       if (!parsed.ok) return { status: 422, body: { ok: false, error: parsed.error } };
       if (!id && subs.length >= FORWARD_LIMIT) return { status: 422, body: { ok: false, error: `at most ${FORWARD_LIMIT} subscriptions` } };
       const now = new Date(this.clock()).toISOString();
       const sub: ForwardSubscription = id ? { ...subs[index], ...parsed.value, updated: now }
         : { id: crypto.randomUUID(), ...parsed.value, created: now, updated: now, last: null };
-      this.save(sub);
+      this.configure(sub);
       if (id) subs[index] = sub; else subs.push(sub);
       return { status: id ? 200 : 201, body: { ok: true, subscription: publicSubscription(sub) } };
     }
